@@ -1,2 +1,0 @@
--- Initialize database schema
--- This file is automatically executed when the PostgreSQL container starts

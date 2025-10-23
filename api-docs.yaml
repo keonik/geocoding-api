@@ -216,6 +216,215 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /distance/{from}/{to}:
+    get:
+      summary: Calculate Distance Between ZIP Codes
+      description: |
+        Calculate the precise distance between two ZIP codes using the Haversine formula.
+        
+        Returns distance in both miles and kilometers for accurate geographic calculations.
+        Perfect for logistics, delivery radius validation, and distance-based searches.
+      operationId: calculateDistance
+      tags:
+        - Distance
+      parameters:
+        - name: from
+          in: path
+          required: true
+          description: Starting ZIP code
+          schema:
+            type: string
+            pattern: '^\d{5}(-\d{4})?$'
+            example: "10001"
+        - name: to
+          in: path
+          required: true
+          description: Destination ZIP code
+          schema:
+            type: string
+            pattern: '^\d{5}(-\d{4})?$'
+            example: "90210"
+      responses:
+        '200':
+          description: Distance calculated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DistanceResponse'
+              example:
+                success: true
+                data:
+                  from_zip_code: "10001"
+                  to_zip_code: "90210"
+                  distance_miles: 2445.5
+                  distance_km: 3936.2
+                count: 1
+        '400':
+          description: Invalid ZIP code format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /nearby/{zipcode}:
+    get:
+      summary: Find Nearby ZIP Codes
+      description: |
+        Find all ZIP codes within a specified radius of a center ZIP code.
+        
+        Returns ZIP codes sorted by distance with complete location data.
+        Ideal for location-based services, delivery zones, and proximity marketing.
+      operationId: findNearbyZipCodes
+      tags:
+        - Distance
+      parameters:
+        - name: zipcode
+          in: path
+          required: true
+          description: Center ZIP code to search around
+          schema:
+            type: string
+            pattern: '^\d{5}(-\d{4})?$'
+            example: "10001"
+        - name: radius
+          in: query
+          required: false
+          description: Search radius in miles
+          schema:
+            type: number
+            format: double
+            minimum: 0.1
+            maximum: 100
+            default: 1
+            example: 5
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+            example: 25
+      responses:
+        '200':
+          description: Nearby ZIP codes found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NearbyResponse'
+              examples:
+                nearby_results:
+                  summary: ZIP codes within 5 miles of Manhattan
+                  value:
+                    success: true
+                    data:
+                      - zip_code:
+                          zip_code: "10002"
+                          city_name: "New York"
+                          state_code: "NY"
+                          latitude: 40.71571
+                          longitude: -73.98803
+                        distance_miles: 0.8
+                        distance_km: 1.3
+                      - zip_code:
+                          zip_code: "10003"
+                          city_name: "New York"
+                          state_code: "NY"
+                          latitude: 40.73168
+                          longitude: -73.98975
+                        distance_miles: 1.2
+                        distance_km: 1.9
+                    count: 2
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /proximity/{center}/{target}:
+    get:
+      summary: Check ZIP Code Proximity
+      description: |
+        Check if a target ZIP code is within a specified radius of a center ZIP code.
+        
+        Returns boolean result with actual distance for precise proximity checking.
+        Useful for validation, filtering, and business rule enforcement.
+      operationId: checkZipCodeProximity
+      tags:
+        - Distance
+      parameters:
+        - name: center
+          in: path
+          required: true
+          description: Center ZIP code for proximity check
+          schema:
+            type: string
+            pattern: '^\d{5}(-\d{4})?$'
+            example: "10001"
+        - name: target
+          in: path
+          required: true
+          description: Target ZIP code to check proximity for
+          schema:
+            type: string
+            pattern: '^\d{5}(-\d{4})?$'
+            example: "10002"
+        - name: radius
+          in: query
+          required: false
+          description: Radius in miles for proximity check
+          schema:
+            type: number
+            format: double
+            minimum: 0.1
+            maximum: 100
+            default: 1
+            example: 1
+      responses:
+        '200':
+          description: Proximity check completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProximityResponse'
+              example:
+                success: true
+                data:
+                  center_zip_code: "10001"
+                  target_zip_code: "10002"
+                  radius_miles: 1
+                  is_within_radius: true
+                  actual_distance_miles: 0.5
+                  actual_distance_km: 0.8
+                count: 1
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /admin/load-data:
     post:
       summary: Load ZIP Code Data
@@ -402,11 +611,115 @@ components:
           description: Error message describing what went wrong
           example: "ZIP code not found"
 
+    DistanceResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            from_zip_code:
+              type: string
+              description: Starting ZIP code
+              example: "10001"
+            to_zip_code:
+              type: string
+              description: Destination ZIP code
+              example: "90210"
+            distance_miles:
+              type: number
+              format: double
+              description: Distance in miles
+              example: 2445.5
+            distance_km:
+              type: number
+              format: double
+              description: Distance in kilometers
+              example: 3936.2
+        count:
+          type: integer
+          example: 1
+
+    NearbyZipCode:
+      type: object
+      properties:
+        zip_code:
+          $ref: '#/components/schemas/ZipCode'
+        distance_miles:
+          type: number
+          format: double
+          description: Distance from center point in miles
+          example: 0.8
+        distance_km:
+          type: number
+          format: double
+          description: Distance from center point in kilometers
+          example: 1.3
+
+    NearbyResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/NearbyZipCode'
+        count:
+          type: integer
+          description: Number of ZIP codes found within radius
+          example: 15
+
+    ProximityResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            center_zip_code:
+              type: string
+              description: Center ZIP code for proximity check
+              example: "10001"
+            target_zip_code:
+              type: string
+              description: Target ZIP code being checked
+              example: "10002"
+            radius_miles:
+              type: number
+              format: double
+              description: Specified radius in miles
+              example: 1
+            is_within_radius:
+              type: boolean
+              description: Whether target is within the specified radius
+              example: true
+            actual_distance_miles:
+              type: number
+              format: double
+              description: Actual distance between ZIP codes in miles
+              example: 0.5
+            actual_distance_km:
+              type: number
+              format: double
+              description: Actual distance between ZIP codes in kilometers
+              example: 0.8
+        count:
+          type: integer
+          example: 1
+
 tags:
   - name: Geocoding
     description: Core geocoding operations for ZIP code lookup
   - name: Search
     description: Search and discovery operations
+  - name: Distance
+    description: Distance calculations and proximity operations between ZIP codes
   - name: Admin
     description: Administrative operations for data management
   - name: System

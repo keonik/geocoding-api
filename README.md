@@ -105,6 +105,76 @@ Search for ZIP codes by city name, optionally filtered by state.
 curl "http://localhost:8080/api/v1/search?city=Springfield&state=IL&limit=10"
 ```
 
+### Calculate Distance Between ZIP Codes
+```
+GET /api/v1/distance/{from}/{to}
+```
+
+Calculate the precise distance between two ZIP codes using the Haversine formula.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/v1/distance/10001/90210
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "from_zip_code": "10001",
+    "to_zip_code": "90210", 
+    "distance_miles": 2445.5,
+    "distance_km": 3936.2
+  },
+  "count": 1
+}
+```
+
+### Find Nearby ZIP Codes
+```
+GET /api/v1/nearby/{zipcode}?radius={miles}&limit={limit}
+```
+
+Find all ZIP codes within a specified radius of a center ZIP code.
+
+**Parameters:**
+- `radius` (optional): Search radius in miles (default: 1, max: 100)
+- `limit` (optional): Maximum results (default: 50, max: 200)
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/nearby/10001?radius=5&limit=10"
+```
+
+### Check ZIP Code Proximity
+```
+GET /api/v1/proximity/{center}/{target}?radius={miles}
+```
+
+Check if a target ZIP code is within a specified radius of a center ZIP code.
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/v1/proximity/10001/10002?radius=1"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "center_zip_code": "10001",
+    "target_zip_code": "10002",
+    "radius_miles": 1,
+    "is_within_radius": true,
+    "actual_distance_miles": 0.5,
+    "actual_distance_km": 0.8
+  },
+  "count": 1
+}
+```
+
 ### Health Check
 ```
 GET /api/v1/health

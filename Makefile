@@ -69,6 +69,27 @@ debug-docs:
 	@curl -s -I http://localhost:8080/api-docs.yaml 2>/dev/null || echo "❌ Spec not accessible"
 	@echo "\n✅ Try visiting: http://localhost:8080/docs"
 
+# Test distance endpoints (requires API to be running)
+test-distance:
+	@echo "🧪 Testing distance calculation endpoints..."
+	@echo "\n📏 Distance between NYC and LA:"
+	@curl -s "http://localhost:8080/api/v1/distance/10001/90210" | jq '.data // .' 2>/dev/null || echo "❌ API not running"
+	@echo "\n🎯 ZIP codes near NYC (1 mile):"
+	@curl -s "http://localhost:8080/api/v1/nearby/10001?radius=1&limit=5" | jq '.data[0:2] // .' 2>/dev/null || echo "❌ API not running"
+	@echo "\n🔍 Proximity check (NYC area):"
+	@curl -s "http://localhost:8080/api/v1/proximity/10001/10002?radius=1" | jq '.data // .' 2>/dev/null || echo "❌ API not running"
+
+# Test all endpoints
+test-all:
+	@echo "🧪 Testing all API endpoints..."
+	@echo "\n❤️ Health check:"
+	@curl -s http://localhost:8080/api/v1/health | jq '.' 2>/dev/null || echo "❌ API not running"
+	@echo "\n🏠 Geocode lookup:"
+	@curl -s http://localhost:8080/api/v1/geocode/10001 | jq '.data.city_name // .' 2>/dev/null || echo "❌ No data"
+	@echo "\n🔍 City search:"
+	@curl -s "http://localhost:8080/api/v1/search?city=New York&state=NY&limit=3" | jq '.count // .' 2>/dev/null || echo "❌ No data"
+	@make test-distance
+
 # Database migration commands (using golang-migrate)
 migrate-up:
 	migrate -path migrations -database "postgres://postgres:postgres@localhost:8954/geocoding_db?sslmode=disable" up

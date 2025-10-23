@@ -108,6 +108,11 @@ func main() {
 	api.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
 	api.GET("/search", handlers.SearchZipCodesHandler)
 	
+	// Distance and proximity endpoints
+	api.GET("/distance/:from/:to", handlers.CalculateDistanceHandler)
+	api.GET("/nearby/:zipcode", handlers.FindNearbyZipCodesHandler)
+	api.GET("/proximity/:center/:target", handlers.CheckZipCodeProximityHandler)
+	
 	// Admin endpoint for loading data (consider adding authentication in production)
 	api.POST("/admin/load-data", handlers.LoadDataHandler)
 
