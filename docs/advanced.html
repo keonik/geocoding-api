@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Geocoding API - Interactive Documentation</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Fast US ZIP code geocoding API with comprehensive location data">
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      .custom-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 1rem;
+        text-align: center;
+        margin-bottom: 0;
+      }
+      .custom-header h1 {
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 300;
+      }
+      .custom-header p {
+        margin: 0.5rem 0 0;
+        opacity: 0.9;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="custom-header">
+      <h1>🌎 Geocoding API</h1>
+      <p>Fast, comprehensive US ZIP code geocoding and location lookup</p>
+    </div>
+    
+    <script
+      id="api-reference"
+      data-url="/api-docs.yaml"
+      data-configuration='{
+        "theme": "kepler",
+        "layout": "modern",
+        "showSidebar": true,
+        "hideDownloadButton": false,
+        "searchHotKey": "k",
+        "defaultHttpClient": {
+          "targetKey": "javascript",
+          "clientKey": "fetch"
+        },
+        "servers": [
+          {
+            "url": "http://localhost:8080/api/v1",
+            "description": "Local Development"
+          },
+          {
+            "url": "https://api.yourgeocoding.com/api/v1", 
+            "description": "Production"
+          }
+        ],
+        "authentication": {
+          "preferredSecurityScheme": "bearerAuth",
+          "apiKey": {
+            "token": "your-api-key-here"
+          }
+        },
+        "customCss": ".scalar-app { --scalar-color-1: #667eea; --scalar-color-2: #764ba2; }",
+        "metadata": {
+          "title": "Geocoding API Documentation",
+          "description": "Explore and test our comprehensive ZIP code geocoding API",
+          "ogDescription": "Fast US ZIP code lookup with coordinates, demographics, and administrative data.",
+          "favicon": "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌎</text></svg>"
+        },
+        "hiddenClients": ["shell", "ruby", "php"],
+        }
+      }'></script>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+  </body>
+</html>

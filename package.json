@@ -1,0 +1,22 @@
+{
+  "name": "geocoding-api-docs",
+  "version": "1.0.0",
+  "description": "API documentation for Geocoding API using Scalar",
+  "scripts": {
+    "docs": "scalar-cli serve api-docs.yaml --port 3001",
+    "docs:build": "scalar-cli build api-docs.yaml --output ./docs/dist",
+    "docs:dev": "scalar-cli serve api-docs.yaml --watch --port 3001",
+    "validate": "swagger-codegen validate -i api-docs.yaml"
+  },
+  "devDependencies": {
+    "@scalar/cli": "^0.1.0",
+    "swagger-codegen-cli": "^3.0.0"
+  },
+  "keywords": [
+    "api",
+    "documentation",
+    "openapi",
+    "scalar",
+    "geocoding"
+  ]
+}

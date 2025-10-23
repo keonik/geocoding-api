@@ -1,0 +1,413 @@
+openapi: 3.0.3
+info:
+  title: Geocoding API
+  description: |
+    A fast and comprehensive REST API for US ZIP code geocoding and location lookup.
+    
+    ## Features
+    - **Lightning Fast**: PostgreSQL-backed with optimized indexes
+    - **Comprehensive Data**: Population, density, counties, coordinates, and more
+    - **Flexible Search**: Lookup by ZIP code or search by city/state
+    - **Rich Metadata**: Timezone, county weights, military/imprecise flags
+    
+    ## Data Source
+    Built on comprehensive US ZIP code data from GeoNames, including:
+    - 33,000+ ZIP codes across all US states
+    - Geographic coordinates (latitude/longitude)
+    - Population and density statistics
+    - County and administrative boundary information
+    - Timezone data for accurate time-based operations
+    
+    ## Rate Limits
+    Currently no rate limits are enforced, but consider implementing them for production use.
+    
+  version: 1.0.0
+  contact:
+    name: API Support
+    url: https://github.com/your-username/geocoding-api
+    email: support@yourapi.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Development server
+  - url: https://api.yourgeocoding.com/api/v1
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Health Check
+      description: Returns the current health status of the API service
+      operationId: healthCheck
+      tags:
+        - System
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  service:
+                    type: string
+                    example: "geocoding-api"
+                  version:
+                    type: string
+                    example: "1.0.0"
+
+  /geocode/{zipcode}:
+    get:
+      summary: Get ZIP Code Details
+      description: |
+        Retrieve comprehensive geographic and demographic information for a specific US ZIP code.
+        
+        Returns detailed location data including coordinates, population statistics, 
+        administrative boundaries, and timezone information.
+      operationId: getZipCode
+      tags:
+        - Geocoding
+      parameters:
+        - name: zipcode
+          in: path
+          required: true
+          description: US ZIP code (5 or 9 digits)
+          schema:
+            type: string
+            pattern: '^\d{5}(-\d{4})?$'
+            example: "10001"
+      responses:
+        '200':
+          description: ZIP code found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeocodeResponse'
+              examples:
+                manhattan_zip:
+                  summary: Manhattan ZIP code example
+                  value:
+                    success: true
+                    data:
+                      zip_code: "10001"
+                      city_name: "New York"
+                      state_code: "NY"
+                      state_name: "New York"
+                      zcta: true
+                      population: 21102.0
+                      density: 35400.5
+                      primary_county_code: "36061"
+                      primary_county_name: "New York"
+                      county_weights:
+                        "36061": "100"
+                      county_names: ["New York"]
+                      county_codes: ["36061"]
+                      imprecise: false
+                      military: false
+                      timezone: "America/New_York"
+                      latitude: 40.75066
+                      longitude: -73.99670
+                    count: 1
+        '400':
+          description: Invalid ZIP code format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Invalid ZIP code format"
+        '404':
+          description: ZIP code not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "ZIP code not found"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /search:
+    get:
+      summary: Search ZIP Codes by City
+      description: |
+        Search for ZIP codes by city name with optional state filtering.
+        
+        Supports partial city name matching and returns multiple results.
+        Useful for autocomplete functionality or when exact ZIP code is unknown.
+      operationId: searchZipCodes
+      tags:
+        - Search
+      parameters:
+        - name: city
+          in: query
+          required: true
+          description: City name or partial city name to search for
+          schema:
+            type: string
+            minLength: 2
+            example: "Springfield"
+        - name: state
+          in: query
+          required: false
+          description: Two-letter state code to filter results
+          schema:
+            type: string
+            pattern: '^[A-Z]{2}$'
+            example: "IL"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+            example: 25
+      responses:
+        '200':
+          description: Search completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+              examples:
+                springfield_search:
+                  summary: Springfield search results
+                  value:
+                    success: true
+                    data:
+                      - zip_code: "62701"
+                        city_name: "Springfield"
+                        state_code: "IL"
+                        state_name: "Illinois"
+                        latitude: 39.78172
+                        longitude: -89.64371
+                      - zip_code: "62702"
+                        city_name: "Springfield"
+                        state_code: "IL"
+                        state_name: "Illinois"
+                        latitude: 39.76009
+                        longitude: -89.60733
+                    count: 2
+        '400':
+          description: Invalid search parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/load-data:
+    post:
+      summary: Load ZIP Code Data
+      description: |
+        **Admin endpoint** to load ZIP code data from CSV file into the database.
+        
+        ⚠️ **Note**: This endpoint should be protected with authentication in production environments.
+        
+        The endpoint will:
+        1. Parse the CSV file
+        2. Insert/update records in the database
+        3. Handle duplicate ZIP codes via upsert operations
+      operationId: loadData
+      tags:
+        - Admin
+      parameters:
+        - name: file
+          in: query
+          required: false
+          description: Path to CSV file (defaults to standard location)
+          schema:
+            type: string
+            example: "georef-united-states-of-america-zc-point.csv"
+      responses:
+        '200':
+          description: Data loaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+              example:
+                success: true
+                data: "CSV data loaded successfully"
+        '500':
+          description: Failed to load data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    ZipCode:
+      type: object
+      description: Complete ZIP code information including geographic and demographic data
+      properties:
+        zip_code:
+          type: string
+          description: The ZIP code identifier
+          example: "10001"
+        city_name:
+          type: string
+          description: Official USPS city name
+          example: "New York"
+        state_code:
+          type: string
+          description: Two-letter state abbreviation
+          example: "NY"
+        state_name:
+          type: string
+          description: Full state name
+          example: "New York"
+        zcta:
+          type: boolean
+          description: Whether this is a ZIP Code Tabulation Area
+          example: true
+        zcta_parent:
+          type: string
+          nullable: true
+          description: Parent ZCTA if applicable
+          example: null
+        population:
+          type: number
+          nullable: true
+          description: Population count for this ZIP code area
+          example: 21102.0
+        density:
+          type: number
+          nullable: true
+          description: Population density per square mile
+          example: 35400.5
+        primary_county_code:
+          type: string
+          description: FIPS code of the primary county
+          example: "36061"
+        primary_county_name:
+          type: string
+          description: Name of the primary county
+          example: "New York"
+        county_weights:
+          type: object
+          description: JSON object with county codes and their percentage weights
+          additionalProperties:
+            type: string
+          example:
+            "36061": "100"
+        county_names:
+          type: array
+          items:
+            type: string
+          description: Array of all county names for this ZIP code
+          example: ["New York"]
+        county_codes:
+          type: array
+          items:
+            type: string
+          description: Array of all county FIPS codes for this ZIP code
+          example: ["36061"]
+        imprecise:
+          type: boolean
+          description: Whether the coordinates are imprecise
+          example: false
+        military:
+          type: boolean
+          description: Whether this is a military ZIP code
+          example: false
+        timezone:
+          type: string
+          description: IANA timezone identifier
+          example: "America/New_York"
+        latitude:
+          type: number
+          format: double
+          description: Latitude coordinate (WGS84)
+          example: 40.75066
+        longitude:
+          type: number
+          format: double
+          description: Longitude coordinate (WGS84)
+          example: -73.99670
+
+    GeocodeResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the request was successful
+          example: true
+        data:
+          $ref: '#/components/schemas/ZipCode'
+        count:
+          type: integer
+          description: Number of results returned
+          example: 1
+
+    SearchResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the request was successful
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ZipCode'
+          description: Array of matching ZIP codes
+        count:
+          type: integer
+          description: Number of results returned
+          example: 2
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the request was successful
+          example: true
+        data:
+          type: string
+          description: Success message
+          example: "Operation completed successfully"
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the request was successful
+          example: false
+        error:
+          type: string
+          description: Error message describing what went wrong
+          example: "ZIP code not found"
+
+tags:
+  - name: Geocoding
+    description: Core geocoding operations for ZIP code lookup
+  - name: Search
+    description: Search and discovery operations
+  - name: Admin
+    description: Administrative operations for data management
+  - name: System
+    description: System health and monitoring endpoints

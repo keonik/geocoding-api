@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Geocoding API Documentation</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <script
+      id="api-reference"
+      data-configuration='{
+        "theme": "kepler",
+        "layout": "modern",
+        "defaultHttpClient": {
+          "targetKey": "javascript",
+          "clientKey": "fetch"
+        },
+        "servers": [
+          {
+            "url": "http://localhost:8080/api/v1",
+            "description": "Development Server"
+          }
+        ],
+        "metadata": {
+          "title": "Geocoding API",
+          "description": "Fast US ZIP code geocoding and location lookup API"
+        },
+        "spec": {
+          "url": "/api-docs.yaml"
+        }
+      }'></script>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+    
+    <script>
+      // Fallback: if loading fails, try to fetch the spec manually
+      window.addEventListener("load", function() {
+        setTimeout(function() {
+          // Check if Scalar loaded successfully
+          if (document.querySelector(".scalar-app") === null) {
+            console.warn("Scalar failed to load, attempting fallback...");
+            
+            // Try to fetch the spec and reload
+            fetch("/api-docs.yaml")
+              .then(response => {
+                if (!response.ok) {
+                  throw new Error("API spec not found");
+                }
+                return response.text();
+              })
+              .then(spec => {
+                console.log("✅ API spec loaded successfully");
+                // Reload the page to retry
+                location.reload();
+              })
+              .catch(error => {
+                console.error("❌ Failed to load API spec:", error);
+                document.body.innerHTML = `
+                  <div style="padding: 2rem; text-align: center; font-family: sans-serif;">
+                    <h1>📚 Geocoding API Documentation</h1>
+                    <p>Unable to load API documentation. Please ensure the API server is running.</p>
+                    <p><strong>Try:</strong></p>
+                    <ul style="text-align: left; display: inline-block;">
+                      <li>Start the API: <code>make dev</code></li>
+                      <li>Check the API spec: <a href="/api-docs.yaml">/api-docs.yaml</a></li>
+                      <li>Test endpoint: <a href="/api-docs-test">/api-docs-test</a></li>
+                    </ul>
+                    <p><a href="/">🔄 Retry</a></p>
+                  </div>
+                `;
+              });
+          }
+        }, 2000);
+      });
+    </script>
+  </body>
+</html>
