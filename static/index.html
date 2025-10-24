@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoCode API - Professional US ZIP Code Data Service</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <h1 class="text-2xl font-bold text-blue-600">🌍 GeoCode API</h1>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="/docs" class="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">
+                        <i class="fas fa-book mr-2"></i>Documentation
+                    </a>
+                    <a href="/auth/signin" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
+                        Sign In
+                    </a>
+                    <a href="/auth/signup" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium">
+                        Get Started
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <div class="bg-gradient-to-r from-blue-600 to-purple-600 text-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24">
+            <div class="text-center">
+                <h1 class="text-4xl md:text-6xl font-bold mb-6">
+                    Professional ZIP Code Data API
+                </h1>
+                <p class="text-xl md:text-2xl mb-8 text-blue-100 max-w-3xl mx-auto">
+                    Get accurate US ZIP code data, calculate distances, and power your location-based applications with our fast, reliable API.
+                </p>
+                <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                    <a href="/auth/signup" class="bg-white text-blue-600 px-8 py-3 rounded-lg text-lg font-semibold hover:bg-gray-100 transition">
+                        Start Free Trial
+                    </a>
+                    <a href="/docs" class="border-2 border-white text-white px-8 py-3 rounded-lg text-lg font-semibold hover:bg-white hover:text-blue-600 transition">
+                        View Documentation
+                    </a>
+                </div>
+                <p class="mt-4 text-blue-200">✨ 1,000 free API calls per month • No credit card required</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Features Section -->
+    <div class="py-20 bg-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Powerful ZIP Code Features</h2>
+                <p class="text-xl text-gray-600 max-w-2xl mx-auto">Everything you need to build location-aware applications</p>
+            </div>
+            
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
+                <div class="text-center p-6 rounded-lg border hover:shadow-lg transition">
+                    <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-map-marker-alt text-2xl text-blue-600"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">ZIP Code Lookup</h3>
+                    <p class="text-gray-600">Get detailed information for any US ZIP code including city, state, county, and coordinates.</p>
+                </div>
+                
+                <div class="text-center p-6 rounded-lg border hover:shadow-lg transition">
+                    <div class="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-ruler text-2xl text-green-600"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Distance Calculation</h3>
+                    <p class="text-gray-600">Calculate accurate distances between ZIP codes using the Haversine formula.</p>
+                </div>
+                
+                <div class="text-center p-6 rounded-lg border hover:shadow-lg transition">
+                    <div class="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-search text-2xl text-purple-600"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Smart Search</h3>
+                    <p class="text-gray-600">Search ZIP codes by city, state, or county with flexible filtering options.</p>
+                </div>
+                
+                <div class="text-center p-6 rounded-lg border hover:shadow-lg transition">
+                    <div class="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-compass text-2xl text-orange-600"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Proximity Search</h3>
+                    <p class="text-gray-600">Find ZIP codes within a specific radius or check if locations are nearby.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pricing Section -->
+    <div class="py-20 bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Simple, Transparent Pricing</h2>
+                <p class="text-xl text-gray-600">Choose the plan that fits your needs</p>
+            </div>
+            
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <!-- Free Plan -->
+                <div class="bg-white rounded-lg shadow-sm border p-6">
+                    <h3 class="text-xl font-semibold mb-2">Free</h3>
+                    <div class="text-3xl font-bold mb-4">$0<span class="text-lg text-gray-600">/month</span></div>
+                    <ul class="space-y-2 mb-6">
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>1,000 requests/month</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>ZIP code lookup</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>Search functionality</li>
+                        <li class="flex items-center"><i class="fas fa-times text-gray-400 mr-2"></i>Distance calculations</li>
+                    </ul>
+                    <a href="/auth/signup" class="w-full bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded text-center block">Get Started</a>
+                </div>
+                
+                <!-- Starter Plan -->
+                <div class="bg-white rounded-lg shadow-sm border p-6">
+                    <h3 class="text-xl font-semibold mb-2">Starter</h3>
+                    <div class="text-3xl font-bold mb-4">$10<span class="text-lg text-gray-600">/month</span></div>
+                    <ul class="space-y-2 mb-6">
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>10,000 requests/month</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>All lookup features</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>Distance calculations</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>Email support</li>
+                    </ul>
+                    <a href="/auth/signup" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded text-center block">Choose Starter</a>
+                </div>
+                
+                <!-- Pro Plan -->
+                <div class="bg-white rounded-lg shadow-lg border-2 border-blue-500 p-6 relative">
+                    <div class="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white px-3 py-1 rounded-full text-sm">Popular</div>
+                    <h3 class="text-xl font-semibold mb-2">Pro</h3>
+                    <div class="text-3xl font-bold mb-4">$80<span class="text-lg text-gray-600">/month</span></div>
+                    <ul class="space-y-2 mb-6">
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>100,000 requests/month</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>All features</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>Bulk operations</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>Priority support</li>
+                    </ul>
+                    <a href="/auth/signup" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded text-center block">Choose Pro</a>
+                </div>
+                
+                <!-- Enterprise Plan -->
+                <div class="bg-white rounded-lg shadow-sm border p-6">
+                    <h3 class="text-xl font-semibold mb-2">Enterprise</h3>
+                    <div class="text-3xl font-bold mb-4">$800<span class="text-lg text-gray-600">/month</span></div>
+                    <ul class="space-y-2 mb-6">
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>1,000,000 requests/month</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>Custom integrations</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>Dedicated support</li>
+                        <li class="flex items-center"><i class="fas fa-check text-green-500 mr-2"></i>SLA guarantee</li>
+                    </ul>
+                    <a href="/auth/signup" class="w-full bg-purple-600 hover:bg-purple-700 text-white py-2 px-4 rounded text-center block">Contact Sales</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Code Example Section -->
+    <div class="py-20 bg-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">Simple to Integrate</h2>
+                <p class="text-xl text-gray-600">Get started with just a few lines of code</p>
+            </div>
+            
+            <div class="bg-gray-900 rounded-lg p-6 text-green-400 font-mono text-sm overflow-x-auto">
+                <div class="mb-4 text-gray-400"># Get ZIP code information</div>
+                <div class="mb-2">curl -H "Authorization: Bearer your-api-key" \</div>
+                <div class="mb-4">  "https://geocode-api.com/api/v1/geocode/10001"</div>
+                
+                <div class="mb-4 text-gray-400"># Calculate distance between ZIP codes</div>
+                <div class="mb-2">curl -H "Authorization: Bearer your-api-key" \</div>
+                <div class="mb-4">  "https://geocode-api.com/api/v1/distance/10001/10002"</div>
+                
+                <div class="mb-4 text-gray-400"># Search ZIP codes by city</div>
+                <div class="mb-2">curl -H "Authorization: Bearer your-api-key" \</div>
+                <div>  "https://geocode-api.com/api/v1/search?city=New+York&state=NY"</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 text-white py-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid md:grid-cols-4 gap-8">
+                <div>
+                    <h3 class="text-xl font-bold mb-4">🌍 GeoCode API</h3>
+                    <p class="text-gray-400">Professional ZIP code data service for developers and businesses.</p>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Product</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="/docs" class="hover:text-white">Documentation</a></li>
+                        <li><a href="/auth/signin" class="hover:text-white">API Keys</a></li>
+                        <li><a href="#pricing" class="hover:text-white">Pricing</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Support</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="#" class="hover:text-white">Help Center</a></li>
+                        <li><a href="#" class="hover:text-white">Contact Us</a></li>
+                        <li><a href="#" class="hover:text-white">Status Page</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Company</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="#" class="hover:text-white">About</a></li>
+                        <li><a href="#" class="hover:text-white">Privacy</a></li>
+                        <li><a href="#" class="hover:text-white">Terms</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="border-t border-gray-800 mt-8 pt-8 text-center text-gray-400">
+                <p>&copy; 2025 GeoCode API. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

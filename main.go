@@ -7,11 +7,12 @@ import (
 
 	"geocoding-api/database"
 	"geocoding-api/handlers"
+	"geocoding-api/middleware"
 	"geocoding-api/services"
 
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	echomiddleware "github.com/labstack/echo/v4/middleware"
 )
 
 func main() {
@@ -41,15 +42,31 @@ func main() {
 	e := echo.New()
 
 	// Middleware
-	e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
-	e.Use(middleware.CORS())
+	e.Use(echomiddleware.Logger())
+	e.Use(echomiddleware.Recover())
+	e.Use(echomiddleware.CORS())
 
 	// Add request ID middleware for tracing
-	e.Use(middleware.RequestID())
+	e.Use(echomiddleware.RequestID())
 
+	// Static files for web interface
+	e.Static("/static", "static")
+	
+	// Web interface routes
+	e.GET("/", func(c echo.Context) error {
+		return c.File("static/index.html")
+	})
+	e.GET("/auth/signin", func(c echo.Context) error {
+		return c.File("static/signin.html")
+	})
+	e.GET("/auth/signup", func(c echo.Context) error {
+		return c.File("static/signup.html")
+	})
+	e.GET("/dashboard", func(c echo.Context) error {
+		return c.File("static/dashboard.html")
+	})
+	
 	// Documentation routes
-	e.GET("/", handlers.DocsRedirectHandler)
 	e.Static("/docs", "docs")
 	
 	// Serve OpenAPI spec in multiple formats
@@ -101,19 +118,38 @@ func main() {
 	// Routes
 	api := e.Group("/api/v1")
 	
-	// Health check endpoint
+	// Health check endpoint (no auth required)
 	api.GET("/health", handlers.HealthCheckHandler)
 	
+	// Authentication routes (no auth required)
+	auth := api.Group("/auth")
+	auth.POST("/register", handlers.RegisterHandler)
+	auth.POST("/login", handlers.LoginHandler)
+	auth.GET("/plans", handlers.GetPlansHandler)
+	
+	// User management routes (require user auth)
+	user := api.Group("/user")
+	user.Use(middleware.RequireUserAuth())
+	user.POST("/api-keys", handlers.CreateAPIKeyHandler)
+	user.GET("/api-keys", handlers.GetAPIKeysHandler)
+	user.DELETE("/api-keys/:id", handlers.DeleteAPIKeyHandler)
+	user.GET("/usage", handlers.GetUsageHandler)
+	
+	// Protected API endpoints (require API key)
+	protected := api.Group("")
+	protected.Use(middleware.APIKeyAuth())
+	protected.Use(middleware.UsageHeader())
+	
 	// Geocoding endpoints
-	api.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
-	api.GET("/search", handlers.SearchZipCodesHandler)
+	protected.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
+	protected.GET("/search", handlers.SearchZipCodesHandler)
 	
 	// Distance and proximity endpoints
-	api.GET("/distance/:from/:to", handlers.CalculateDistanceHandler)
-	api.GET("/nearby/:zipcode", handlers.FindNearbyZipCodesHandler)
-	api.GET("/proximity/:center/:target", handlers.CheckZipCodeProximityHandler)
+	protected.GET("/distance/:from/:to", handlers.CalculateDistanceHandler)
+	protected.GET("/nearby/:zipcode", handlers.FindNearbyZipCodesHandler)
+	protected.GET("/proximity/:center/:target", handlers.CheckZipCodeProximityHandler)
 	
-	// Admin endpoint for loading data (consider adding authentication in production)
+	// Admin endpoint for loading data (no auth for now, but could be protected)
 	api.POST("/admin/load-data", handlers.LoadDataHandler)
 
 	// Get port from environment variable or default to 8080

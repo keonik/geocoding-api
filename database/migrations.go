@@ -22,6 +22,24 @@ func RunMigrations() error {
 			Up:          createMigrationsTable,
 			Down:        dropMigrationsTable,
 		},
+		{
+			Version:     3,
+			Description: "Create authentication tables",
+			Up:          createAuthTables,
+			Down:        dropAuthTables,
+		},
+		{
+			Version:     4,
+			Description: "Add name and company fields to users table",
+			Up:          addUserFields,
+			Down:        removeUserFields,
+		},
+		{
+			Version:     5,
+			Description: "Add key_preview and expires_at to api_keys table",
+			Up:          addAPIKeyFields,
+			Down:        removeAPIKeyFields,
+		},
 	}
 
 	// Create migrations table if it doesn't exist
@@ -138,5 +156,169 @@ func isMigrationApplied(version int) (bool, error) {
 // markMigrationApplied marks a migration as applied
 func markMigrationApplied(version int, description string) error {
 	_, err := DB.Exec("INSERT INTO schema_migrations (version, description) VALUES ($1, $2)", version, description)
+	return err
+}
+
+// createAuthTables creates all authentication related tables
+func createAuthTables() error {
+	query := `
+	-- Users table
+	CREATE TABLE IF NOT EXISTS users (
+		id SERIAL PRIMARY KEY,
+		email VARCHAR(255) UNIQUE NOT NULL,
+		password_hash VARCHAR(255) NOT NULL,
+		plan_type VARCHAR(50) DEFAULT 'free' CHECK (plan_type IN ('free', 'basic', 'pro', 'enterprise')),
+		is_active BOOLEAN DEFAULT true,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- API Keys table
+	CREATE TABLE IF NOT EXISTS api_keys (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+		name VARCHAR(255) NOT NULL,
+		key_hash VARCHAR(255) NOT NULL UNIQUE,
+		permissions TEXT[], -- Array of permission strings
+		is_active BOOLEAN DEFAULT true,
+		last_used_at TIMESTAMP,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Usage Records table
+	CREATE TABLE IF NOT EXISTS usage_records (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+		api_key_id INTEGER REFERENCES api_keys(id) ON DELETE CASCADE,
+		endpoint VARCHAR(100) NOT NULL,
+		method VARCHAR(10) NOT NULL,
+		status_code INTEGER,
+		response_time_ms INTEGER,
+		ip_address INET,
+		user_agent TEXT,
+		billable BOOLEAN DEFAULT true,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Subscriptions table (for tracking billing periods and usage limits)
+	CREATE TABLE IF NOT EXISTS subscriptions (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+		plan_type VARCHAR(50) NOT NULL,
+		monthly_limit INTEGER NOT NULL,
+		current_usage INTEGER DEFAULT 0,
+		billing_period_start DATE NOT NULL,
+		billing_period_end DATE NOT NULL,
+		is_active BOOLEAN DEFAULT true,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Create indexes for performance
+	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+	CREATE INDEX IF NOT EXISTS idx_users_plan_type ON users(plan_type);
+	CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+	CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+	CREATE INDEX IF NOT EXISTS idx_usage_records_user_id ON usage_records(user_id);
+	CREATE INDEX IF NOT EXISTS idx_usage_records_api_key_id ON usage_records(api_key_id);
+	CREATE INDEX IF NOT EXISTS idx_usage_records_created_at ON usage_records(created_at);
+	CREATE INDEX IF NOT EXISTS idx_usage_records_endpoint ON usage_records(endpoint);
+	CREATE INDEX IF NOT EXISTS idx_usage_records_billable ON usage_records(billable);
+	CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id);
+	CREATE INDEX IF NOT EXISTS idx_subscriptions_billing_period ON subscriptions(billing_period_start, billing_period_end);
+
+	-- Create a function to update the updated_at timestamp
+	CREATE OR REPLACE FUNCTION update_updated_at_column()
+	RETURNS TRIGGER AS $$
+	BEGIN
+		NEW.updated_at = CURRENT_TIMESTAMP;
+		RETURN NEW;
+	END;
+	$$ language 'plpgsql';
+
+	-- Create triggers to automatically update the updated_at column
+	DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+	CREATE TRIGGER update_users_updated_at 
+		BEFORE UPDATE ON users 
+		FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+	DROP TRIGGER IF EXISTS update_api_keys_updated_at ON api_keys;
+	CREATE TRIGGER update_api_keys_updated_at 
+		BEFORE UPDATE ON api_keys 
+		FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+	DROP TRIGGER IF EXISTS update_subscriptions_updated_at ON subscriptions;
+	CREATE TRIGGER update_subscriptions_updated_at 
+		BEFORE UPDATE ON subscriptions 
+		FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// dropAuthTables drops all authentication related tables
+func dropAuthTables() error {
+	query := `
+	DROP TRIGGER IF EXISTS update_subscriptions_updated_at ON subscriptions;
+	DROP TRIGGER IF EXISTS update_api_keys_updated_at ON api_keys;
+	DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+	DROP FUNCTION IF EXISTS update_updated_at_column();
+	DROP TABLE IF EXISTS subscriptions;
+	DROP TABLE IF EXISTS usage_records;
+	DROP TABLE IF EXISTS api_keys;
+	DROP TABLE IF EXISTS users;
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// addUserFields adds name and company fields to users table
+func addUserFields() error {
+	query := `
+	ALTER TABLE users 
+	ADD COLUMN IF NOT EXISTS name VARCHAR(255),
+	ADD COLUMN IF NOT EXISTS company VARCHAR(255);
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// removeUserFields removes name and company fields from users table
+func removeUserFields() error {
+	query := `
+	ALTER TABLE users 
+	DROP COLUMN IF EXISTS name,
+	DROP COLUMN IF EXISTS company;
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// addAPIKeyFields adds key_preview and expires_at fields to api_keys table
+func addAPIKeyFields() error {
+	query := `
+	ALTER TABLE api_keys 
+	ADD COLUMN IF NOT EXISTS key_preview VARCHAR(50),
+	ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// removeAPIKeyFields removes key_preview and expires_at fields from api_keys table
+func removeAPIKeyFields() error {
+	query := `
+	ALTER TABLE api_keys 
+	DROP COLUMN IF EXISTS key_preview,
+	DROP COLUMN IF EXISTS expires_at;
+	`
+	
+	_, err := DB.Exec(query)
 	return err
 }

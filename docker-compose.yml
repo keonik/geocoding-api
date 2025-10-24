@@ -2,43 +2,36 @@ version: "3.8"
 
 services:
   postgres:
-    image: postgres:17-alpine
+    build:
+      context: database
+      dockerfile: Dockerfile
     container_name: geocoding_db
     environment:
-      POSTGRES_DB: geocoding_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${DB_NAME:-geocoding_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     ports:
-      - "8954:5432"
+      - "${DB_PORT:-8954}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - geocoding_network
-
   geocoding-api:
     build: .
     container_name: geocoding_api
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_NAME: geocoding_db
+      DB_HOST: ${DB_HOST:-postgres}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_NAME: ${DB_NAME:-geocoding_db}
       DB_SSLMODE: disable
       PORT: 8080
     ports:
       - "8080:8080"
     depends_on:
       - postgres
-    networks:
-      - geocoding_network
     volumes:
       - ./georef-united-states-of-america-zc-point.csv:/app/georef-united-states-of-america-zc-point.csv
 
 volumes:
   postgres_data:
-
-networks:
-  geocoding_network:
-    driver: bridge
