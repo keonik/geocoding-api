@@ -27,8 +27,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    networks:
-      - geocoding_network
 
   geocoding-api:
     build:
@@ -80,13 +78,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    networks:
-      - geocoding_network
 
 volumes:
   postgres_data:
     driver: local
-
-networks:
-  geocoding_network:
-    driver: bridge
