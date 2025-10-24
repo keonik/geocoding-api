@@ -46,7 +46,7 @@ type UsageRecord struct {
 	ResponseTime int      `json:"response_time_ms" db:"response_time_ms"` // milliseconds
 	IPAddress   string    `json:"ip_address" db:"ip_address"`
 	UserAgent   string    `json:"user_agent" db:"user_agent"`
-	Timestamp   time.Time `json:"timestamp" db:"timestamp"`
+	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	Billable    bool      `json:"billable" db:"billable"` // false for errors, over-limit calls
 }
 

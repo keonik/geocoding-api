@@ -1,8 +1,12 @@
-FROM chainguard/go:latest AS builder
+# Build stage
+FROM golang:1.21-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy go mod and sum files
+# Copy go mod files first for better caching
 COPY go.mod go.sum ./
 
 # Download dependencies
@@ -12,21 +16,47 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags='-w -s -extldflags "-static"' \
+    -o main .
 
-# Final stage
-FROM chainguard/glibc-dynamic
+# Production stage
+FROM alpine:latest
 
-WORKDIR /root/
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    wget \
+    curl
 
-# Copy the binary from builder
-COPY --from=builder /app/main .
+# Create non-root user
+RUN addgroup -g 1001 -S appgroup && \
+    adduser -u 1001 -S appuser -G appgroup
 
-# Copy CSV file
-COPY --from=builder /app/georef-united-states-of-america-zc-point.csv .
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/main ./main
+
+# Copy necessary files
+COPY --from=builder /app/georef-united-states-of-america-zc-point.csv ./georef-united-states-of-america-zc-point.csv
+COPY --from=builder /app/static ./static
+COPY --from=builder /app/docs ./docs
+COPY --from=builder /app/api-docs.yaml ./api-docs.yaml
+
+# Set ownership
+RUN chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
 
 # Expose port
 EXPOSE 8080
 
-# Run the binary
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/v1/health || exit 1
+
+# Run the application
 CMD ["./main"]

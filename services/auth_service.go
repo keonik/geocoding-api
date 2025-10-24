@@ -286,10 +286,19 @@ func (a *AuthService) DeleteAPIKey(userID, keyID int) error {
 
 // RecordUsage logs an API call for billing and analytics
 func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string, statusCode, responseTime int, ipAddress, userAgent string, billable bool) error {
+	log.Printf("Recording usage: UserID=%d, APIKeyID=%d, Endpoint=%s, Method=%s, Billable=%t", 
+		userID, apiKeyID, endpoint, method, billable)
+	
 	_, err := database.DB.Exec(`
 		INSERT INTO usage_records (user_id, api_key_id, endpoint, method, status_code, response_time_ms, ip_address, user_agent, billable, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 	`, userID, apiKeyID, endpoint, method, statusCode, responseTime, ipAddress, userAgent, billable)
+	
+	if err != nil {
+		log.Printf("Failed to record usage: %v", err)
+	} else {
+		log.Printf("Successfully recorded usage for user %d", userID)
+	}
 	
 	return err
 }
@@ -331,7 +340,7 @@ func (as *AuthService) GetUsageSummary(userID int, month string) (*models.UsageS
 			COUNT(*) as total_calls,
 			COUNT(*) FILTER (WHERE billable = true) as billable_calls
 		FROM usage_records 
-		WHERE user_id = $1 AND to_char(timestamp, 'YYYY-MM') = $2
+		WHERE user_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
 	`, userID, month).Scan(&summary.TotalCalls, &summary.BillableCalls)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get usage summary: %w", err)
@@ -352,7 +361,7 @@ func (as *AuthService) GetUsageSummary(userID int, month string) (*models.UsageS
 	rows, err := database.DB.Query(`
 		SELECT endpoint, COUNT(*) 
 		FROM usage_records 
-		WHERE user_id = $1 AND to_char(timestamp, 'YYYY-MM') = $2
+		WHERE user_id = $1 AND to_char(created_at, 'YYYY-MM') = $2
 		GROUP BY endpoint
 	`, userID, month)
 	if err != nil {

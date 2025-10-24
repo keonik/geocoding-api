@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Development files
+.vscode
+.idea
+*.log
+server.log
+
+# Build artifacts
+main
+*.exe
+
+# Dependencies (will be downloaded in container)
+vendor/
+
+# Test files
+*_test.go
+
+# Docker files (don't need in context)
+docker-compose.yml
+docker-compose.*.yml
+Dockerfile
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Node modules (if any)
+node_modules/
+
+# Air (hot reload) files
+.air.toml
+tmp/

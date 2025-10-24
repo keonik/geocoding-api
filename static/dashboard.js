@@ -96,7 +96,7 @@ function setupEventListeners() {
 
 async function loadAPIKeys() {
     try {
-        // Load usage stats
+        // Load usage stats (always current month)
         const usageResponse = await fetch('/api/v1/user/usage', {
             headers: {
                 'X-User-ID': currentUser.id.toString()
@@ -106,6 +106,8 @@ async function loadAPIKeys() {
         if (usageResponse.ok) {
             const usageData = await usageResponse.json();
             updateUsageStats(usageData.data);
+        } else {
+            console.error('Failed to load usage stats:', await usageResponse.text());
         }
         
         // Load API keys

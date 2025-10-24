@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"geocoding-api/services"
 
@@ -189,7 +190,8 @@ func GetUsageHandler(c echo.Context) error {
 		})
 	}
 
-	month := c.QueryParam("month") // Format: YYYY-MM
+	// Always use current month for security and data integrity
+	month := time.Now().Format("2006-01")
 
 	summary, err := services.Auth.GetUsageSummary(userID, month)
 	if err != nil {

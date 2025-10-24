@@ -4,22 +4,29 @@ info:
   description: |
     A fast and comprehensive REST API for US ZIP code geocoding and location lookup.
     
-    ## Features
+    ## 🔐 Authentication Required
+    
+    Most endpoints require an API key. To get started:
+    
+    1. **Register**: Visit the web interface and create an account
+    2. **Get API Key**: Create an API key in your dashboard
+    3. **Authenticate**: Add your API key to the `X-API-Key` header
+    4. **Test**: Use the "Authorize" button below to set your API key for all requests
+    
+    ## ✨ Features
     - **Lightning Fast**: PostgreSQL-backed with optimized indexes
     - **Comprehensive Data**: Population, density, counties, coordinates, and more
     - **Flexible Search**: Lookup by ZIP code or search by city/state
     - **Rich Metadata**: Timezone, county weights, military/imprecise flags
+    - **Usage Tracking**: Monitor your API usage and billing
     
-    ## Data Source
+    ## 📊 Data Source
     Built on comprehensive US ZIP code data from GeoNames, including:
     - 33,000+ ZIP codes across all US states
     - Geographic coordinates (latitude/longitude)
     - Population and density statistics
     - County and administrative boundary information
     - Timezone data for accurate time-based operations
-    
-    ## Rate Limits
-    Currently no rate limits are enforced, but consider implementing them for production use.
     
   version: 1.0.0
   contact:
@@ -70,7 +77,11 @@ paths:
         
         Returns detailed location data including coordinates, population statistics, 
         administrative boundaries, and timezone information.
+        
+        **Authentication Required**: This endpoint requires a valid API key in the X-API-Key header.
       operationId: getZipCode
+      security:
+        - ApiKeyAuth: []
       tags:
         - Geocoding
       parameters:
@@ -148,6 +159,8 @@ paths:
         Supports partial city name matching and returns multiple results.
         Useful for autocomplete functionality or when exact ZIP code is unknown.
       operationId: searchZipCodes
+      security:
+        - ApiKeyAuth: []
       tags:
         - Search
       parameters:
@@ -225,6 +238,8 @@ paths:
         Returns distance in both miles and kilometers for accurate geographic calculations.
         Perfect for logistics, delivery radius validation, and distance-based searches.
       operationId: calculateDistance
+      security:
+        - ApiKeyAuth: []
       tags:
         - Distance
       parameters:
@@ -281,6 +296,8 @@ paths:
         Returns ZIP codes sorted by distance with complete location data.
         Ideal for location-based services, delivery zones, and proximity marketing.
       operationId: findNearbyZipCodes
+      security:
+        - ApiKeyAuth: []
       tags:
         - Distance
       parameters:
@@ -365,6 +382,8 @@ paths:
         Returns boolean result with actual distance for precise proximity checking.
         Useful for validation, filtering, and business rule enforcement.
       operationId: checkZipCodeProximity
+      security:
+        - ApiKeyAuth: []
       tags:
         - Distance
       parameters:
@@ -466,6 +485,19 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
 components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key for authentication. Get your API key by:
+        1. Register/login at the web interface
+        2. Create an API key in your dashboard  
+        3. Copy the key and add it to this header
+        
+        Example: X-API-Key: your-api-key-here
+  
   schemas:
     ZipCode:
       type: object
