@@ -20,9 +20,13 @@ func InitDB() error {
 	password := getEnv("DB_PASSWORD", "postgres")
 	dbname := getEnv("DB_NAME", "geocoding_db")
 	sslmode := getEnv("DB_SSLMODE", "disable")
-
+	
 	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		host, port, user, password, dbname, sslmode)
+	
+	// Print database URL (with masked password for security)
+	maskedUrl := fmt.Sprintf("postgres://%s:***@%s:%s/%s?sslmode=%s", user, host, port, dbname, sslmode)
+	fmt.Printf("Database URL: %s\n", maskedUrl)
 
 	var err error
 	DB, err = sql.Open("postgres", psqlInfo)

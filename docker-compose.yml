@@ -40,7 +40,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-secure_password_change_me}
       DB_NAME: ${DB_NAME:-geocoding_db}
       DB_SSLMODE: ${DB_SSLMODE:-disable}
-      DATABASE_URL: postgres://${DB_USER:-geocoding_user}:${DB_PASSWORD:-secure_password_change_me}@postgres:5432/${DB_NAME:-geocoding_db}?sslmode=${DB_SSLMODE:-disable}
+      DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=${DB_SSLMODE}
 
       # Application Configuration
       PORT: ${API_PORT:-8080}
