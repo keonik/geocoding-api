@@ -43,7 +43,7 @@ func main() {
 	// Middleware
 	e.Use(echomiddleware.Logger())
 	e.Use(echomiddleware.Recover())
-	e.Use(echomiddleware.CORS())
+	// e.Use(echomiddleware.CORS())
 
 	// Add request ID middleware for tracing
 	e.Use(echomiddleware.RequestID())
