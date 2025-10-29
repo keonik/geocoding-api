@@ -15,8 +15,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./georef-united-states-of-america-zc-point.csv:/docker-entrypoint-initdb.d/georef-united-states-of-america-zc-point.csv:ro
-    ports:
-      - "${DB_EXTERNAL_PORT:-5432}:5432"
     healthcheck:
       test:
         [
