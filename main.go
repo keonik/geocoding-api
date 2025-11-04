@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"geocoding-api/database"
 	"geocoding-api/handlers"
@@ -20,6 +21,17 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using system environment variables")
 	}
+	
+	// Warn about insecure defaults in production
+	if os.Getenv("GO_ENV") == "production" {
+		if os.Getenv("JWT_SECRET") == "change_this_in_production" || os.Getenv("JWT_SECRET") == "" {
+			log.Println("WARNING: Using default JWT_SECRET in production! Set a secure value.")
+		}
+		if os.Getenv("API_SECRET_KEY") == "change_this_in_production" || os.Getenv("API_SECRET_KEY") == "" {
+			log.Println("WARNING: Using default API_SECRET_KEY in production! Set a secure value.")
+		}
+	}
+	
 	// Initialize database connection
 	if err := database.InitDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
@@ -43,7 +55,49 @@ func main() {
 	// Middleware
 	e.Use(echomiddleware.Logger())
 	e.Use(echomiddleware.Recover())
-	// e.Use(echomiddleware.CORS())
+	
+	// Configure CORS based on environment
+	var corsOrigins []string
+	
+	// Check for custom CORS origins from environment
+	if customOrigins := os.Getenv("CORS_ORIGINS"); customOrigins != "" {
+		corsOrigins = strings.Split(customOrigins, ",")
+		for i, origin := range corsOrigins {
+			corsOrigins[i] = strings.TrimSpace(origin)
+		}
+		log.Printf("Using custom CORS origins: %v", corsOrigins)
+	} else if os.Getenv("GO_ENV") == "production" {
+		// Production defaults
+		corsOrigins = []string{
+			"https://geocode.jfay.dev",
+			"https://www.geocode.jfay.dev",
+		}
+		log.Printf("Using production CORS origins: %v", corsOrigins)
+	} else {
+		// Development mode - allow localhost variants
+		corsOrigins = []string{
+			"http://localhost:8080",
+			"http://127.0.0.1:8080",
+			"http://localhost:3000", // Common dev ports
+			"http://localhost:3001",
+		}
+		log.Printf("Using development CORS origins: %v", corsOrigins)
+	}
+	
+	e.Use(echomiddleware.CORSWithConfig(echomiddleware.CORSConfig{
+		AllowOrigins: corsOrigins,
+		AllowMethods: []string{echo.GET, echo.POST, echo.PUT, echo.DELETE, echo.OPTIONS},
+		AllowHeaders: []string{
+			echo.HeaderOrigin,
+			echo.HeaderContentType,
+			echo.HeaderAccept,
+			echo.HeaderAuthorization,
+			"X-API-Key",
+			"X-User-ID",
+		},
+		AllowCredentials: true,
+		MaxAge:          300, // 5 minutes
+	}))
 
 	// Add request ID middleware for tracing
 	e.Use(echomiddleware.RequestID())
