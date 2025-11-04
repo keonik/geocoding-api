@@ -79,13 +79,6 @@ services:
       retries: 3
       start_period: 30s
 
-    networks:
-      - geocode
-
 volumes:
   postgres_data:
     driver: local
-
-networks:
-  geocode:
-    driver: bridge

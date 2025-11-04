@@ -40,7 +40,7 @@ WORKDIR /app
 COPY --from=builder /app/main ./main
 
 # Copy necessary files
-COPY --from=builder /app/georef-united-states-of-america-zc-point.csv ./georef-united-states-of-america-zc-point.csv
+COPY --from=builder /app/georef-united-states-of-america-zc-point.csv .
 COPY --from=builder /app/static ./static
 COPY --from=builder /app/docs ./docs
 COPY --from=builder /app/api-docs.yaml ./api-docs.yaml
