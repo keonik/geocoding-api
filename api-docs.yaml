@@ -10,7 +10,9 @@ info:
     
     1. **Register**: Visit the web interface and create an account
     2. **Get API Key**: Create an API key in your dashboard
-    3. **Authenticate**: Add your API key to the `Authorization: Bearer your-api-key` header
+    3. **Authenticate**: Use either authentication method:
+       - `Authorization: Bearer your-api-key` header, OR
+       - `X-API-Key: your-api-key` header
     4. **Test**: Use the "Authorize" button below to set your API key for all requests
     
     ## ✨ Features
@@ -91,7 +93,7 @@ paths:
         Returns detailed location data including coordinates, population statistics, 
         administrative boundaries, and timezone information.
         
-        **Authentication Required**: This endpoint requires a valid API key in the Authorization header as a Bearer token.
+        **Authentication Required**: This endpoint requires a valid API key using either `X-API-Key` header or `Authorization: Bearer` format.
       operationId: getZipCode
       security:
         - ApiKeyAuth: []
@@ -1022,16 +1024,26 @@ paths:
 components:
   securitySchemes:
     ApiKeyAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: API Key
+      type: apiKey
+      in: header
+      name: X-API-Key
       description: |
-        API key authentication using Bearer token format. Get your API key by:
-        1. Register/login at the web interface
-        2. Create an API key in your dashboard  
-        3. Copy the key and use it as a Bearer token
+        API key authentication. Supports two methods:
         
-        Example: Authorization: Bearer your-api-key-here
+        **Method 1 - X-API-Key Header (Recommended):**
+        ```
+        X-API-Key: your-api-key-here
+        ```
+        
+        **Method 2 - Authorization Bearer:**
+        ```
+        Authorization: Bearer your-api-key-here
+        ```
+        
+        Get your API key by:
+        1. Register/login at the web interface
+        2. Create an API key in your dashboard
+        3. Use either authentication method above
   
   schemas:
     ZipCode:

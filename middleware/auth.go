@@ -37,25 +37,28 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				}
 			}
 
-			// Extract API key from Authorization header
-			authHeader := c.Request().Header.Get("Authorization")
-			if authHeader == "" {
+			// Extract API key from either X-API-Key or Authorization header
+			var apiKey string
+			
+			// First, try X-API-Key header
+			if xApiKey := c.Request().Header.Get("X-API-Key"); xApiKey != "" {
+				apiKey = xApiKey
+			} else if authHeader := c.Request().Header.Get("Authorization"); authHeader != "" {
+				// Parse Bearer token from Authorization header
+				parts := strings.SplitN(authHeader, " ", 2)
+				if len(parts) != 2 || parts[0] != "Bearer" {
+					return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
+						Success: false,
+						Error:   "Invalid authorization format. Use 'Authorization: Bearer your-api-key' or 'X-API-Key: your-api-key'",
+					})
+				}
+				apiKey = parts[1]
+			} else {
 				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
 					Success: false,
-					Error:   "API key required. Include 'Authorization: Bearer your-api-key' header",
+					Error:   "API key required. Include 'Authorization: Bearer your-api-key' or 'X-API-Key: your-api-key' header",
 				})
 			}
-
-			// Parse Bearer token
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) != 2 || parts[0] != "Bearer" {
-				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
-					Success: false,
-					Error:   "Invalid authorization format. Use 'Authorization: Bearer your-api-key'",
-				})
-			}
-
-			apiKey := parts[1]
 
 			// Start timing for usage recording
 			startTime := time.Now()
