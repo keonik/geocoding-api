@@ -45,15 +45,13 @@ COPY --from=builder /app/static ./static
 COPY --from=builder /app/docs ./docs
 COPY --from=builder /app/api-docs.yaml ./api-docs.yaml
 
-# Copy GeoJSON data temporarily (will be cleaned up after migration in production)
-COPY --from=builder /app/oh ./oh
-
-# Set ownership
-RUN chown -R appuser:appgroup /app
+# Create directories for downloaded data (with proper permissions)
+RUN mkdir -p /app/oh /app/cache && \
+    chown -R appuser:appgroup /app
 
 # Set environment variables for production
 ENV ENV=production
-ENV CLEANUP_GEOJSON=true
+ENV GO_ENV=production
 
 # Switch to non-root user
 USER appuser
