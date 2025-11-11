@@ -127,13 +127,12 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 		return 0, nil
 	}
 
-	// Prepare batch insert
+	// Prepare batch insert - using actual table schema from migration
 	stmt, err := database.DB.Prepare(`
 		INSERT INTO ohio_addresses (
-			county, street_number, street_name, city, state, zip_code, 
-			latitude, longitude, full_address, properties
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (county, latitude, longitude, full_address) DO NOTHING
+			hash, house_number, street, unit, city, district, region, postcode, county, geom
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ST_SetSRID(ST_MakePoint($10, $11), 4326))
+		ON CONFLICT (hash) DO NOTHING
 	`)
 	if err != nil {
 		return 0, fmt.Errorf("failed to prepare statement: %w", err)
@@ -154,41 +153,41 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 		longitude := feature.Geometry.Coordinates[0]
 		latitude := feature.Geometry.Coordinates[1]
 
-		// Extract address components with various possible field names
-		streetNumber := getStringProperty(props, "HOUSENUM", "HouseNum", "house_number", "housenumber")
+		// Extract address components with various possible field names from Ohio LBRS shapefiles
+		houseNumber := getStringProperty(props, "HOUSENUM", "HouseNum", "house_number", "housenumber")
 		streetName := getStringProperty(props, "ST_NAME", "StreetName", "street_name", "STREETNAME", "LSN")
+		unit := getStringProperty(props, "UNITNUM", "Unit", "unit", "UNIT")
 		city := getStringProperty(props, "USPS_CITY", "City", "city", "CITY", "MUNI")
-		state := getStringProperty(props, "STATE", "State", "state")
-		zipCode := getStringProperty(props, "ZIPCODE", "ZipCode", "zip_code", "zip")
-
-		// Build full address
-		fullAddress := buildFullAddress(streetNumber, streetName, city, state, zipCode)
-		if fullAddress == "" {
+		state := getStringProperty(props, "STATE", "State", "state", "REGION")
+		zipCode := getStringProperty(props, "ZIPCODE", "ZipCode", "zip_code", "POSTCODE", "postcode")
+		
+		// Generate hash for uniqueness (similar to what migration does)
+		hash := fmt.Sprintf("%s_%s_%s_%f_%f", county, houseNumber, streetName, latitude, longitude)
+		
+		// Skip if no meaningful address data
+		if houseNumber == "" && streetName == "" {
 			continue
 		}
 
-		// Convert properties to JSON for storage
-		propsJSON, err := json.Marshal(props)
-		if err != nil {
-			log.Printf("Warning: Failed to marshal properties: %v", err)
-			propsJSON = []byte("{}")
-		}
-
-		// Insert record
+		// Insert record - matching migration schema
 		_, err = stmt.Exec(
-			strings.Title(county),
-			streetNumber,
+			hash,
+			houseNumber,
 			streetName,
+			unit,
 			city,
+			"", // district - not in Ohio LBRS data
 			state,
 			zipCode,
+			strings.Title(county),
+			longitude, // PostGIS point needs lon, lat
 			latitude,
-			longitude,
-			fullAddress,
-			string(propsJSON),
 		)
 		if err != nil {
-			log.Printf("Warning: Failed to insert record for %s: %v", fullAddress, err)
+			// Skip duplicate key errors silently
+			if !strings.Contains(err.Error(), "duplicate key") {
+				log.Printf("Warning: Failed to insert record for %s %s: %v", houseNumber, streetName, err)
+			}
 			continue
 		}
 
@@ -213,29 +212,4 @@ func getStringProperty(props map[string]interface{}, keys ...string) string {
 		}
 	}
 	return ""
-}
-
-// buildFullAddress constructs a full address string from components
-func buildFullAddress(streetNumber, streetName, city, state, zipCode string) string {
-	parts := []string{}
-	
-	if streetNumber != "" && streetName != "" {
-		parts = append(parts, streetNumber+" "+streetName)
-	} else if streetName != "" {
-		parts = append(parts, streetName)
-	}
-	
-	if city != "" {
-		parts = append(parts, city)
-	}
-	
-	if state != "" {
-		parts = append(parts, state)
-	}
-	
-	if zipCode != "" {
-		parts = append(parts, zipCode)
-	}
-	
-	return strings.Join(parts, ", ")
 }
