@@ -10,7 +10,7 @@ info:
     
     1. **Register**: Visit the web interface and create an account
     2. **Get API Key**: Create an API key in your dashboard
-    3. **Authenticate**: Add your API key to the `X-API-Key` header
+    3. **Authenticate**: Add your API key to the `Authorization: Bearer your-api-key` header
     4. **Test**: Use the "Authorize" button below to set your API key for all requests
     
     ## ✨ Features
@@ -91,7 +91,7 @@ paths:
         Returns detailed location data including coordinates, population statistics, 
         administrative boundaries, and timezone information.
         
-        **Authentication Required**: This endpoint requires a valid API key in the X-API-Key header.
+        **Authentication Required**: This endpoint requires a valid API key in the Authorization header as a Bearer token.
       operationId: getZipCode
       security:
         - ApiKeyAuth: []
@@ -931,16 +931,16 @@ paths:
 components:
   securitySchemes:
     ApiKeyAuth:
-      type: apiKey
-      in: header
-      name: X-API-Key
+      type: http
+      scheme: bearer
+      bearerFormat: API Key
       description: |
-        API key for authentication. Get your API key by:
+        API key authentication using Bearer token format. Get your API key by:
         1. Register/login at the web interface
         2. Create an API key in your dashboard  
-        3. Copy the key and add it to this header
+        3. Copy the key and use it as a Bearer token
         
-        Example: X-API-Key: your-api-key-here
+        Example: Authorization: Bearer your-api-key-here
   
   schemas:
     ZipCode:
