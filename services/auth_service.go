@@ -303,6 +303,175 @@ func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string
 	return err
 }
 
+// IsUserAdmin checks if a user has admin privileges
+func (as *AuthService) IsUserAdmin(userID int) bool {
+	var isAdmin bool
+	err := database.DB.QueryRow("SELECT is_admin FROM users WHERE id = $1", userID).Scan(&isAdmin)
+	if err != nil {
+		log.Printf("Error checking admin status: %v", err)
+		return false
+	}
+	return isAdmin
+}
+
+// GetAdminStats returns statistics for admin dashboard
+func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
+	stats := make(map[string]interface{})
+	
+	// Total users
+	var totalUsers int
+	err := database.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
+	if err != nil {
+		return nil, err
+	}
+	stats["total_users"] = totalUsers
+	
+	// Active API keys
+	var activeKeys int
+	err = database.DB.QueryRow("SELECT COUNT(*) FROM api_keys WHERE is_active = true").Scan(&activeKeys)
+	if err != nil {
+		return nil, err
+	}
+	stats["active_keys"] = activeKeys
+	
+	// API calls today
+	var callsToday int
+	err = database.DB.QueryRow(`
+		SELECT COUNT(*) FROM usage_records 
+		WHERE DATE(created_at) = CURRENT_DATE
+	`).Scan(&callsToday)
+	if err != nil {
+		return nil, err
+	}
+	stats["calls_today"] = callsToday
+	
+	// ZIP codes count
+	var zipCodes int
+	err = database.DB.QueryRow("SELECT COUNT(*) FROM zip_codes").Scan(&zipCodes)
+	if err != nil {
+		return nil, err
+	}
+	stats["zip_codes"] = zipCodes
+	
+	return stats, nil
+}
+
+// GetAllUsers returns all users for admin dashboard
+func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
+	rows, err := database.DB.Query(`
+		SELECT id, email, name, company, plan_type, is_active, is_admin, created_at
+		FROM users 
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var users []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var email, planType string
+		var name, company *string
+		var isActive, isAdmin bool
+		var createdAt time.Time
+		
+		err := rows.Scan(&id, &email, &name, &company, &planType, &isActive, &isAdmin, &createdAt)
+		if err != nil {
+			return nil, err
+		}
+		
+		user := map[string]interface{}{
+			"id":         id,
+			"email":      email,
+			"name":       name,
+			"company":    company,
+			"plan_type":  planType,
+			"is_active":  isActive,
+			"is_admin":   isAdmin,
+			"created_at": createdAt,
+		}
+		users = append(users, user)
+	}
+	
+	return users, nil
+}
+
+// GetAllAPIKeys returns all API keys for admin dashboard
+func (as *AuthService) GetAllAPIKeys() ([]map[string]interface{}, error) {
+	rows, err := database.DB.Query(`
+		SELECT ak.id, u.email, ak.name, ak.key_preview, ak.is_active, ak.last_used_at, ak.created_at
+		FROM api_keys ak
+		JOIN users u ON ak.user_id = u.id
+		ORDER BY ak.created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	var apiKeys []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var userEmail, name, keyPreview string
+		var isActive bool
+		var lastUsedAt *time.Time
+		var createdAt time.Time
+		
+		err := rows.Scan(&id, &userEmail, &name, &keyPreview, &isActive, &lastUsedAt, &createdAt)
+		if err != nil {
+			return nil, err
+		}
+		
+		apiKey := map[string]interface{}{
+			"id":           id,
+			"user_email":   userEmail,
+			"name":         name,
+			"key_preview":  keyPreview,
+			"is_active":    isActive,
+			"last_used_at": lastUsedAt,
+			"created_at":   createdAt,
+		}
+		apiKeys = append(apiKeys, apiKey)
+	}
+	
+	return apiKeys, nil
+}
+
+// UpdateUserStatus updates a user's active status
+func (as *AuthService) UpdateUserStatus(userID int, isActive bool) error {
+	_, err := database.DB.Exec(`
+		UPDATE users SET is_active = $1, updated_at = CURRENT_TIMESTAMP 
+		WHERE id = $2
+	`, isActive, userID)
+	return err
+}
+
+// UpdateUserAdmin updates a user's admin status
+func (as *AuthService) UpdateUserAdmin(userID int, isAdmin bool) error {
+	_, err := database.DB.Exec(`
+		UPDATE users SET is_admin = $1, updated_at = CURRENT_TIMESTAMP 
+		WHERE id = $2
+	`, isAdmin, userID)
+	return err
+}
+
+// GetSystemStatus returns system health information
+func (as *AuthService) GetSystemStatus() (map[string]interface{}, error) {
+	status := make(map[string]interface{})
+	
+	// Check database connection
+	err := database.DB.Ping()
+	status["database_connected"] = err == nil
+	
+	// Check if migrations are current (simplified check)
+	var migrationCount int
+	err = database.DB.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
+	status["migrations_current"] = err == nil && migrationCount >= 7 // Expected number of migrations
+	
+	return status, nil
+}
+
 // CreateSubscription creates a subscription for a user
 func (as *AuthService) CreateSubscription(userID int, planType string) error {
 	plan, exists := models.PlanLimits[planType]

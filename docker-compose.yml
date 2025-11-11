@@ -15,9 +15,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./georef-united-states-of-america-zc-point.csv:/docker-entrypoint-initdb.d/georef-united-states-of-america-zc-point.csv:ro
-    # NOTE: Postgres port not exposed externally for security in production
-    # ports:
-    #   - "${DB_EXTERNAL_PORT:-5432}:5432"
+    # NOTE: Postgres port exposed for local development
+    ports:
+      - "${DB_EXTERNAL_PORT:-8954}:5432"
     healthcheck:
       test:
         [
@@ -50,7 +50,7 @@ services:
       # Application Configuration
       PORT: ${API_PORT:-8080}
       GO_ENV: ${GO_ENV:-production}
-      
+
       # CORS Configuration (Optional)
       CORS_ORIGINS: ${CORS_ORIGINS}
 

@@ -46,6 +46,12 @@ func RunMigrations() error {
 			Up:          updateSubscriptionsTable,
 			Down:        revertSubscriptionsTable,
 		},
+		{
+			Version:     7,
+			Description: "Add admin role to users table",
+			Up:          addAdminRole,
+			Down:        removeAdminRole,
+		},
 	}
 
 	// Create migrations table if it doesn't exist
@@ -388,6 +394,37 @@ func revertSubscriptionsTable() error {
 	DROP COLUMN IF EXISTS current_period_end,
 	DROP COLUMN IF EXISTS current_period_start,
 	DROP COLUMN IF EXISTS status;
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// addAdminRole adds is_admin column to users table
+func addAdminRole() error {
+	query := `
+	ALTER TABLE users 
+	ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
+
+	-- Create index for admin queries
+	CREATE INDEX IF NOT EXISTS idx_users_is_admin ON users(is_admin);
+	
+	-- Set first user as admin if no admins exist
+	UPDATE users 
+	SET is_admin = TRUE 
+	WHERE id = (SELECT MIN(id) FROM users) 
+	AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = TRUE);
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// removeAdminRole removes is_admin column from users table
+func removeAdminRole() error {
+	query := `
+	DROP INDEX IF EXISTS idx_users_is_admin;
+	ALTER TABLE users DROP COLUMN IF EXISTS is_admin;
 	`
 	
 	_, err := DB.Exec(query)

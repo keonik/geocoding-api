@@ -10,15 +10,16 @@ import (
 
 // User represents a registered API user
 type User struct {
-	ID          int       `json:"id" db:"id"`
-	Email       string    `json:"email" db:"email"`
-	Name        string    `json:"name" db:"name"`
-	Company     *string   `json:"company" db:"company"`
-	PasswordHash string   `json:"-" db:"password_hash"` // Never include in JSON
-	IsActive    bool      `json:"is_active" db:"is_active"`
-	PlanType    string    `json:"plan_type" db:"plan_type"` // free, starter, pro, enterprise
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	ID           int       `json:"id" db:"id"`
+	Email        string    `json:"email" db:"email"`
+	PasswordHash string    `json:"-" db:"password_hash"` // Hidden from JSON
+	Name         string    `json:"name" db:"name"`
+	Company      string    `json:"company" db:"company"`
+	PlanType     string    `json:"plan_type" db:"plan_type"`
+	IsActive     bool      `json:"is_active" db:"is_active"`
+	IsAdmin      bool      `json:"is_admin" db:"is_admin"`
+	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // APIKey represents an API key for a user

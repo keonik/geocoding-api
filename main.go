@@ -118,6 +118,9 @@ func main() {
 	e.GET("/dashboard", func(c echo.Context) error {
 		return c.File("static/dashboard.html")
 	})
+	e.GET("/admin", func(c echo.Context) error {
+		return c.File("static/admin.html")
+	})
 	
 	// Documentation routes
 	e.Static("/docs", "docs")
@@ -202,8 +205,16 @@ func main() {
 	protected.GET("/nearby/:zipcode", handlers.FindNearbyZipCodesHandler)
 	protected.GET("/proximity/:center/:target", handlers.CheckZipCodeProximityHandler)
 	
-	// Admin endpoint for loading data (no auth for now, but could be protected)
-	api.POST("/admin/load-data", handlers.LoadDataHandler)
+	// Admin routes (require admin auth)
+	admin := api.Group("/admin")
+	admin.Use(middleware.RequireAdminAuth())
+	admin.POST("/load-data", handlers.LoadDataHandler)
+	admin.GET("/stats", handlers.GetAdminStatsHandler)
+	admin.GET("/users", handlers.GetAllUsersHandler)
+	admin.PUT("/users/:id/status", handlers.UpdateUserStatusHandler)
+	admin.PUT("/users/:id/admin", handlers.UpdateUserAdminHandler)
+	admin.GET("/api-keys", handlers.GetAllAPIKeysHandler)
+	admin.GET("/system-status", handlers.GetSystemStatusHandler)
 
 	// Get port from environment variable or default to 8080
 	port := os.Getenv("PORT")

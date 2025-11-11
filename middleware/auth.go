@@ -214,3 +214,35 @@ func UsageHeader() echo.MiddlewareFunc {
 		}
 	}
 }
+
+// RequireAdminAuth middleware ensures user is authenticated and has admin privileges
+func RequireAdminAuth() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			// First, run the regular user auth
+			userAuth := RequireUserAuth()
+			if err := userAuth(func(c echo.Context) error { return nil })(c); err != nil {
+				return err
+			}
+
+			// Check if user is admin
+			userIDStr := c.Request().Header.Get("X-User-ID")
+			userID, err := strconv.Atoi(userIDStr)
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+					"success": false,
+					"error":   "Invalid user authentication",
+				})
+			}
+
+			if !services.Auth.IsUserAdmin(userID) {
+				return c.JSON(http.StatusForbidden, map[string]interface{}{
+					"success": false,
+					"error":   "Admin privileges required",
+				})
+			}
+
+			return next(c)
+		}
+	}
+}
