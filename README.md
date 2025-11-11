@@ -1,6 +1,6 @@
 # Geocoding API
 
-A Go-based REST API for geocoding location lookup using US ZIP codes, built with Echo framework and PostgreSQL database.
+A Go-based REST API for geocoding location lookup using US ZIP codes, built with Echo framework and PostgreSQL database
 
 ## Features
 
