@@ -46,10 +46,16 @@ func main() {
 	// Initialize services
 	services.InitAddressService(database.DB)
 	
-	// Initialize data if needed
+	// Initialize ZIP code data if needed
 	if err := services.InitializeData(); err != nil {
-		log.Printf("Warning: Failed to initialize data: %v", err)
+		log.Printf("Warning: Failed to initialize ZIP code data: %v", err)
 		log.Println("You can load data manually using: curl -X POST http://localhost:8080/api/v1/admin/load-data")
+	}
+	
+	// Initialize Ohio address data if needed
+	if err := services.InitializeOhioData(); err != nil {
+		log.Printf("Warning: Failed to initialize Ohio address data: %v", err)
+		log.Println("Ohio addresses can be loaded manually if needed")
 	}
 
 	// Create Echo instance
