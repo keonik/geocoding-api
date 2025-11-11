@@ -46,3 +46,6 @@ yarn.lock
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# troubleshooting logs
+*.log
