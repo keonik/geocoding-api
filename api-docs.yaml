@@ -588,6 +588,97 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /addresses/semantic:
+    get:
+      summary: Semantic Address Search
+      description: |
+        Perform intelligent semantic search across Ohio addresses using flexible token-based matching.
+        
+        This endpoint uses advanced fuzzy matching and relevance scoring to find addresses regardless 
+        of the order you specify address components. Perfect for autocomplete, address suggestions, 
+        and flexible address lookups where users might enter components in any order.
+        
+        **Flexible Order Examples:**
+        - `q=123 main columbus` → Finds "123 Main St" in Columbus
+        - `q=columbus main 123` → Same result (order doesn't matter!)
+        - `q=main st franklin county` → Finds Main Street addresses in Franklin County
+        - `q=franklin 123 main` → Finds "123 Main St" in Franklin County
+        - `q=43215 main` → Finds Main Street addresses in ZIP 43215
+        - `q=columbus` → Finds addresses in Columbus
+        - `q=main` → Finds all addresses on streets containing "main"
+      operationId: semanticSearchAddresses
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - Ohio Addresses
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search query (partial address, street, city, etc.)
+          schema:
+            type: string
+            minLength: 2
+            example: "123 main st"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return (1-50)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 5
+            example: 5
+      responses:
+        '200':
+          description: Semantic search completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OhioAddress'
+                  count:
+                    type: integer
+                    description: Number of addresses returned
+                    example: 5
+                  query:
+                    type: string
+                    description: The search query that was executed
+                    example: "123 main st"
+              example:
+                success: true
+                data:
+                  - id: 12345
+                    house_number: "123"
+                    street: "Main St"
+                    city: "Columbus"
+                    county: "Franklin"
+                    postcode: "43215"
+                    latitude: 39.9612
+                    longitude: -82.9988
+                count: 5
+                query: "123 main st"
+        '400':
+          description: Invalid search parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /addresses/{id}:
     get:
       summary: Get Address Details

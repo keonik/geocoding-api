@@ -210,6 +210,7 @@ func main() {
 	
 	// Ohio address endpoints
 	protected.GET("/addresses", handlers.SearchOhioAddressesHandler)
+	protected.GET("/addresses/semantic", handlers.SemanticSearchAddressesHandler)
 	protected.GET("/addresses/:id", handlers.GetOhioAddressHandler)
 	
 	// Ohio county boundary endpoints

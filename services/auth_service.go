@@ -561,6 +561,8 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 		"distance":  "distance",
 		"nearby":    "distance",
 		"proximity": "distance",
+		"addresses": "addresses",
+		"counties":  "counties",
 	}
 
 	requiredPermission, exists := permissionMap[endpoint]

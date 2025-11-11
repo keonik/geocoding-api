@@ -211,6 +211,150 @@ func (s *AddressService) GetCountyStats() (map[string]int, error) {
 	return stats, nil
 }
 
+// SemanticSearchAddresses performs a semantic search for addresses with flexible token-based matching
+func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]models.OhioAddress, error) {
+	// Set default limit
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	// Clean and prepare the search query
+	cleanQuery := strings.TrimSpace(strings.ToLower(query))
+	if cleanQuery == "" {
+		return []models.OhioAddress{}, nil
+	}
+
+	// Split query into tokens for flexible matching
+	tokens := strings.Fields(cleanQuery)
+	if len(tokens) == 0 {
+		return []models.OhioAddress{}, nil
+	}
+
+	// Build flexible semantic search query that handles tokens in any order
+	var whereConditions []string
+	var args []interface{}
+	argIndex := 1
+
+	// Add individual token matching conditions
+	for _, token := range tokens {
+		tokenPattern := "%" + token + "%"
+		whereConditions = append(whereConditions, fmt.Sprintf(`(
+			LOWER(house_number) LIKE $%d OR
+			LOWER(street) LIKE $%d OR  
+			LOWER(city) LIKE $%d OR
+			LOWER(county) LIKE $%d OR
+			LOWER(postcode) LIKE $%d
+		)`, argIndex, argIndex, argIndex, argIndex, argIndex))
+		args = append(args, tokenPattern)
+		argIndex++
+	}
+
+	// Build the main search query with advanced relevance scoring
+	searchQuery := fmt.Sprintf(`
+		SELECT 
+			id, hash, house_number, street, unit, city, district, region, postcode, county,
+			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
+			-- Calculate advanced relevance score based on token matches
+			(
+				-- Perfect full query match (any order)
+				CASE WHEN LOWER(house_number || ' ' || street || ' ' || city) LIKE $%d THEN 1000 ELSE 0 END +
+				CASE WHEN LOWER(street || ' ' || city) LIKE $%d THEN 900 ELSE 0 END +
+				CASE WHEN LOWER(house_number || ' ' || street) LIKE $%d THEN 850 ELSE 0 END +
+				CASE WHEN LOWER(city || ' ' || street) LIKE $%d THEN 800 ELSE 0 END +
+				
+				-- Individual field exact matches
+				CASE WHEN LOWER(house_number) = $%d THEN 200 ELSE 0 END +
+				CASE WHEN LOWER(street) LIKE $%d THEN 150 ELSE 0 END +
+				CASE WHEN LOWER(city) LIKE $%d THEN 100 ELSE 0 END +
+				CASE WHEN LOWER(county) LIKE $%d THEN 50 ELSE 0 END +
+				CASE WHEN LOWER(postcode) LIKE $%d THEN 75 ELSE 0 END +
+				
+				-- Token matching bonus (more tokens matched = higher score)
+				%s
+			) as relevance_score
+		FROM ohio_addresses
+		WHERE (%s)
+		ORDER BY relevance_score DESC, city ASC, street ASC, house_number ASC
+		LIMIT $%d
+	`, 
+		argIndex, argIndex, argIndex, argIndex,     // Full query patterns
+		argIndex, argIndex, argIndex, argIndex, argIndex, // Individual field patterns
+		buildTokenBonusSQL(len(tokens), argIndex), // Token bonus calculation
+		strings.Join(whereConditions, " AND "),     // WHERE conditions
+		argIndex+len(tokens)) // LIMIT parameter
+
+	// Add the full query pattern arguments
+	fullQueryPattern := "%" + cleanQuery + "%"
+	for i := 0; i < 9; i++ { // 9 times for the relevance scoring patterns
+		args = append(args, fullQueryPattern)
+	}
+	argIndex += 9
+
+	// Add token arguments for bonus scoring
+	for _, token := range tokens {
+		args = append(args, "%"+token+"%")
+	}
+
+	// Add limit
+	args = append(args, limit)
+
+	// Execute the query
+	rows, err := s.db.Query(searchQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute semantic search: %w", err)
+	}
+	defer rows.Close()
+
+	// Parse results
+	var addresses []models.OhioAddress
+	for rows.Next() {
+		var addr models.OhioAddress
+		var relevanceScore int
+		var unit, district sql.NullString
+
+		err := rows.Scan(
+			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &unit,
+			&addr.City, &district, &addr.Region, &addr.Postcode, &addr.County,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &relevanceScore,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan address: %w", err)
+		}
+
+		// Handle nullable fields
+		if unit.Valid {
+			addr.Unit = unit.String
+		}
+		if district.Valid {
+			addr.District = district.String
+		}
+
+		addresses = append(addresses, addr)
+	}
+
+	return addresses, nil
+}
+
+// buildTokenBonusSQL generates SQL for token-based bonus scoring
+func buildTokenBonusSQL(tokenCount int, startIndex int) string {
+	var bonuses []string
+	for i := 0; i < tokenCount; i++ {
+		argIndex := startIndex + i
+		bonus := fmt.Sprintf(`(
+			CASE WHEN LOWER(house_number) LIKE $%d THEN 20 ELSE 0 END +
+			CASE WHEN LOWER(street) LIKE $%d THEN 30 ELSE 0 END +
+			CASE WHEN LOWER(city) LIKE $%d THEN 25 ELSE 0 END +
+			CASE WHEN LOWER(county) LIKE $%d THEN 15 ELSE 0 END +
+			CASE WHEN LOWER(postcode) LIKE $%d THEN 10 ELSE 0 END
+		)`, argIndex, argIndex, argIndex, argIndex, argIndex)
+		bonuses = append(bonuses, bonus)
+	}
+	return strings.Join(bonuses, " + ")
+}
+
 // Global address service instance
 var Address *AddressService
 

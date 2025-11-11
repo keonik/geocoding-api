@@ -160,6 +160,12 @@ func getEndpointName(path string) string {
 	if strings.Contains(path, "/search") {
 		return "search"
 	}
+	if strings.Contains(path, "/addresses") {
+		return "addresses"
+	}
+	if strings.Contains(path, "/counties") {
+		return "counties"
+	}
 	if strings.Contains(path, "/admin/load-data") {
 		return "admin"
 	}
