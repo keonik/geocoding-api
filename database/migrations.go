@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"geocoding-api/utils"
 )
 
 // RunMigrations runs all database migrations in order
@@ -503,6 +505,13 @@ func dropOhioAddressesTable() error {
 func loadOhioAddressData() error {
 	log.Println("Loading Ohio address data from GeoJSON files...")
 	
+	// Download Ohio data if not present
+	downloader := utils.NewFileDownloader("./cache")
+	if err := downloader.DownloadOhioData("."); err != nil {
+		log.Printf("Warning: Failed to download Ohio data: %v", err)
+		log.Println("Continuing with existing files if available...")
+	}
+	
 	// Get all GeoJSON files in the oh directory
 	files, err := filepath.Glob("oh/*-addresses-county.geojson")
 	if err != nil {
@@ -674,6 +683,13 @@ func dropOhioCountiesTable() error {
 // loadOhioCountyBoundaries loads county boundary data from all Ohio county GeoJSON meta files
 func loadOhioCountyBoundaries() error {
 	log.Println("Loading Ohio county boundary data from GeoJSON meta files...")
+	
+	// Download Ohio data if not present
+	downloader := utils.NewFileDownloader("./cache")
+	if err := downloader.DownloadOhioData("."); err != nil {
+		log.Printf("Warning: Failed to download Ohio data: %v", err)
+		log.Println("Continuing with existing files if available...")
+	}
 	
 	// Get all meta files in the oh directory (only address county files, not buildings/parcels)
 	files, err := filepath.Glob("oh/*-addresses-county.geojson.meta")

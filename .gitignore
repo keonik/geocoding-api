@@ -25,6 +25,10 @@ go.work
 tmp/
 build-errors.log
 
+# Downloaded data cache
+cache/
+oh/
+
 # IDE files
 .vscode/
 .idea/
