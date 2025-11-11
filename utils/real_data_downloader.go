@@ -319,32 +319,41 @@ func (rdd *RealDataDownloader) createPlaceholderFile(county, dataSourceURL, dest
 
 // convertShapefileToGeoJSON converts a shapefile ZIP to GeoJSON using ogr2ogr
 func (rdd *RealDataDownloader) convertShapefileToGeoJSON(zipPath, outputPath, county string) error {
+	fmt.Printf("=== Starting conversion for %s ===\n", county)
+	fmt.Printf("ZIP path: %s\n", zipPath)
+	fmt.Printf("Output path: %s\n", outputPath)
+	
 	// Check if ogr2ogr is available
-	if _, err := exec.LookPath("ogr2ogr"); err != nil {
+	ogrPath, err := exec.LookPath("ogr2ogr")
+	if err != nil {
 		return fmt.Errorf("ogr2ogr not found. Please install GDAL: %w", err)
 	}
+	fmt.Printf("Using ogr2ogr at: %s\n", ogrPath)
 
 	// Create a temporary directory for extraction
 	tempDir := filepath.Join(rdd.CacheDir, fmt.Sprintf("temp_%s", county))
+	fmt.Printf("Creating temp directory: %s\n", tempDir)
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
 	// Extract the ZIP file
+	fmt.Printf("Extracting ZIP file...\n")
 	if err := rdd.extractZip(zipPath, tempDir); err != nil {
 		return fmt.Errorf("failed to extract ZIP: %w", err)
 	}
 
 	// Find the .shp file in the extracted contents
+	fmt.Printf("Looking for shapefile in: %s\n", tempDir)
 	shpFile, err := rdd.findShapefile(tempDir)
 	if err != nil {
 		return fmt.Errorf("failed to find shapefile: %w", err)
 	}
-
-	fmt.Printf("Converting shapefile %s to GeoJSON...\n", shpFile)
+	fmt.Printf("Found shapefile: %s\n", shpFile)
 
 	// Convert shapefile to GeoJSON using ogr2ogr
+	fmt.Printf("Running ogr2ogr conversion...\n")
 	cmd := exec.Command("ogr2ogr",
 		"-f", "GeoJSON",
 		"-t_srs", "EPSG:4326", // Ensure WGS84 coordinate system
@@ -354,7 +363,15 @@ func (rdd *RealDataDownloader) convertShapefileToGeoJSON(zipPath, outputPath, co
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		fmt.Printf("ogr2ogr output: %s\n", string(output))
 		return fmt.Errorf("ogr2ogr failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Check if output file was created
+	if info, err := os.Stat(outputPath); err != nil {
+		return fmt.Errorf("output file not created: %w", err)
+	} else {
+		fmt.Printf("Output file created: %s (%d bytes)\n", outputPath, info.Size())
 	}
 
 	fmt.Printf("Successfully converted %s to GeoJSON\n", county)
@@ -363,12 +380,14 @@ func (rdd *RealDataDownloader) convertShapefileToGeoJSON(zipPath, outputPath, co
 
 // extractZip extracts a ZIP file to a destination directory
 func (rdd *RealDataDownloader) extractZip(zipPath, destDir string) error {
+	fmt.Printf("Opening ZIP file: %s\n", zipPath)
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("failed to open ZIP: %w", err)
 	}
 	defer r.Close()
 
+	fmt.Printf("Extracting %d files from ZIP...\n", len(r.File))
 	for _, f := range r.File {
 		fpath := filepath.Join(destDir, f.Name)
 
@@ -406,8 +425,11 @@ func (rdd *RealDataDownloader) extractZip(zipPath, destDir string) error {
 		if err != nil {
 			return err
 		}
+		
+		fmt.Printf("Extracted: %s\n", f.Name)
 	}
 
+	fmt.Printf("Successfully extracted ZIP to: %s\n", destDir)
 	return nil
 }
 
