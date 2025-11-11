@@ -39,14 +39,21 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/main ./main
 
-# Copy necessary files
+# Copy necessary files for runtime
 COPY --from=builder /app/georef-united-states-of-america-zc-point.csv .
 COPY --from=builder /app/static ./static
 COPY --from=builder /app/docs ./docs
 COPY --from=builder /app/api-docs.yaml ./api-docs.yaml
 
+# Copy GeoJSON data temporarily (will be cleaned up after migration in production)
+COPY --from=builder /app/oh ./oh
+
 # Set ownership
 RUN chown -R appuser:appgroup /app
+
+# Set environment variables for production
+ENV ENV=production
+ENV CLEANUP_GEOJSON=true
 
 # Switch to non-root user
 USER appuser

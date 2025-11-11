@@ -348,6 +348,33 @@ The application automatically loads ZIP code data on first run:
 2. **Manual**: `curl -X POST http://localhost:8080/api/v1/admin/load-data`
 3. **Makefile**: `make load-data`
 
+## Production Optimizations
+
+### **Container Size Optimization**
+
+The production Docker image automatically optimizes its size by:
+
+1. **GeoJSON File Cleanup**: After loading county boundary data into PostgreSQL, the system automatically removes source GeoJSON files (~2.6GB) to minimize container size
+2. **Environment-Based Cleanup**: Files are only removed in production (`ENV=production`) or when explicitly enabled (`CLEANUP_GEOJSON=true`)
+3. **Post-Migration Cleanup**: Cleanup occurs after successful data migration, ensuring data integrity
+
+### **Production Environment Variables**
+
+For optimal production deployment, set these environment variables:
+
+```bash
+ENV=production              # Enables production optimizations
+CLEANUP_GEOJSON=true       # Forces GeoJSON cleanup regardless of ENV
+```
+
+### **Development Override**
+
+In development, GeoJSON files are preserved by default. To test cleanup locally:
+
+```bash
+CLEANUP_GEOJSON=true docker-compose up
+```
+
 ## Performance
 
 The database includes several indexes for optimal query performance:
@@ -356,6 +383,7 @@ The database includes several indexes for optimal query performance:
 - Index on `state_code` for state-based filtering
 - Index on `city_name` for city searches
 - Composite index on `latitude, longitude` for geographical queries
+- Spatial index on county boundary geometry (PostGIS)
 
 ## Error Handling
 
