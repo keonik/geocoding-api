@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: Geocoding API
   description: |
-    A fast and comprehensive REST API for US ZIP code geocoding and location lookup.
+    A fast and comprehensive REST API for US ZIP code geocoding, Ohio address lookup, and county boundary data.
     
     ## 🔐 Authentication Required
     
@@ -14,19 +14,32 @@ info:
     4. **Test**: Use the "Authorize" button below to set your API key for all requests
     
     ## ✨ Features
-    - **Lightning Fast**: PostgreSQL-backed with optimized indexes
-    - **Comprehensive Data**: Population, density, counties, coordinates, and more
-    - **Flexible Search**: Lookup by ZIP code or search by city/state
-    - **Rich Metadata**: Timezone, county weights, military/imprecise flags
+    - **Lightning Fast**: PostgreSQL + PostGIS backed with optimized spatial indexes
+    - **Multi-Level Coverage**: ZIP codes, addresses, and county boundaries
+    - **Comprehensive Data**: Population, density, coordinates, and geographic boundaries
+    - **Flexible Search**: Multiple search modes with proximity and filtering
+    - **Rich Metadata**: Timezone, county weights, administrative data
+    - **GeoJSON Support**: Ready-to-use geographic data for mapping applications
     - **Usage Tracking**: Monitor your API usage and billing
     
-    ## 📊 Data Source
-    Built on comprehensive US ZIP code data from GeoNames, including:
-    - 33,000+ ZIP codes across all US states
-    - Geographic coordinates (latitude/longitude)
-    - Population and density statistics
-    - County and administrative boundary information
-    - Timezone data for accurate time-based operations
+    ## 📊 Data Coverage
+    
+    ### **🏠 Address-Level Data**
+    - **5.5+ Million Ohio Addresses**: Complete street-level geocoding
+    - **Precise Coordinates**: PostGIS geometry with spatial indexing
+    - **Administrative Data**: City, county, ZIP code associations
+    
+    ### **📮 ZIP Code Data**  
+    - **33,000+ US ZIP Codes**: Comprehensive national coverage
+    - **Geographic Coordinates**: Latitude/longitude with precision indicators
+    - **Demographics**: Population and density statistics
+    - **Administrative**: County associations and timezone data
+    
+    ### **🗺️ County Boundaries**
+    - **89 Ohio Counties**: Complete polygon boundary data
+    - **GeoJSON Format**: Ready for Leaflet, Mapbox, OpenLayers
+    - **Spatial Queries**: Bounding box intersections and proximity searches
+    - **Statistics**: Address counts and administrative metadata
     
   version: 1.0.0
   contact:
@@ -444,6 +457,413 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /addresses:
+    get:
+      summary: Search Ohio Addresses
+      description: |
+        Search for addresses within Ohio with flexible filtering options.
+        
+        Supports searching by address components, city, county, or proximity to coordinates.
+        Perfect for address validation, autocomplete, and location-based services.
+      operationId: searchOhioAddresses
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - Ohio Addresses
+      parameters:
+        - name: query
+          in: query
+          required: false
+          description: General search query (searches across address fields)
+          schema:
+            type: string
+            example: "123 Main St"
+        - name: house_number
+          in: query
+          required: false
+          description: House number to search for
+          schema:
+            type: string
+            example: "123"
+        - name: street
+          in: query
+          required: false
+          description: Street name to search for
+          schema:
+            type: string
+            example: "Main St"
+        - name: city
+          in: query
+          required: false
+          description: City name to filter by
+          schema:
+            type: string
+            example: "Columbus"
+        - name: county
+          in: query
+          required: false
+          description: County name to filter by
+          schema:
+            type: string
+            example: "Franklin"
+        - name: postcode
+          in: query
+          required: false
+          description: ZIP code to filter by
+          schema:
+            type: string
+            example: "43215"
+        - name: lat
+          in: query
+          required: false
+          description: Latitude for proximity search (requires lon and radius)
+          schema:
+            type: number
+            format: double
+            example: 39.9612
+        - name: lon
+          in: query
+          required: false
+          description: Longitude for proximity search (requires lat and radius)
+          schema:
+            type: number
+            format: double
+            example: -82.9988
+        - name: radius
+          in: query
+          required: false
+          description: Search radius in miles for proximity search
+          schema:
+            type: number
+            format: double
+            minimum: 0.1
+            maximum: 50
+            default: 1
+            example: 5
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+            example: 50
+        - name: offset
+          in: query
+          required: false
+          description: Number of results to skip for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+            example: 0
+        - name: sort
+          in: query
+          required: false
+          description: Sort order for results
+          schema:
+            type: string
+            enum: [distance, address, city, county]
+            default: address
+            example: distance
+      responses:
+        '200':
+          description: Address search completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressSearchResponse'
+        '400':
+          description: Invalid search parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /addresses/{id}:
+    get:
+      summary: Get Address Details
+      description: |
+        Retrieve detailed information for a specific Ohio address by its unique ID.
+        
+        Returns complete address information including coordinates and administrative data.
+      operationId: getOhioAddress
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - Ohio Addresses
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Unique address ID
+          schema:
+            type: integer
+            example: 12345
+      responses:
+        '200':
+          description: Address found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressResponse'
+        '404':
+          description: Address not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /counties:
+    get:
+      summary: List Ohio Counties
+      description: |
+        Retrieve a list of all Ohio counties with basic information and address counts.
+        
+        Supports filtering by name, address count ranges, and pagination.
+        Perfect for building county selectors and administrative dashboards.
+      operationId: getCounties
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - County Boundaries
+      parameters:
+        - name: name
+          in: query
+          required: false
+          description: Filter counties by name (partial match)
+          schema:
+            type: string
+            example: "Franklin"
+        - name: min_addresses
+          in: query
+          required: false
+          description: Minimum number of addresses per county
+          schema:
+            type: integer
+            minimum: 0
+            example: 10000
+        - name: max_addresses
+          in: query
+          required: false
+          description: Maximum number of addresses per county
+          schema:
+            type: integer
+            minimum: 0
+            example: 500000
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+            example: 25
+        - name: offset
+          in: query
+          required: false
+          description: Number of results to skip for pagination
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+            example: 0
+      responses:
+        '200':
+          description: Counties retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountyListResponse'
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /counties/{name}:
+    get:
+      summary: Get County Details
+      description: |
+        Retrieve detailed information about a specific Ohio county.
+        
+        Returns county metadata, statistics, and administrative information.
+      operationId: getCountyDetail
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - County Boundaries
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: County name (case-insensitive)
+          schema:
+            type: string
+            example: "Franklin"
+      responses:
+        '200':
+          description: County found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountyResponse'
+        '404':
+          description: County not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /counties/{name}/boundary:
+    get:
+      summary: Get County Boundary
+      description: |
+        Retrieve the geographic boundary polygon for a specific Ohio county in GeoJSON format.
+        
+        Returns GeoJSON FeatureCollection ready for use with mapping libraries like Leaflet, Mapbox, or OpenLayers.
+        Perfect for visualizing county boundaries on interactive maps.
+      operationId: getCountyBoundary
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - County Boundaries
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: County name (case-insensitive)
+          schema:
+            type: string
+            example: "Franklin"
+      responses:
+        '200':
+          description: County boundary retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeoJSONFeatureCollection'
+              example:
+                type: "FeatureCollection"
+                features:
+                  - type: "Feature"
+                    properties:
+                      county_name: "Franklin"
+                      source_name: "franklin-addresses-county"
+                      layer: "addresses"
+                      address_count: 852417
+                      stats: {}
+                    geometry:
+                      type: "Polygon"
+                      coordinates: [[]]
+        '404':
+          description: County not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /counties/bounds/search:
+    get:
+      summary: Find Counties in Bounding Box
+      description: |
+        Find all Ohio counties that intersect with a specified geographic bounding box.
+        
+        Returns counties sorted by address count. Useful for map-based applications
+        where you need to know which counties are visible in the current viewport.
+      operationId: getCountiesInBounds
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - County Boundaries
+      parameters:
+        - name: min_lat
+          in: query
+          required: true
+          description: Minimum latitude of bounding box
+          schema:
+            type: number
+            format: double
+            example: 39.5
+        - name: min_lon
+          in: query
+          required: true
+          description: Minimum longitude of bounding box
+          schema:
+            type: number
+            format: double
+            example: -84.5
+        - name: max_lat
+          in: query
+          required: true
+          description: Maximum latitude of bounding box
+          schema:
+            type: number
+            format: double
+            example: 40.5
+        - name: max_lon
+          in: query
+          required: true
+          description: Maximum longitude of bounding box
+          schema:
+            type: number
+            format: double
+            example: -82.5
+      responses:
+        '200':
+          description: Counties in bounds retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountyBoundsResponse'
+        '400':
+          description: Invalid bounding box parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /admin/load-data:
     post:
       summary: Load ZIP Code Data
@@ -479,6 +899,30 @@ paths:
                 data: "CSV data loaded successfully"
         '500':
           description: Failed to load data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /admin/counties:
+    get:
+      summary: Get County Statistics
+      description: |
+        **Admin endpoint** to retrieve comprehensive statistics about Ohio counties.
+        
+        Returns aggregated data including total counties, address counts, and distribution metrics.
+      operationId: getCountyStats
+      tags:
+        - Admin
+      responses:
+        '200':
+          description: County statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountyStatsResponse'
+        '500':
+          description: Failed to retrieve statistics
           content:
             application/json:
               schema:
@@ -745,6 +1189,297 @@ components:
           type: integer
           example: 1
 
+    OhioAddress:
+      type: object
+      description: Complete Ohio address information with geographic coordinates
+      properties:
+        id:
+          type: integer
+          description: Unique address identifier
+          example: 12345
+        hash:
+          type: string
+          description: Unique hash for the address
+          example: "abc123def456"
+        house_number:
+          type: string
+          description: House number
+          example: "123"
+        street:
+          type: string
+          description: Street name
+          example: "Main St"
+        unit:
+          type: string
+          nullable: true
+          description: Unit or apartment number
+          example: "Apt 2B"
+        city:
+          type: string
+          description: City name
+          example: "Columbus"
+        district:
+          type: string
+          nullable: true
+          description: District or neighborhood
+          example: "Downtown"
+        region:
+          type: string
+          description: State or region
+          example: "Ohio"
+        postcode:
+          type: string
+          description: ZIP code
+          example: "43215"
+        county:
+          type: string
+          description: County name
+          example: "Franklin"
+        latitude:
+          type: number
+          format: double
+          description: Latitude coordinate (WGS84)
+          example: 39.9612
+        longitude:
+          type: number
+          format: double
+          description: Longitude coordinate (WGS84)
+          example: -82.9988
+
+    AddressSearchResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/OhioAddress'
+              - type: object
+                properties:
+                  distance_miles:
+                    type: number
+                    format: double
+                    description: Distance in miles (only present for proximity searches)
+                    example: 0.5
+        count:
+          type: integer
+          description: Number of addresses returned
+          example: 25
+        total:
+          type: integer
+          description: Total number of matching addresses
+          example: 150
+
+    AddressResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/OhioAddress'
+
+    CountyBasic:
+      type: object
+      description: Basic county information
+      properties:
+        id:
+          type: integer
+          description: Unique county identifier
+          example: 1
+        county_name:
+          type: string
+          description: County name
+          example: "Franklin"
+        address_count:
+          type: integer
+          description: Number of addresses in this county
+          example: 852417
+
+    CountyDetailed:
+      allOf:
+        - $ref: '#/components/schemas/CountyBasic'
+        - type: object
+          properties:
+            source_name:
+              type: string
+              description: Source dataset name
+              example: "franklin-addresses-county"
+            layer:
+              type: string
+              description: Data layer type
+              example: "addresses"
+            stats:
+              type: object
+              description: Additional statistics about the county
+              additionalProperties: true
+              example: {}
+            bounds_geometry:
+              type: string
+              description: County boundary in WKT format
+              example: "POLYGON((-83.2 39.8, -82.8 39.8, ...))"
+            created_at:
+              type: string
+              format: date-time
+              description: Record creation timestamp
+              example: "2025-11-11T00:42:11Z"
+            updated_at:
+              type: string
+              format: date-time
+              description: Record last update timestamp
+              example: "2025-11-11T00:42:11Z"
+
+    CountyListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CountyBasic'
+        count:
+          type: integer
+          description: Number of counties returned
+          example: 25
+
+    CountyResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/CountyDetailed'
+
+    CountyBoundsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CountyBasic'
+        count:
+          type: integer
+          description: Number of counties in bounds
+          example: 5
+        bounds:
+          type: object
+          description: The search bounding box
+          properties:
+            min_lat:
+              type: number
+              format: double
+              example: 39.5
+            min_lon:
+              type: number
+              format: double
+              example: -84.5
+            max_lat:
+              type: number
+              format: double
+              example: 40.5
+            max_lon:
+              type: number
+              format: double
+              example: -82.5
+
+    CountyStatsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            total_counties:
+              type: integer
+              description: Total number of Ohio counties
+              example: 89
+            total_addresses:
+              type: integer
+              description: Total number of addresses across all counties
+              example: 5551283
+            avg_addresses_per_county:
+              type: number
+              format: double
+              description: Average addresses per county
+              example: 62373.6
+            max_addresses_per_county:
+              type: integer
+              description: Maximum addresses in a single county
+              example: 852417
+            min_addresses_per_county:
+              type: integer
+              description: Minimum addresses in a single county
+              example: 1832
+
+    GeoJSONGeometry:
+      type: object
+      description: GeoJSON geometry object
+      properties:
+        type:
+          type: string
+          enum: [Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon]
+          example: "Polygon"
+        coordinates:
+          type: array
+          description: Coordinate array (format depends on geometry type)
+          example: [[[-83.2, 39.8], [-82.8, 39.8], [-82.8, 40.2], [-83.2, 40.2], [-83.2, 39.8]]]
+
+    GeoJSONFeature:
+      type: object
+      description: GeoJSON feature object
+      properties:
+        type:
+          type: string
+          enum: [Feature]
+          example: "Feature"
+        properties:
+          type: object
+          description: Feature properties
+          properties:
+            county_name:
+              type: string
+              example: "Franklin"
+            source_name:
+              type: string
+              example: "franklin-addresses-county"
+            layer:
+              type: string
+              example: "addresses"
+            address_count:
+              type: integer
+              example: 852417
+            stats:
+              type: object
+              additionalProperties: true
+              example: {}
+        geometry:
+          $ref: '#/components/schemas/GeoJSONGeometry'
+
+    GeoJSONFeatureCollection:
+      type: object
+      description: GeoJSON FeatureCollection
+      properties:
+        type:
+          type: string
+          enum: [FeatureCollection]
+          example: "FeatureCollection"
+        features:
+          type: array
+          items:
+            $ref: '#/components/schemas/GeoJSONFeature'
+          description: Array of GeoJSON features
+
 tags:
   - name: Geocoding
     description: Core geocoding operations for ZIP code lookup
@@ -752,6 +1487,10 @@ tags:
     description: Search and discovery operations
   - name: Distance
     description: Distance calculations and proximity operations between ZIP codes
+  - name: Ohio Addresses
+    description: Ohio address search and lookup operations (5.5M+ addresses)
+  - name: County Boundaries
+    description: Ohio county boundary and geographic data operations (89 counties)
   - name: Admin
     description: Administrative operations for data management
   - name: System
