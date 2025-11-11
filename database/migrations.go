@@ -40,6 +40,12 @@ func RunMigrations() error {
 			Up:          addAPIKeyFields,
 			Down:        removeAPIKeyFields,
 		},
+		{
+			Version:     6,
+			Description: "Update subscriptions table with billing columns",
+			Up:          updateSubscriptionsTable,
+			Down:        revertSubscriptionsTable,
+		},
 	}
 
 	// Create migrations table if it doesn't exist
@@ -317,6 +323,71 @@ func removeAPIKeyFields() error {
 	ALTER TABLE api_keys 
 	DROP COLUMN IF EXISTS key_preview,
 	DROP COLUMN IF EXISTS expires_at;
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// updateSubscriptionsTable adds missing columns to subscriptions table for proper billing
+func updateSubscriptionsTable() error {
+	query := `
+	-- Add missing columns to subscriptions table
+	ALTER TABLE subscriptions 
+	ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'past_due', 'trialing')),
+	ADD COLUMN IF NOT EXISTS current_period_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL '1 month'),
+	ADD COLUMN IF NOT EXISTS price_per_call DECIMAL(10,6) DEFAULT 0.0,
+	ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255),
+	ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255);
+
+	-- Remove old columns that are no longer used
+	ALTER TABLE subscriptions 
+	DROP COLUMN IF EXISTS billing_period_start,
+	DROP COLUMN IF EXISTS billing_period_end,
+	DROP COLUMN IF EXISTS current_usage;
+
+	-- Add indexes for new columns
+	CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+	CREATE INDEX IF NOT EXISTS idx_subscriptions_current_period ON subscriptions(current_period_start, current_period_end);
+	CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_customer ON subscriptions(stripe_customer_id);
+	CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_subscription ON subscriptions(stripe_subscription_id);
+
+	-- Update existing records to have proper current period dates
+	UPDATE subscriptions 
+	SET 
+		current_period_start = COALESCE(current_period_start, created_at),
+		current_period_end = COALESCE(current_period_end, created_at + INTERVAL '1 month')
+	WHERE current_period_start IS NULL OR current_period_end IS NULL;
+	`
+	
+	_, err := DB.Exec(query)
+	return err
+}
+
+// revertSubscriptionsTable reverts the subscriptions table changes
+func revertSubscriptionsTable() error {
+	query := `
+	-- Remove indexes
+	DROP INDEX IF EXISTS idx_subscriptions_stripe_subscription;
+	DROP INDEX IF EXISTS idx_subscriptions_stripe_customer;
+	DROP INDEX IF EXISTS idx_subscriptions_current_period;
+	DROP INDEX IF EXISTS idx_subscriptions_status;
+
+	-- Add back old columns
+	ALTER TABLE subscriptions 
+	ADD COLUMN IF NOT EXISTS billing_period_start DATE,
+	ADD COLUMN IF NOT EXISTS billing_period_end DATE,
+	ADD COLUMN IF NOT EXISTS current_usage INTEGER DEFAULT 0;
+
+	-- Remove new columns
+	ALTER TABLE subscriptions 
+	DROP COLUMN IF EXISTS stripe_subscription_id,
+	DROP COLUMN IF EXISTS stripe_customer_id,
+	DROP COLUMN IF EXISTS price_per_call,
+	DROP COLUMN IF EXISTS current_period_end,
+	DROP COLUMN IF EXISTS current_period_start,
+	DROP COLUMN IF EXISTS status;
 	`
 	
 	_, err := DB.Exec(query)

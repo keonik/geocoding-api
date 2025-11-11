@@ -57,6 +57,11 @@ openssl rand -hex 32
 - **Fix**: Environment-based CORS with domain restrictions
 - **Result**: Production locked to https://geocode.jfay.dev
 
+### ✅ Database Migration Fix
+- **Problem**: Missing subscription table columns (price_per_call, status, etc.)
+- **Fix**: Added migration #6 to update subscriptions table
+- **Result**: Billing and subscription features work correctly
+
 ### ✅ CSV File Optimization
 - **Problem**: CSV mounted as volume AND copied to image
 - **Fix**: File already in Docker image, no volume needed
@@ -86,6 +91,9 @@ GO_ENV=production docker-compose up --build
 
 # Check for security warnings in logs
 docker-compose logs geocoding-api | grep WARNING
+
+# Check migration status
+./check-migrations.sh
 ```
 
 ## 📊 Post-Deployment Verification
