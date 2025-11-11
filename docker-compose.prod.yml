@@ -15,6 +15,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./georef-united-states-of-america-zc-point.csv:/docker-entrypoint-initdb.d/georef-united-states-of-america-zc-point.csv:ro
+    # NOTE: Postgres port exposed for local development
+    ports:
+      - "${DB_EXTERNAL_PORT:-8954}:5432"
     healthcheck:
       test:
         [
@@ -48,9 +51,15 @@ services:
       PORT: ${API_PORT:-8080}
       GO_ENV: ${GO_ENV:-production}
 
+      # CORS Configuration (Optional)
+      CORS_ORIGINS: ${CORS_ORIGINS}
+
       # Security (set these in your Coolify environment)
       JWT_SECRET: ${JWT_SECRET:-change_this_in_production}
       API_SECRET_KEY: ${API_SECRET_KEY:-change_this_in_production}
+
+      # Admin Configuration
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-john.k.fay@gmail.com}
 
       # Optional: External API configurations
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
@@ -60,10 +69,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ./georef-united-states-of-america-zc-point.csv:/app/georef-united-states-of-america-zc-point.csv:ro
-      - ./static:/app/static:ro
-      - ./docs:/app/docs:ro
+    # NOTE: Static files and CSV are already copied into Docker image
+    # Volume mounts removed to prevent conflicts in production
     healthcheck:
       test:
         [
@@ -81,7 +88,20 @@ services:
 
     networks:
       - geocode
-
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: geocoding_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-pgadmin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-secure_password_change_me}
+    ports:
+      - "${PGADMIN_EXTERNAL_PORT:-8081}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - geocode
 volumes:
   postgres_data:
     driver: local
