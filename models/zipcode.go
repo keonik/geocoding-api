@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -114,10 +115,24 @@ func ParseCountyWeights(weightsStr string) (CountyWeights, error) {
 	weightsStr = strings.Trim(weightsStr, "\"")
 	weightsStr = strings.ReplaceAll(weightsStr, "\"\"", "\"")
 	
+	// First try to unmarshal as map[string]string
 	var weights CountyWeights
 	err := json.Unmarshal([]byte(weightsStr), &weights)
+	if err == nil {
+		return weights, nil
+	}
+	
+	// If that fails, try as map[string]interface{} and convert values to strings
+	var rawWeights map[string]interface{}
+	err = json.Unmarshal([]byte(weightsStr), &rawWeights)
 	if err != nil {
 		return nil, err
+	}
+	
+	// Convert all values to strings
+	weights = make(CountyWeights)
+	for key, value := range rawWeights {
+		weights[key] = fmt.Sprintf("%v", value)
 	}
 	
 	return weights, nil

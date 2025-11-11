@@ -43,6 +43,9 @@ func main() {
 		log.Fatalf("Failed to run database migrations: %v", err)
 	}
 
+	// Initialize services
+	services.InitAddressService(database.DB)
+	
 	// Initialize data if needed
 	if err := services.InitializeData(); err != nil {
 		log.Printf("Warning: Failed to initialize data: %v", err)
@@ -205,6 +208,16 @@ func main() {
 	protected.GET("/nearby/:zipcode", handlers.FindNearbyZipCodesHandler)
 	protected.GET("/proximity/:center/:target", handlers.CheckZipCodeProximityHandler)
 	
+	// Ohio address endpoints
+	protected.GET("/addresses", handlers.SearchOhioAddressesHandler)
+	protected.GET("/addresses/:id", handlers.GetOhioAddressHandler)
+	
+	// Ohio county boundary endpoints
+	protected.GET("/counties", handlers.GetCountiesHandler)
+	protected.GET("/counties/:name", handlers.GetCountyDetailHandler)
+	protected.GET("/counties/:name/boundary", handlers.GetCountyBoundaryHandler)
+	protected.GET("/counties/bounds/search", handlers.GetCountiesInBoundsHandler)
+	
 	// Admin routes (require admin auth)
 	admin := api.Group("/admin")
 	admin.Use(middleware.RequireAdminAuth())
@@ -215,6 +228,7 @@ func main() {
 	admin.PUT("/users/:id/admin", handlers.UpdateUserAdminHandler)
 	admin.GET("/api-keys", handlers.GetAllAPIKeysHandler)
 	admin.GET("/system-status", handlers.GetSystemStatusHandler)
+	admin.GET("/counties", handlers.GetCountyStatsHandler)
 
 	// Get port from environment variable or default to 8080
 	port := os.Getenv("PORT")

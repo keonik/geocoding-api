@@ -1,8 +1,13 @@
 package database
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 // RunMigrations runs all database migrations in order
@@ -51,6 +56,18 @@ func RunMigrations() error {
 			Description: "Add admin role to users table",
 			Up:          addAdminRole,
 			Down:        removeAdminRole,
+		},
+		{
+			Version:     8,
+			Description: "Create Ohio addresses table and load county data",
+			Up:          createOhioAddressesTable,
+			Down:        dropOhioAddressesTable,
+		},
+		{
+			Version:     9,
+			Description: "Create Ohio counties table and load boundary data",
+			Up:          createOhioCountiesTable,
+			Down:        dropOhioCountiesTable,
 		},
 	}
 
@@ -429,4 +446,326 @@ func removeAdminRole() error {
 	
 	_, err := DB.Exec(query)
 	return err
+}
+
+// createOhioAddressesTable creates the ohio_addresses table and loads data from GeoJSON files
+func createOhioAddressesTable() error {
+	// First enable PostGIS extension if not already enabled
+	if _, err := DB.Exec("CREATE EXTENSION IF NOT EXISTS postgis"); err != nil {
+		return fmt.Errorf("failed to enable PostGIS extension: %w", err)
+	}
+
+	// Create the table with PostGIS geometry support
+	createTableQuery := `
+	-- Create ohio_addresses table with PostGIS geometry
+	CREATE TABLE IF NOT EXISTS ohio_addresses (
+		id BIGSERIAL PRIMARY KEY,
+		hash VARCHAR(255) UNIQUE NOT NULL,
+		house_number VARCHAR(50),
+		street VARCHAR(255),
+		unit VARCHAR(50),
+		city VARCHAR(255),
+		district VARCHAR(10), -- County abbreviation
+		region VARCHAR(2), -- State code
+		postcode VARCHAR(10),
+		county VARCHAR(255), -- Full county name from filename
+		geom GEOMETRY(POINT, 4326) NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Create spatial index for better query performance
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_geom ON ohio_addresses USING GIST (geom);
+	
+	-- Create indexes for common queries
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_hash ON ohio_addresses(hash);
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_county ON ohio_addresses(county);
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_district ON ohio_addresses(district);
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_city ON ohio_addresses(city);
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_postcode ON ohio_addresses(postcode);
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_street ON ohio_addresses(street);
+	`
+	
+	if _, err := DB.Exec(createTableQuery); err != nil {
+		return fmt.Errorf("failed to create ohio_addresses table: %w", err)
+	}
+
+	// Load data from GeoJSON files
+	return loadOhioAddressData()
+}
+
+// dropOhioAddressesTable drops the ohio_addresses table
+func dropOhioAddressesTable() error {
+	_, err := DB.Exec("DROP TABLE IF EXISTS ohio_addresses")
+	return err
+}
+
+// loadOhioAddressData loads address data from all Ohio county GeoJSON files
+func loadOhioAddressData() error {
+	log.Println("Loading Ohio address data from GeoJSON files...")
+	
+	// Get all GeoJSON files in the oh directory
+	files, err := filepath.Glob("oh/*-addresses-county.geojson")
+	if err != nil {
+		return fmt.Errorf("failed to find GeoJSON files: %w", err)
+	}
+
+	totalRecords := 0
+	for _, filePath := range files {
+		// Extract county name from filename
+		filename := filepath.Base(filePath)
+		countyName := strings.TrimSuffix(filename, "-addresses-county.geojson")
+		countyName = strings.ReplaceAll(countyName, "_", " ")
+		countyName = strings.ReplaceAll(countyName, "-", " ")
+		countyName = strings.Title(strings.ToLower(strings.TrimSpace(countyName)))
+
+		log.Printf("Processing %s (%s)", filename, countyName)
+		
+		// Open and read the GeoJSON file
+		file, err := os.Open(filePath)
+		if err != nil {
+			log.Printf("Warning: Failed to open %s: %v", filePath, err)
+			continue
+		}
+
+		scanner := bufio.NewScanner(file)
+		batchSize := 1000
+		batch := make([]string, 0, batchSize)
+		recordCount := 0
+
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+
+			// Parse the GeoJSON feature
+			var feature struct {
+				Type       string `json:"type"`
+				Properties struct {
+					Hash     string `json:"hash"`
+					Number   string `json:"number"`
+					Street   string `json:"street"`
+					Unit     string `json:"unit"`
+					City     string `json:"city"`
+					District string `json:"district"`
+					Region   string `json:"region"`
+					Postcode string `json:"postcode"`
+					ID       string `json:"id"`
+				} `json:"properties"`
+				Geometry struct {
+					Type        string    `json:"type"`
+					Coordinates []float64 `json:"coordinates"`
+				} `json:"geometry"`
+			}
+
+			if err := json.Unmarshal([]byte(line), &feature); err != nil {
+				log.Printf("Warning: Failed to parse JSON in %s: %v", filePath, err)
+				continue
+			}
+
+			// Skip if not a valid point feature
+			if feature.Type != "Feature" || feature.Geometry.Type != "Point" || len(feature.Geometry.Coordinates) != 2 {
+				continue
+			}
+
+			longitude := feature.Geometry.Coordinates[0]
+			latitude := feature.Geometry.Coordinates[1]
+
+			// Prepare the SQL values for batch insert
+			values := fmt.Sprintf("('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', ST_SetSRID(ST_MakePoint(%f, %f), 4326))",
+				strings.ReplaceAll(feature.Properties.Hash, "'", "''"),
+				strings.ReplaceAll(feature.Properties.Number, "'", "''"),
+				strings.ReplaceAll(feature.Properties.Street, "'", "''"),
+				strings.ReplaceAll(feature.Properties.Unit, "'", "''"),
+				strings.ReplaceAll(feature.Properties.City, "'", "''"),
+				strings.ReplaceAll(feature.Properties.District, "'", "''"),
+				strings.ReplaceAll(feature.Properties.Region, "'", "''"),
+				strings.ReplaceAll(feature.Properties.Postcode, "'", "''"),
+				strings.ReplaceAll(countyName, "'", "''"),
+				longitude, latitude)
+			
+			batch = append(batch, values)
+			recordCount++
+
+			// Execute batch insert when batch is full
+			if len(batch) >= batchSize {
+				if err := executeBatchInsert(batch); err != nil {
+					log.Printf("Warning: Batch insert failed for %s: %v", filePath, err)
+				}
+				batch = batch[:0] // Reset batch
+			}
+		}
+
+		// Execute remaining records in batch
+		if len(batch) > 0 {
+			if err := executeBatchInsert(batch); err != nil {
+				log.Printf("Warning: Final batch insert failed for %s: %v", filePath, err)
+			}
+		}
+
+		file.Close()
+		
+		if err := scanner.Err(); err != nil {
+			log.Printf("Warning: Error reading %s: %v", filePath, err)
+		}
+
+		log.Printf("Loaded %d records from %s", recordCount, countyName)
+		totalRecords += recordCount
+	}
+
+	log.Printf("Successfully loaded %d total address records from Ohio counties", totalRecords)
+	return nil
+}
+
+// executeBatchInsert executes a batch insert of address records
+func executeBatchInsert(batch []string) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	query := `
+	INSERT INTO ohio_addresses (hash, house_number, street, unit, city, district, region, postcode, county, geom)
+	VALUES ` + strings.Join(batch, ", ") + `
+	ON CONFLICT (hash) DO NOTHING`
+
+	_, err := DB.Exec(query)
+	return err
+}
+
+// createOhioCountiesTable creates the ohio_counties table and loads boundary data from GeoJSON meta files
+func createOhioCountiesTable() error {
+	// First create the table with PostGIS geometry support
+	createTableQuery := `
+	-- Create ohio_counties table with PostGIS geometry
+	CREATE TABLE IF NOT EXISTS ohio_counties (
+		id SERIAL PRIMARY KEY,
+		county_name VARCHAR(255) UNIQUE NOT NULL,
+		source_name VARCHAR(255) NOT NULL,
+		layer VARCHAR(100) NOT NULL,
+		address_count INTEGER DEFAULT 0,
+		stats JSONB,
+		bounds_geometry GEOMETRY(POLYGON, 4326) NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Create spatial index for better query performance
+	CREATE INDEX IF NOT EXISTS idx_ohio_counties_bounds ON ohio_counties USING GIST (bounds_geometry);
+	
+	-- Create indexes for common queries
+	CREATE INDEX IF NOT EXISTS idx_ohio_counties_name ON ohio_counties(county_name);
+	CREATE INDEX IF NOT EXISTS idx_ohio_counties_address_count ON ohio_counties(address_count);
+	`;
+	
+	if _, err := DB.Exec(createTableQuery); err != nil {
+		return fmt.Errorf("failed to create ohio_counties table: %w", err)
+	}
+
+	// Load county boundary data from meta files
+	return loadOhioCountyBoundaries()
+}
+
+// dropOhioCountiesTable drops the ohio_counties table
+func dropOhioCountiesTable() error {
+	_, err := DB.Exec("DROP TABLE IF EXISTS ohio_counties")
+	return err
+}
+
+// loadOhioCountyBoundaries loads county boundary data from all Ohio county GeoJSON meta files
+func loadOhioCountyBoundaries() error {
+	log.Println("Loading Ohio county boundary data from GeoJSON meta files...")
+	
+	// Get all meta files in the oh directory (only address county files, not buildings/parcels)
+	files, err := filepath.Glob("oh/*-addresses-county.geojson.meta")
+	if err != nil {
+		return fmt.Errorf("failed to find GeoJSON meta files: %w", err)
+	}
+
+	totalRecords := 0
+	for _, filePath := range files {
+		// Extract county name from filename
+		filename := filepath.Base(filePath)
+		countyName := strings.TrimSuffix(filename, "-addresses-county.geojson.meta")
+		countyName = strings.ReplaceAll(countyName, "_", " ")
+		countyName = strings.ReplaceAll(countyName, "-", " ")
+		countyName = strings.Title(strings.ToLower(strings.TrimSpace(countyName)))
+
+		log.Printf("Processing county boundary: %s (%s)", filename, countyName)
+		
+		// Read and parse the meta file
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			log.Printf("Warning: Failed to read %s: %v", filePath, err)
+			continue
+		}
+
+		var metaData struct {
+			SourceName string `json:"source_name"`
+			Layer      string `json:"layer"`
+			Count      int    `json:"count"`
+			Stats      map[string]interface{} `json:"stats"`
+			Bounds     struct {
+				Type        string    `json:"type"`
+				Coordinates [][][]float64 `json:"coordinates"`
+			} `json:"bounds"`
+		}
+
+		if err := json.Unmarshal(data, &metaData); err != nil {
+			log.Printf("Warning: Failed to parse JSON in %s: %v", filePath, err)
+			continue
+		}
+
+		// Skip if not a valid polygon
+		if metaData.Bounds.Type != "Polygon" || len(metaData.Bounds.Coordinates) == 0 {
+			log.Printf("Warning: Invalid polygon bounds in %s", filePath)
+			continue
+		}
+
+		// Convert coordinates to WKT format for PostGIS
+		coords := metaData.Bounds.Coordinates[0] // First ring of the polygon
+		var wktCoords []string
+		for _, coord := range coords {
+			if len(coord) >= 2 {
+				wktCoords = append(wktCoords, fmt.Sprintf("%f %f", coord[0], coord[1]))
+			}
+		}
+		
+		if len(wktCoords) < 4 {
+			log.Printf("Warning: Invalid polygon coordinates in %s", filePath)
+			continue
+		}
+
+		polygonWKT := fmt.Sprintf("POLYGON((%s))", strings.Join(wktCoords, ", "))
+
+		// Convert stats to JSON
+		statsJSON, err := json.Marshal(metaData.Stats)
+		if err != nil {
+			log.Printf("Warning: Failed to marshal stats for %s: %v", filePath, err)
+			statsJSON = []byte("{}")
+		}
+
+		// Insert county boundary data
+		query := `
+		INSERT INTO ohio_counties (county_name, source_name, layer, address_count, stats, bounds_geometry)
+		VALUES ($1, $2, $3, $4, $5, ST_SetSRID(ST_GeomFromText($6), 4326))
+		ON CONFLICT (county_name) DO UPDATE SET
+			source_name = EXCLUDED.source_name,
+			layer = EXCLUDED.layer,
+			address_count = EXCLUDED.address_count,
+			stats = EXCLUDED.stats,
+			bounds_geometry = EXCLUDED.bounds_geometry,
+			updated_at = CURRENT_TIMESTAMP
+		`
+
+		_, err = DB.Exec(query, countyName, metaData.SourceName, metaData.Layer, metaData.Count, string(statsJSON), polygonWKT)
+		if err != nil {
+			log.Printf("Warning: Failed to insert county %s: %v", countyName, err)
+			continue
+		}
+
+		totalRecords++
+	}
+
+	log.Printf("Successfully loaded %d county boundary records", totalRecords)
+	return nil
 }
