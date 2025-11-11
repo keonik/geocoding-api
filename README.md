@@ -1,15 +1,74 @@
 # Geocoding API
 
-A Go-based REST API for geocoding location lookup using US ZIP codes, built with Echo framework and PostgreSQL database
+A Go-based REST API for geocoding location lookup using US ZIP codes and Ohio address data, built with Echo framework and PostgreSQL with PostGIS.
 
 ## Features
 
 - 🏃 Fast geocoding lookup by ZIP code
 - 🔍 Search ZIP codes by city name and state
-- 🗄️ PostgreSQL database with full US ZIP code dataset
+- 🏠 Ohio address data from official state sources
+- 🗺️ Shapefile to GeoJSON conversion using GDAL
+- 🗄️ PostgreSQL database with PostGIS for geospatial queries
 - 🚀 Built with Echo web framework
 - 🐳 Docker support with Docker Compose
 - 📊 Comprehensive location data including population, density, coordinates, and county information
+
+## Prerequisites
+
+### Required
+- Go 1.21 or later
+- Docker and Docker Compose
+- PostgreSQL with PostGIS extension
+
+### Optional (for Ohio address data)
+- **GDAL** - Required for converting shapefiles to GeoJSON
+  - macOS: `brew install gdal`
+  - Ubuntu: `sudo apt-get install gdal-bin`
+  - Windows: [Download from gdal.org](https://gdal.org/download.html)
+  - See [GDAL Setup Guide](docs/GDAL_SETUP.md) for detailed instructions
+
+## Quick Start
+
+### Automated Setup (Recommended)
+
+```bash
+# Run the setup script
+./scripts/setup_dev.sh
+```
+
+This will:
+- Check all prerequisites
+- Install Go dependencies
+- Start Docker services
+- Optionally test GDAL installation
+
+### Manual Setup
+
+1. **Install GDAL (optional but recommended)**
+   ```bash
+   # macOS
+   brew install gdal
+   
+   # Ubuntu/Debian
+   sudo apt-get install gdal-bin
+   ```
+
+2. **Start Docker services**
+   ```bash
+   docker compose up -d db pgadmin
+   ```
+
+3. **Install Go dependencies**
+   ```bash
+   go mod download
+   ```
+
+4. **Run the application**
+   ```bash
+   go run main.go
+   # or with hot reloading
+   air
+   ```
 
 ## 📚 API Documentation
 
@@ -312,10 +371,42 @@ The application automatically:
 1. Creates a `schema_migrations` table to track applied migrations
 2. Runs pending migrations in order
 3. Loads ZIP code data from CSV if the database is empty
+4. Downloads and converts Ohio address data (requires GDAL)
 
 **Migration files are located in:**
 - `database/migrations.go` - Migration definitions
 - `services/zipcode_service.go` - Data loading logic
+
+### **Ohio Address Data**
+
+The application automatically downloads address data from the [Ohio LBRS](https://gis1.oit.ohio.gov/LBRS/) site for all 88 Ohio counties.
+
+**Data Flow:**
+1. 📥 **Download** - ZIP files from Ohio LBRS (e.g., `ADA_ADDS.zip`)
+2. 📦 **Extract** - Shapefiles from ZIP archives
+3. 🔄 **Convert** - Shapefiles to GeoJSON using GDAL/ogr2ogr
+4. 💾 **Load** - GeoJSON features into PostgreSQL with PostGIS
+
+**Requirements:**
+- GDAL must be installed for shapefile conversion
+- See [GDAL Setup Guide](docs/GDAL_SETUP.md) for installation instructions
+- Without GDAL, placeholder files are created (no address data)
+
+**Testing:**
+```bash
+# Test GDAL installation and conversion
+./scripts/test_gdal.sh
+
+# This will download and convert a sample county
+```
+
+**Manual trigger:**
+```bash
+# Force re-download and conversion
+# Delete cached files and restart the application
+rm -rf oh/* cache/*
+go run main.go
+```
 
 ### **Alternative: golang-migrate (Optional)**
 

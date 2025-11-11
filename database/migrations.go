@@ -1,7 +1,6 @@
 package database
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -503,6 +502,18 @@ func dropOhioAddressesTable() error {
 
 // loadOhioAddressData loads address data from all Ohio county GeoJSON files
 func loadOhioAddressData() error {
+	// Check if we already have data in the database
+	var count int
+	err := DB.QueryRow("SELECT COUNT(*) FROM ohio_addresses").Scan(&count)
+	if err != nil {
+		return fmt.Errorf("failed to check existing data: %w", err)
+	}
+	
+	if count > 0 {
+		log.Printf("Database already contains %d Ohio address records, skipping download/load", count)
+		return nil
+	}
+	
 	log.Println("Loading Ohio address data from GeoJSON files...")
 	
 	// Download Ohio data if not present
@@ -536,19 +547,10 @@ func loadOhioAddressData() error {
 			continue
 		}
 
-		scanner := bufio.NewScanner(file)
-		batchSize := 1000
-		batch := make([]string, 0, batchSize)
-		recordCount := 0
-
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-
-			// Parse the GeoJSON feature
-			var feature struct {
+		// Parse the entire GeoJSON FeatureCollection
+		var featureCollection struct {
+			Type     string `json:"type"`
+			Features []struct {
 				Type       string `json:"type"`
 				Properties struct {
 					Hash     string `json:"hash"`
@@ -565,13 +567,28 @@ func loadOhioAddressData() error {
 					Type        string    `json:"type"`
 					Coordinates []float64 `json:"coordinates"`
 				} `json:"geometry"`
-			}
+			} `json:"features"`
+		}
 
-			if err := json.Unmarshal([]byte(line), &feature); err != nil {
-				log.Printf("Warning: Failed to parse JSON in %s: %v", filePath, err)
-				continue
-			}
+		decoder := json.NewDecoder(file)
+		if err := decoder.Decode(&featureCollection); err != nil {
+			log.Printf("Warning: Failed to parse GeoJSON in %s: %v", filePath, err)
+			file.Close()
+			continue
+		}
+		file.Close()
 
+		// Skip if no features
+		if len(featureCollection.Features) == 0 {
+			log.Printf("Loaded 0 records from %s (no features in file)", countyName)
+			continue
+		}
+
+		batchSize := 1000
+		batch := make([]string, 0, batchSize)
+		recordCount := 0
+
+		for _, feature := range featureCollection.Features {
 			// Skip if not a valid point feature
 			if feature.Type != "Feature" || feature.Geometry.Type != "Point" || len(feature.Geometry.Coordinates) != 2 {
 				continue
@@ -610,12 +627,6 @@ func loadOhioAddressData() error {
 			if err := executeBatchInsert(batch); err != nil {
 				log.Printf("Warning: Final batch insert failed for %s: %v", filePath, err)
 			}
-		}
-
-		file.Close()
-		
-		if err := scanner.Err(); err != nil {
-			log.Printf("Warning: Error reading %s: %v", filePath, err)
 		}
 
 		log.Printf("Loaded %d records from %s", recordCount, countyName)

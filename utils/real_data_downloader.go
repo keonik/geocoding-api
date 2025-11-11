@@ -1,11 +1,13 @@
 package utils
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -43,9 +45,38 @@ func NewRealDataDownloader(cacheDir string) *RealDataDownloader {
 	}
 }
 
+// CheckGDALInstallation checks if GDAL/ogr2ogr is installed
+func (rdd *RealDataDownloader) CheckGDALInstallation() error {
+	if _, err := exec.LookPath("ogr2ogr"); err != nil {
+		return fmt.Errorf(`ogr2ogr not found. Please install GDAL:
+		
+macOS:    brew install gdal
+Ubuntu:   sudo apt-get install gdal-bin
+Windows:  Download from https://gdal.org/download.html
+
+After installation, verify with: ogr2ogr --version`)
+	}
+
+	// Check version
+	cmd := exec.Command("ogr2ogr", "--version")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to check ogr2ogr version: %w", err)
+	}
+
+	fmt.Printf("GDAL found: %s\n", string(output))
+	return nil
+}
+
 // DownloadOhioRealData attempts to download real data from multiple sources
 func (rdd *RealDataDownloader) DownloadOhioRealData(destDir string) error {
 	fmt.Println("Attempting to download real Ohio county data...")
+
+	// Check if GDAL is installed
+	if err := rdd.CheckGDALInstallation(); err != nil {
+		fmt.Printf("Warning: %v\n", err)
+		fmt.Println("Continuing without shapefile conversion capability...")
+	}
 
 	// Create destination directory
 	ohDir := filepath.Join(destDir, "oh")
@@ -172,11 +203,76 @@ func (rdd *RealDataDownloader) downloadOpenAddressesConfigs(urls map[string]stri
 
 // processOpenAddressesConfig processes an OpenAddresses configuration
 func (rdd *RealDataDownloader) processOpenAddressesConfig(county string, source *OpenAddressesSource, destDir string) error {
-	// Create placeholder GeoJSON and meta files based on the configuration
 	addressFile := filepath.Join(destDir, fmt.Sprintf("%s-addresses-county.geojson", county))
 	metaFile := filepath.Join(destDir, fmt.Sprintf("%s-addresses-county.geojson.meta", county))
 
-	// Create minimal GeoJSON with metadata from the source
+	// Extract data source URL if available
+	dataSourceURL := ""
+	if len(source.Layers.Addresses) > 0 {
+		dataSourceURL = source.Layers.Addresses[0].Data
+	}
+
+	// If we have a real data source URL (Ohio LBRS), download it
+	if strings.Contains(dataSourceURL, "gis1.oit.ohio.gov/LBRS") {
+		fmt.Printf("Downloading real data from Ohio LBRS for %s...\n", county)
+		
+		// Download the ZIP file
+		zipPath := filepath.Join(rdd.CacheDir, fmt.Sprintf("%s_ADDS.zip", strings.ToUpper(county[:3])))
+		
+		// Check if already downloaded and recent
+		if !rdd.isCached(zipPath, 24*time.Hour) {
+			if err := rdd.DownloadFileFromURL(dataSourceURL, zipPath); err != nil {
+				fmt.Printf("Warning: Failed to download %s data: %v\n", county, err)
+				return rdd.createPlaceholderFile(county, dataSourceURL, destDir)
+			}
+		} else {
+			fmt.Printf("Using cached ZIP file for %s\n", county)
+		}
+
+		// Check if GeoJSON already exists and is recent
+		if rdd.isCached(addressFile, 24*time.Hour) {
+			fmt.Printf("Using cached GeoJSON file for %s\n", county)
+		} else {
+			// Extract and convert to GeoJSON
+			if err := rdd.convertShapefileToGeoJSON(zipPath, addressFile, county); err != nil {
+				fmt.Printf("Warning: Failed to convert shapefile for %s: %v\n", county, err)
+				return rdd.createPlaceholderFile(county, dataSourceURL, destDir)
+			}
+		}
+	} else {
+		// No real data source, create placeholder
+		return rdd.createPlaceholderFile(county, dataSourceURL, destDir)
+	}
+
+	// Create meta file
+	meta := map[string]interface{}{
+		"county":       strings.Title(county),
+		"state":        "Ohio",
+		"last_updated": time.Now().Format(time.RFC3339),
+		"source":       "OpenAddresses",
+		"data_source":  dataSourceURL,
+		"coverage":     source.Coverage,
+		"layers":       source.Layers,
+	}
+
+	metaData, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal meta data: %w", err)
+	}
+
+	if err := os.WriteFile(metaFile, metaData, 0644); err != nil {
+		return fmt.Errorf("failed to write meta file: %w", err)
+	}
+
+	return nil
+}
+
+// createPlaceholderFile creates a single placeholder file for a county
+func (rdd *RealDataDownloader) createPlaceholderFile(county, dataSourceURL, destDir string) error {
+	addressFile := filepath.Join(destDir, fmt.Sprintf("%s-addresses-county.geojson", county))
+	metaFile := filepath.Join(destDir, fmt.Sprintf("%s-addresses-county.geojson.meta", county))
+
+	// Create minimal GeoJSON with metadata
 	geoJSON := map[string]interface{}{
 		"type":     "FeatureCollection",
 		"features": []interface{}{},
@@ -185,13 +281,8 @@ func (rdd *RealDataDownloader) processOpenAddressesConfig(county string, source 
 			"state":       "Ohio",
 			"source":      "OpenAddresses",
 			"last_check":  time.Now().Format(time.RFC3339),
-			"data_source": "",
+			"data_source": dataSourceURL,
 		},
-	}
-
-	// Extract data source URL if available
-	if len(source.Layers.Addresses) > 0 {
-		geoJSON["metadata"].(map[string]interface{})["data_source"] = source.Layers.Addresses[0].Data
 	}
 
 	// Write GeoJSON file
@@ -211,8 +302,7 @@ func (rdd *RealDataDownloader) processOpenAddressesConfig(county string, source 
 		"record_count": 0,
 		"last_updated": time.Now().Format(time.RFC3339),
 		"source":       "OpenAddresses",
-		"coverage":     source.Coverage,
-		"layers":       source.Layers,
+		"data_source":  dataSourceURL,
 	}
 
 	metaData, err := json.MarshalIndent(meta, "", "  ")
@@ -225,6 +315,126 @@ func (rdd *RealDataDownloader) processOpenAddressesConfig(county string, source 
 	}
 
 	return nil
+}
+
+// convertShapefileToGeoJSON converts a shapefile ZIP to GeoJSON using ogr2ogr
+func (rdd *RealDataDownloader) convertShapefileToGeoJSON(zipPath, outputPath, county string) error {
+	// Check if ogr2ogr is available
+	if _, err := exec.LookPath("ogr2ogr"); err != nil {
+		return fmt.Errorf("ogr2ogr not found. Please install GDAL: %w", err)
+	}
+
+	// Create a temporary directory for extraction
+	tempDir := filepath.Join(rdd.CacheDir, fmt.Sprintf("temp_%s", county))
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Extract the ZIP file
+	if err := rdd.extractZip(zipPath, tempDir); err != nil {
+		return fmt.Errorf("failed to extract ZIP: %w", err)
+	}
+
+	// Find the .shp file in the extracted contents
+	shpFile, err := rdd.findShapefile(tempDir)
+	if err != nil {
+		return fmt.Errorf("failed to find shapefile: %w", err)
+	}
+
+	fmt.Printf("Converting shapefile %s to GeoJSON...\n", shpFile)
+
+	// Convert shapefile to GeoJSON using ogr2ogr
+	cmd := exec.Command("ogr2ogr",
+		"-f", "GeoJSON",
+		"-t_srs", "EPSG:4326", // Ensure WGS84 coordinate system
+		outputPath,
+		shpFile,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ogr2ogr failed: %w\nOutput: %s", err, string(output))
+	}
+
+	fmt.Printf("Successfully converted %s to GeoJSON\n", county)
+	return nil
+}
+
+// extractZip extracts a ZIP file to a destination directory
+func (rdd *RealDataDownloader) extractZip(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("failed to open ZIP: %w", err)
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		fpath := filepath.Join(destDir, f.Name)
+
+		// Check for ZipSlip vulnerability
+		if !strings.HasPrefix(fpath, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid file path: %s", fpath)
+		}
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(fpath, os.ModePerm)
+			continue
+		}
+
+		// Create parent directories if needed
+		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
+			return err
+		}
+
+		// Extract file
+		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return err
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			outFile.Close()
+			return err
+		}
+
+		_, err = io.Copy(outFile, rc)
+		outFile.Close()
+		rc.Close()
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// findShapefile finds a .shp file in a directory
+func (rdd *RealDataDownloader) findShapefile(dir string) (string, error) {
+	var shpFile string
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(path), ".shp") {
+			shpFile = path
+			return filepath.SkipDir // Stop after finding first .shp file
+		}
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	if shpFile == "" {
+		return "", fmt.Errorf("no .shp file found in directory")
+	}
+
+	return shpFile, nil
 }
 
 // createPlaceholderFiles creates placeholder files when no real data is available

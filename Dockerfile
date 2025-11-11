@@ -23,12 +23,14 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # Production stage
 FROM alpine:latest
 
-# Install runtime dependencies
+# Install runtime dependencies including GDAL for shapefile conversion
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     wget \
-    curl
+    curl \
+    gdal \
+    gdal-tools
 
 # Create non-root user
 RUN addgroup -g 1001 -S appgroup && \
