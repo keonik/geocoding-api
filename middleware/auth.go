@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -169,7 +170,7 @@ func getEndpointName(path string) string {
 	if strings.Contains(path, "/counties") {
 		return "counties"
 	}
-	if strings.Contains(path, "/admin/load-data") {
+	if strings.Contains(path, "/admin/") {
 		return "admin"
 	}
 	return "unknown"
@@ -224,30 +225,48 @@ func UsageHeader() echo.MiddlewareFunc {
 	}
 }
 
+// isAdminEmail checks if the given email is in the ADMIN_EMAILS environment variable
+func isAdminEmail(email string) bool {
+	adminEmails := os.Getenv("ADMIN_EMAILS")
+	if adminEmails == "" {
+		return false
+	}
+	
+	emails := strings.Split(adminEmails, ",")
+	for _, adminEmail := range emails {
+		if strings.TrimSpace(adminEmail) == email {
+			return true
+		}
+	}
+	return false
+}
+
 // RequireAdminAuth middleware ensures user is authenticated and has admin privileges
 func RequireAdminAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			// First, run the regular user auth
-			userAuth := RequireUserAuth()
-			if err := userAuth(func(c echo.Context) error { return nil })(c); err != nil {
+			// Use API key authentication first
+			apiKeyAuth := APIKeyAuth()
+			if err := apiKeyAuth(func(c echo.Context) error { return nil })(c); err != nil {
 				return err
 			}
 
-			// Check if user is admin
-			userIDStr := c.Request().Header.Get("X-User-ID")
-			userID, err := strconv.Atoi(userIDStr)
-			if err != nil {
+			// Get user from API key authentication context
+			user, ok := c.Get("user").(*models.User)
+			if !ok {
 				return c.JSON(http.StatusUnauthorized, map[string]interface{}{
 					"success": false,
-					"error":   "Invalid user authentication",
+					"error":   "User authentication required",
 				})
 			}
 
-			if !services.Auth.IsUserAdmin(userID) {
+			// Check if user has admin privileges using environment variable
+			if !isAdminEmail(user.Email) {
 				return c.JSON(http.StatusForbidden, map[string]interface{}{
 					"success": false,
 					"error":   "Admin privileges required",
+					"user_id": user.ID,
+					"email":   user.Email,
 				})
 			}
 

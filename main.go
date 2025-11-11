@@ -222,6 +222,7 @@ func main() {
 	// Admin routes (require admin auth)
 	admin := api.Group("/admin")
 	admin.Use(middleware.RequireAdminAuth())
+	admin.GET("/user/status", handlers.GetUserStatusHandler)
 	admin.POST("/load-data", handlers.LoadDataHandler)
 	admin.GET("/stats", handlers.GetAdminStatsHandler)
 	admin.GET("/users", handlers.GetAllUsersHandler)

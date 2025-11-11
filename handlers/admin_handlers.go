@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"geocoding-api/models"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
@@ -48,19 +49,37 @@ type SystemStatusResponse struct {
 	APIHealth         bool `json:"api_health"`
 }
 
-// GetAdminStatsHandler returns dashboard statistics
-func GetAdminStatsHandler(c echo.Context) error {
-	// Verify admin access (middleware should handle this, but double-check)
-	userIDStr := c.Request().Header.Get("X-User-ID")
-	userID, _ := strconv.Atoi(userIDStr)
-	
-	if !services.Auth.IsUserAdmin(userID) {
-		return c.JSON(http.StatusForbidden, GeocodeResponse{
+// GetUserStatusHandler returns the current user's status and admin privileges
+func GetUserStatusHandler(c echo.Context) error {
+	// Get user from API key authentication context
+	user, ok := c.Get("user").(*models.User)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
 			Success: false,
-			Error:   "Admin access required",
+			Error:   "User authentication required",
 		})
 	}
 
+	// Check admin status
+	isAdmin := services.Auth.IsUserAdmin(user.ID)
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"id":        user.ID,
+			"email":     user.Email,
+			"name":      user.Name,
+			"company":   user.Company,
+			"is_admin":  isAdmin,
+			"plan_type": user.PlanType,
+			"is_active": user.IsActive,
+		},
+	})
+}
+
+// GetAdminStatsHandler returns dashboard statistics
+func GetAdminStatsHandler(c echo.Context) error {
+	// Admin middleware already verified admin access, no need to double-check
 	stats, err := services.Auth.GetAdminStats()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
@@ -77,16 +96,6 @@ func GetAdminStatsHandler(c echo.Context) error {
 
 // GetAllUsersHandler returns all users for admin dashboard
 func GetAllUsersHandler(c echo.Context) error {
-	userIDStr := c.Request().Header.Get("X-User-ID")
-	userID, _ := strconv.Atoi(userIDStr)
-	
-	if !services.Auth.IsUserAdmin(userID) {
-		return c.JSON(http.StatusForbidden, GeocodeResponse{
-			Success: false,
-			Error:   "Admin access required",
-		})
-	}
-
 	users, err := services.Auth.GetAllUsers()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
@@ -103,16 +112,6 @@ func GetAllUsersHandler(c echo.Context) error {
 
 // GetAllAPIKeysHandler returns all API keys for admin dashboard
 func GetAllAPIKeysHandler(c echo.Context) error {
-	userIDStr := c.Request().Header.Get("X-User-ID")
-	userID, _ := strconv.Atoi(userIDStr)
-	
-	if !services.Auth.IsUserAdmin(userID) {
-		return c.JSON(http.StatusForbidden, GeocodeResponse{
-			Success: false,
-			Error:   "Admin access required",
-		})
-	}
-
 	apiKeys, err := services.Auth.GetAllAPIKeys()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
@@ -129,13 +128,12 @@ func GetAllAPIKeysHandler(c echo.Context) error {
 
 // UpdateUserStatusHandler toggles user active status
 func UpdateUserStatusHandler(c echo.Context) error {
-	adminUserIDStr := c.Request().Header.Get("X-User-ID")
-	adminUserID, _ := strconv.Atoi(adminUserIDStr)
-	
-	if !services.Auth.IsUserAdmin(adminUserID) {
-		return c.JSON(http.StatusForbidden, GeocodeResponse{
+	// Get admin user from API key context (for audit logging)
+	_, ok := c.Get("user").(*models.User)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
 			Success: false,
-			Error:   "Admin access required",
+			Error:   "Admin authentication required",
 		})
 	}
 
@@ -174,13 +172,12 @@ func UpdateUserStatusHandler(c echo.Context) error {
 
 // UpdateUserAdminHandler toggles user admin status
 func UpdateUserAdminHandler(c echo.Context) error {
-	adminUserIDStr := c.Request().Header.Get("X-User-ID")
-	adminUserID, _ := strconv.Atoi(adminUserIDStr)
-	
-	if !services.Auth.IsUserAdmin(adminUserID) {
-		return c.JSON(http.StatusForbidden, GeocodeResponse{
+	// Get admin user from API key context
+	adminUser, ok := c.Get("user").(*models.User)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
 			Success: false,
-			Error:   "Admin access required",
+			Error:   "Admin authentication required",
 		})
 	}
 
@@ -193,7 +190,7 @@ func UpdateUserAdminHandler(c echo.Context) error {
 	}
 
 	// Prevent user from removing their own admin status
-	if userID == adminUserID {
+	if userID == adminUser.ID {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
 			Success: false,
 			Error:   "Cannot modify your own admin status",
@@ -227,16 +224,6 @@ func UpdateUserAdminHandler(c echo.Context) error {
 
 // GetSystemStatusHandler returns system health information
 func GetSystemStatusHandler(c echo.Context) error {
-	userIDStr := c.Request().Header.Get("X-User-ID")
-	userID, _ := strconv.Atoi(userIDStr)
-	
-	if !services.Auth.IsUserAdmin(userID) {
-		return c.JSON(http.StatusForbidden, GeocodeResponse{
-			Success: false,
-			Error:   "Admin access required",
-		})
-	}
-
 	status, err := services.Auth.GetSystemStatus()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{

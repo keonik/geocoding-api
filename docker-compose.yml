@@ -58,6 +58,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change_this_in_production}
       API_SECRET_KEY: ${API_SECRET_KEY:-change_this_in_production}
 
+      # Admin Configuration
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-john.k.fay@gmail.com}
+
       # Optional: External API configurations
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
       MAX_CONNECTIONS: ${MAX_CONNECTIONS:-100}
