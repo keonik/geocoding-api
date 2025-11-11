@@ -233,73 +233,38 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 		return []models.OhioAddress{}, nil
 	}
 
-	// Build flexible semantic search query that handles tokens in any order
-	var whereConditions []string
+	// Simplified semantic search to avoid parameter mismatches
+	// Use a simpler approach that's more reliable
 	var args []interface{}
-	argIndex := 1
-
-	// Add individual token matching conditions
-	for _, token := range tokens {
-		tokenPattern := "%" + token + "%"
-		whereConditions = append(whereConditions, fmt.Sprintf(`(
-			LOWER(house_number) LIKE $%d OR
-			LOWER(street) LIKE $%d OR  
-			LOWER(city) LIKE $%d OR
-			LOWER(county) LIKE $%d OR
-			LOWER(postcode) LIKE $%d
-		)`, argIndex, argIndex, argIndex, argIndex, argIndex))
-		args = append(args, tokenPattern)
-		argIndex++
-	}
-
-	// Build the main search query with advanced relevance scoring
-	searchQuery := fmt.Sprintf(`
+	
+	// Build a simple text search across all relevant fields
+	searchPattern := "%" + cleanQuery + "%"
+	
+	searchQuery := `
 		SELECT 
 			id, hash, house_number, street, unit, city, district, region, postcode, county,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
-			-- Calculate advanced relevance score based on token matches
+			-- Simple relevance scoring
 			(
-				-- Perfect full query match (any order)
-				CASE WHEN LOWER(house_number || ' ' || street || ' ' || city) LIKE $%d THEN 1000 ELSE 0 END +
-				CASE WHEN LOWER(street || ' ' || city) LIKE $%d THEN 900 ELSE 0 END +
-				CASE WHEN LOWER(house_number || ' ' || street) LIKE $%d THEN 850 ELSE 0 END +
-				CASE WHEN LOWER(city || ' ' || street) LIKE $%d THEN 800 ELSE 0 END +
-				
-				-- Individual field exact matches
-				CASE WHEN LOWER(house_number) = $%d THEN 200 ELSE 0 END +
-				CASE WHEN LOWER(street) LIKE $%d THEN 150 ELSE 0 END +
-				CASE WHEN LOWER(city) LIKE $%d THEN 100 ELSE 0 END +
-				CASE WHEN LOWER(county) LIKE $%d THEN 50 ELSE 0 END +
-				CASE WHEN LOWER(postcode) LIKE $%d THEN 75 ELSE 0 END +
-				
-				-- Token matching bonus (more tokens matched = higher score)
-				%s
+				CASE WHEN LOWER(house_number || ' ' || street || ' ' || city) LIKE $1 THEN 100 ELSE 0 END +
+				CASE WHEN LOWER(street || ' ' || city) LIKE $1 THEN 80 ELSE 0 END +
+				CASE WHEN LOWER(city) LIKE $1 THEN 60 ELSE 0 END +
+				CASE WHEN LOWER(street) LIKE $1 THEN 40 ELSE 0 END +
+				CASE WHEN LOWER(house_number) LIKE $1 THEN 20 ELSE 0 END
 			) as relevance_score
 		FROM ohio_addresses
-		WHERE (%s)
+		WHERE (
+			LOWER(house_number) LIKE $1 OR
+			LOWER(street) LIKE $1 OR  
+			LOWER(city) LIKE $1 OR
+			LOWER(county) LIKE $1 OR
+			LOWER(postcode) LIKE $1
+		)
 		ORDER BY relevance_score DESC, city ASC, street ASC, house_number ASC
-		LIMIT $%d
-	`, 
-		argIndex, argIndex, argIndex, argIndex,     // Full query patterns
-		argIndex, argIndex, argIndex, argIndex, argIndex, // Individual field patterns
-		buildTokenBonusSQL(len(tokens), argIndex), // Token bonus calculation
-		strings.Join(whereConditions, " AND "),     // WHERE conditions
-		argIndex+len(tokens)) // LIMIT parameter
+		LIMIT $2
+	`
 
-	// Add the full query pattern arguments
-	fullQueryPattern := "%" + cleanQuery + "%"
-	for i := 0; i < 9; i++ { // 9 times for the relevance scoring patterns
-		args = append(args, fullQueryPattern)
-	}
-	argIndex += 9
-
-	// Add token arguments for bonus scoring
-	for _, token := range tokens {
-		args = append(args, "%"+token+"%")
-	}
-
-	// Add limit
-	args = append(args, limit)
+	args = append(args, searchPattern, limit)
 
 	// Execute the query
 	rows, err := s.db.Query(searchQuery, args...)
@@ -338,22 +303,7 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 	return addresses, nil
 }
 
-// buildTokenBonusSQL generates SQL for token-based bonus scoring
-func buildTokenBonusSQL(tokenCount int, startIndex int) string {
-	var bonuses []string
-	for i := 0; i < tokenCount; i++ {
-		argIndex := startIndex + i
-		bonus := fmt.Sprintf(`(
-			CASE WHEN LOWER(house_number) LIKE $%d THEN 20 ELSE 0 END +
-			CASE WHEN LOWER(street) LIKE $%d THEN 30 ELSE 0 END +
-			CASE WHEN LOWER(city) LIKE $%d THEN 25 ELSE 0 END +
-			CASE WHEN LOWER(county) LIKE $%d THEN 15 ELSE 0 END +
-			CASE WHEN LOWER(postcode) LIKE $%d THEN 10 ELSE 0 END
-		)`, argIndex, argIndex, argIndex, argIndex, argIndex)
-		bonuses = append(bonuses, bonus)
-	}
-	return strings.Join(bonuses, " + ")
-}
+
 
 // Global address service instance
 var Address *AddressService
