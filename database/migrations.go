@@ -70,6 +70,12 @@ func RunMigrations() error {
 			Up:          createOhioCountiesTable,
 			Down:        dropOhioCountiesTable,
 		},
+		{
+			Version:     10,
+			Description: "Add unique constraint to subscriptions user_id",
+			Up:          addSubscriptionsUniqueConstraint,
+			Down:        removeSubscriptionsUniqueConstraint,
+		},
 	}
 
 	// Create migrations table if it doesn't exist
@@ -714,5 +720,28 @@ func cleanupGeoJSONFiles() error {
 		}
 	}
 	
+	return nil
+}
+// addSubscriptionsUniqueConstraint adds a unique constraint on user_id in subscriptions table
+func addSubscriptionsUniqueConstraint() error {
+	_, err := DB.Exec(`
+		ALTER TABLE subscriptions 
+		ADD CONSTRAINT subscriptions_user_id_unique UNIQUE (user_id)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to add unique constraint to subscriptions: %w", err)
+	}
+	return nil
+}
+
+// removeSubscriptionsUniqueConstraint removes the unique constraint on user_id in subscriptions table
+func removeSubscriptionsUniqueConstraint() error {
+	_, err := DB.Exec(`
+		ALTER TABLE subscriptions 
+		DROP CONSTRAINT IF EXISTS subscriptions_user_id_unique
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to remove unique constraint from subscriptions: %w", err)
+	}
 	return nil
 }
