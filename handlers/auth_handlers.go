@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,6 +65,7 @@ func RegisterHandler(c echo.Context) error {
 				Error:   err.Error(),
 			})
 		}
+		log.Printf("Registration error for %s: %v", req.Email, err)
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
 			Success: false,
 			Error:   "Failed to create user account",
