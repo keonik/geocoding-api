@@ -45,8 +45,6 @@ georef-united-states-of-america-zc-point.csv
 # Documentation build artifacts
 docs/dist/
 node_modules/
-package-lock.json
-yarn.lock
 
 # OS generated files
 .DS_Store
