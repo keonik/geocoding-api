@@ -1,5 +1,22 @@
-# Build stage
-FROM golang:1.24-alpine AS builder
+# Frontend build stage
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app/frontend
+
+# Copy frontend package files
+COPY frontend/package*.json ./
+
+# Install frontend dependencies
+RUN npm ci
+
+# Copy frontend source
+COPY frontend/ ./
+
+# Build frontend
+RUN npm run build
+
+# Backend build stage
+FROM golang:1.24-alpine AS backend-builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -41,20 +58,23 @@ WORKDIR /app
 # Create directories first
 RUN mkdir -p /app/oh /app/cache /app/scripts
 
-# Copy binary from builder
-COPY --from=builder /app/main ./main
+# Copy binary from backend builder
+COPY --from=backend-builder /app/main ./main
 
 # Copy scripts first
-COPY --from=builder /app/scripts/decompress_data.sh ./scripts/
+COPY --from=backend-builder /app/scripts/decompress_data.sh ./scripts/
 
 # Copy compressed data files
-COPY --from=builder /app/georef-united-states-of-america-zc-point.csv.gz* ./
-COPY --from=builder /app/oh/ ./oh/
+COPY --from=backend-builder /app/georef-united-states-of-america-zc-point.csv.gz* ./
+COPY --from=backend-builder /app/oh/ ./oh/
+
+# Copy built frontend (prioritize Vite build, fallback to old static)
+COPY --from=frontend-builder /app/static-new ./static-new
+COPY --from=backend-builder /app/static ./static
 
 # Copy other runtime files
-COPY --from=builder /app/static ./static
-COPY --from=builder /app/docs ./docs
-COPY --from=builder /app/api-docs.yaml ./api-docs.yaml
+COPY --from=backend-builder /app/docs ./docs
+COPY --from=backend-builder /app/api-docs.yaml ./api-docs.yaml
 
 # Decompress data files and set permissions
 RUN chmod +x /app/scripts/decompress_data.sh && \

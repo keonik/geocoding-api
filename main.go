@@ -111,25 +111,17 @@ func main() {
 	// Add request ID middleware for tracing
 	e.Use(echomiddleware.RequestID())
 
+	// Determine which frontend to serve
+	staticDir := "static-new"
+	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
+		log.Println("Vite build (static-new) not found, falling back to old static files")
+		staticDir = "static"
+	} else {
+		log.Println("Serving Vite build from static-new/")
+	}
+
 	// Static files for web interface
-	e.Static("/static", "static")
-	
-	// Web interface routes
-	e.GET("/", func(c echo.Context) error {
-		return c.File("static/index.html")
-	})
-	e.GET("/auth/signin", func(c echo.Context) error {
-		return c.File("static/signin.html")
-	})
-	e.GET("/auth/signup", func(c echo.Context) error {
-		return c.File("static/signup.html")
-	})
-	e.GET("/dashboard", func(c echo.Context) error {
-		return c.File("static/dashboard.html")
-	})
-	e.GET("/admin", func(c echo.Context) error {
-		return c.File("static/admin.html")
-	})
+	e.Static("/assets", staticDir+"/assets")
 	
 	// Documentation routes
 	e.Static("/docs", "docs")
@@ -238,6 +230,21 @@ func main() {
 	admin.GET("/api-keys", handlers.GetAllAPIKeysHandler)
 	admin.GET("/system-status", handlers.GetSystemStatusHandler)
 	admin.GET("/counties", handlers.GetCountyStatsHandler)
+
+	// SPA fallback - MUST be registered AFTER all API routes
+	// This serves the React app for all non-API routes
+	e.GET("/*", func(c echo.Context) error {
+		path := c.Request().URL.Path
+		
+		// Serve static files if they exist
+		filePath := staticDir + path
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+			return c.File(filePath)
+		}
+		
+		// Otherwise serve index.html for SPA routing
+		return c.File(staticDir + "/index.html")
+	})
 
 	// Get port from environment variable or default to 8080
 	port := os.Getenv("PORT")

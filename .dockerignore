@@ -5,6 +5,9 @@
 # Documentation
 README.md
 *.md
+!frontend/README.md
+!frontend/COMPONENTS.md
+!frontend/QUICK_REFERENCE.md
 
 # Environment files
 .env
@@ -42,6 +45,12 @@ Thumbs.db
 
 # Node modules (if any)
 node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Frontend build artifacts
+static-new/
 
 # Air (hot reload) files
 .air.toml

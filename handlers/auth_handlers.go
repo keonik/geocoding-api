@@ -156,20 +156,11 @@ func GetUserProfileHandler(c echo.Context) error {
 
 // CreateAPIKeyHandler creates a new API key for authenticated users
 func CreateAPIKeyHandler(c echo.Context) error {
-	// In a real app, you'd get userID from JWT token or session
-	userIDStr := c.Request().Header.Get("X-User-ID")
-	if userIDStr == "" {
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
 			Success: false,
-			Error:   "User authentication required",
-		})
-	}
-
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{
-			Success: false,
-			Error:   "Invalid user ID",
+			Error:   "User not authenticated",
 		})
 	}
 
@@ -222,19 +213,11 @@ func CreateAPIKeyHandler(c echo.Context) error {
 
 // GetUsageHandler returns usage statistics for a user
 func GetUsageHandler(c echo.Context) error {
-	userIDStr := c.Request().Header.Get("X-User-ID")
-	if userIDStr == "" {
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
 			Success: false,
-			Error:   "User authentication required",
-		})
-	}
-
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{
-			Success: false,
-			Error:   "Invalid user ID",
+			Error:   "User not authenticated",
 		})
 	}
 
@@ -274,19 +257,11 @@ func GetUsageHandler(c echo.Context) error {
 
 // GetAPIKeysHandler returns all API keys for a user
 func GetAPIKeysHandler(c echo.Context) error {
-	userIDStr := c.Request().Header.Get("X-User-ID")
-	if userIDStr == "" {
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
 			Success: false,
-			Error:   "User authentication required",
-		})
-	}
-
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{
-			Success: false,
-			Error:   "Invalid user ID",
+			Error:   "User not authenticated",
 		})
 	}
 
@@ -309,19 +284,11 @@ func GetAPIKeysHandler(c echo.Context) error {
 
 // DeleteAPIKeyHandler deletes an API key for a user
 func DeleteAPIKeyHandler(c echo.Context) error {
-	userIDStr := c.Request().Header.Get("X-User-ID")
-	if userIDStr == "" {
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
 			Success: false,
-			Error:   "User authentication required",
-		})
-	}
-
-	userID, err := strconv.Atoi(userIDStr)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{
-			Success: false,
-			Error:   "Invalid user ID",
+			Error:   "User not authenticated",
 		})
 	}
 

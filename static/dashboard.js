@@ -2,11 +2,25 @@
 let currentUser = null;
 let apiKeys = [];
 
+// Helper function to get auth headers
+function getAuthHeaders() {
+    const token = localStorage.getItem('authToken');
+    if (!token) {
+        window.location.href = '/auth/signin';
+        return {};
+    }
+    return {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+    };
+}
+
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', function() {
     // Check if user is logged in
     const userData = localStorage.getItem('user');
-    if (!userData) {
+    const authToken = localStorage.getItem('authToken');
+    if (!userData || !authToken) {
         window.location.href = '/auth/signin';
         return;
     }
@@ -31,6 +45,7 @@ function setupEventListeners() {
     // Logout
     document.getElementById('logout-btn').addEventListener('click', function() {
         localStorage.removeItem('user');
+        localStorage.removeItem('authToken');
         window.location.href = '/';
     });
     
@@ -98,9 +113,7 @@ async function loadAPIKeys() {
     try {
         // Load usage stats (always current month)
         const usageResponse = await fetch('/api/v1/user/usage', {
-            headers: {
-                'X-User-ID': currentUser.id.toString()
-            }
+            headers: getAuthHeaders()
         });
         
         if (usageResponse.ok) {
@@ -112,9 +125,7 @@ async function loadAPIKeys() {
         
         // Load API keys
         const keysResponse = await fetch('/api/v1/user/api-keys', {
-            headers: {
-                'X-User-ID': currentUser.id.toString()
-            }
+            headers: getAuthHeaders()
         });
         
         if (keysResponse.ok) {
@@ -219,10 +230,7 @@ async function createAPIKey(e) {
     try {
         const response = await fetch('/api/v1/user/api-keys', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-User-ID': currentUser.id.toString()
-            },
+            headers: getAuthHeaders(),
             body: JSON.stringify({
                 name: name,
                 permissions: selectedPermissions
@@ -257,9 +265,7 @@ async function deleteAPIKey(keyId) {
     try {
         const response = await fetch(`/api/v1/user/api-keys/${keyId}`, {
             method: 'DELETE',
-            headers: {
-                'X-User-ID': currentUser.id.toString()
-            }
+            headers: getAuthHeaders()
         });
         
         const data = await response.json();
