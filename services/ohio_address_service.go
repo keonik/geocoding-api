@@ -134,6 +134,78 @@ func loadMissingCounties(loadedCounties map[string]bool) error {
 		log.Printf("Skipped %d counties (already loaded)", skippedCounties)
 	}
 	log.Printf("Completed loading Ohio address data: %d records from %d counties", totalRecords, successfulCounties)
+	
+	// Clean up GeoJSON files after successful loading to save disk space
+	if err := cleanupGeoJSONFiles(); err != nil {
+		log.Printf("Warning: Failed to cleanup GeoJSON files: %v", err)
+		// Don't return error as the loading was successful
+	}
+	
+	return nil
+}
+
+// cleanupGeoJSONFiles removes GeoJSON and meta files after data has been loaded into database
+func cleanupGeoJSONFiles() error {
+	log.Println("Cleaning up GeoJSON files to save disk space...")
+	
+	// Check if we're in production environment
+	isProd := os.Getenv("ENV") == "production" || os.Getenv("GO_ENV") == "production"
+	
+	// Also check if CLEANUP_GEOJSON is explicitly set
+	cleanupEnabled := os.Getenv("CLEANUP_GEOJSON") == "true"
+	
+	if !isProd && !cleanupEnabled {
+		log.Println("Skipping GeoJSON cleanup in development environment. Set CLEANUP_GEOJSON=true to force cleanup.")
+		return nil
+	}
+	
+	// Get all GeoJSON files (both .geojson and .geojson.meta files)
+	patterns := []string{
+		"oh/*.geojson",
+		"oh/*.geojson.meta",
+	}
+	
+	totalFilesDeleted := 0
+	var totalSizeFreed int64
+	
+	for _, pattern := range patterns {
+		files, err := filepath.Glob(pattern)
+		if err != nil {
+			log.Printf("Warning: Failed to find files with pattern %s: %v", pattern, err)
+			continue
+		}
+		
+		for _, filePath := range files {
+			// Get file size before deletion
+			if info, err := os.Stat(filePath); err == nil {
+				totalSizeFreed += info.Size()
+			}
+			
+			// Delete the file
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("Warning: Failed to delete %s: %v", filePath, err)
+				continue
+			}
+			
+			totalFilesDeleted++
+		}
+	}
+	
+	// Convert bytes to human readable format
+	sizeFreedMB := float64(totalSizeFreed) / (1024 * 1024)
+	
+	log.Printf("Successfully cleaned up %d GeoJSON files, freed %.2f MB of disk space", 
+		totalFilesDeleted, sizeFreedMB)
+	
+	// Remove the oh directory if it's empty
+	if entries, err := os.ReadDir("oh"); err == nil && len(entries) == 0 {
+		if err := os.Remove("oh"); err != nil {
+			log.Printf("Warning: Failed to remove empty oh directory: %v", err)
+		} else {
+			log.Println("Removed empty oh directory")
+		}
+	}
+	
 	return nil
 }
 
