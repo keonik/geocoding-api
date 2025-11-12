@@ -14,7 +14,7 @@ type User struct {
 	Email        string    `json:"email" db:"email"`
 	PasswordHash string    `json:"-" db:"password_hash"` // Hidden from JSON
 	Name         string    `json:"name" db:"name"`
-	Company      string    `json:"company" db:"company"`
+	Company      *string   `json:"company,omitempty" db:"company"`
 	PlanType     string    `json:"plan_type" db:"plan_type"`
 	IsActive     bool      `json:"is_active" db:"is_active"`
 	IsAdmin      bool      `json:"is_admin" db:"is_admin"`

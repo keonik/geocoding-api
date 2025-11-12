@@ -132,7 +132,11 @@
             
             try {
                 const requestBody = { name, email, password };
-                if (company) requestBody.company = company;
+                if (company && company.trim() !== '') {
+                    requestBody.company = company;
+                }
+                
+                console.log('Sending registration request:', { ...requestBody, password: '***' });
                 
                 const response = await fetch('/api/v1/auth/register', {
                     method: 'POST',
@@ -144,12 +148,23 @@
                 
                 const data = await response.json();
                 
-                if (data.success) {
+                // Log for debugging
+                console.log('Registration response:', { status: response.status, data });
+                
+                if (response.ok && data.success) {
                     successMsg.textContent = 'Account created successfully! Redirecting to dashboard...';
                     successMsg.classList.remove('hidden');
                     
-                    // Store user info and redirect
-                    localStorage.setItem('user', JSON.stringify(data.data.user));
+                    // Store auth token
+                    if (data.data && data.data.token) {
+                        localStorage.setItem('authToken', data.data.token);
+                    }
+                    
+                    // Store user info
+                    if (data.data && data.data.user) {
+                        localStorage.setItem('user', JSON.stringify(data.data.user));
+                    }
+                    
                     setTimeout(() => {
                         window.location.href = '/dashboard';
                     }, 1000);
@@ -158,6 +173,7 @@
                     errorMsg.classList.remove('hidden');
                 }
             } catch (error) {
+                console.error('Registration error:', error);
                 errorMsg.textContent = 'Network error. Please try again.';
                 errorMsg.classList.remove('hidden');
             } finally {

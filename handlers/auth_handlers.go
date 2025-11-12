@@ -72,10 +72,21 @@ func RegisterHandler(c echo.Context) error {
 		})
 	}
 
+	// Generate JWT token for the new user
+	token, err := services.Auth.GenerateJWT(user)
+	if err != nil {
+		log.Printf("Failed to generate JWT for new user %s: %v", user.Email, err)
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to generate authentication token",
+		})
+	}
+
 	return c.JSON(http.StatusCreated, GeocodeResponse{
 		Success: true,
 		Data: map[string]interface{}{
-			"user": user,
+			"user":    user,
+			"token":   token,
 			"message": "Account created successfully. You can now create API keys.",
 		},
 	})
