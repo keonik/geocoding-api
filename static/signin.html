@@ -74,6 +74,15 @@
     </div>
 
     <script>
+        // Check if this is an admin login
+        const urlParams = new URLSearchParams(window.location.search);
+        const isAdminLogin = urlParams.get('admin') === 'true';
+        
+        if (isAdminLogin) {
+            document.querySelector('h2').textContent = 'Admin Sign In';
+            document.querySelector('p.text-sm').innerHTML = 'Sign in with your admin account';
+        }
+        
         document.getElementById('signin-form').addEventListener('submit', async function(e) {
             e.preventDefault();
             
@@ -104,13 +113,26 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    successMsg.textContent = 'Sign in successful! Redirecting to dashboard...';
+                    successMsg.textContent = 'Sign in successful! Redirecting...';
                     successMsg.classList.remove('hidden');
                     
-                    // Store user info and redirect
-                    localStorage.setItem('user', JSON.stringify(data.data.user));
+                    // Store auth token
+                    if (data.data.token) {
+                        localStorage.setItem('authToken', data.data.token);
+                    }
+                    
+                    // Store user info
+                    if (data.data.user) {
+                        localStorage.setItem('user', JSON.stringify(data.data.user));
+                    }
+                    
+                    // Redirect based on admin login flag
                     setTimeout(() => {
-                        window.location.href = '/dashboard';
+                        if (isAdminLogin) {
+                            window.location.href = '/admin';
+                        } else {
+                            window.location.href = '/dashboard';
+                        }
                     }, 1000);
                 } else {
                     errorMsg.textContent = data.error || 'Sign in failed';

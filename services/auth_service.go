@@ -42,12 +42,12 @@ func (as *AuthService) RegisterUser(email, password, name string, company *strin
 	// Insert user
 	var user models.User
 	err = database.DB.QueryRow(`
-		INSERT INTO users (email, name, company, password_hash, is_active, plan_type, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, true, 'free', NOW(), NOW())
-		RETURNING id, email, name, company, is_active, plan_type, created_at, updated_at
+		INSERT INTO users (email, name, company, password_hash, is_active, is_admin, plan_type, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, true, false, 'free', NOW(), NOW())
+		RETURNING id, email, name, company, is_active, is_admin, plan_type, created_at, updated_at
 	`, email, name, company, string(hashedPassword)).Scan(
 		&user.ID, &user.Email, &user.Name, &user.Company, 
-		&user.IsActive, &user.PlanType, &user.CreatedAt, &user.UpdatedAt,
+		&user.IsActive, &user.IsAdmin, &user.PlanType, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create user: %w", err)
@@ -68,11 +68,11 @@ func (as *AuthService) AuthenticateUser(email, password string) (*models.User, e
 	var passwordHash string
 
 	err := database.DB.QueryRow(`
-		SELECT id, email, name, company, password_hash, is_active, plan_type, created_at, updated_at
+		SELECT id, email, name, company, password_hash, is_active, is_admin, plan_type, created_at, updated_at
 		FROM users WHERE email = $1 AND is_active = true
 	`, email).Scan(
 		&user.ID, &user.Email, &user.Name, &user.Company, &passwordHash,
-		&user.IsActive, &user.PlanType, &user.CreatedAt, &user.UpdatedAt,
+		&user.IsActive, &user.IsAdmin, &user.PlanType, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("invalid email or password")
