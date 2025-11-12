@@ -180,25 +180,41 @@ func getEndpointName(path string) string {
 func RequireUserAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			// In a real implementation, you'd validate JWT tokens or sessions here
-			// For now, we'll just check for a user ID header (simplified)
-			userIDStr := c.Request().Header.Get("X-User-ID")
-			if userIDStr == "" {
+			// Get Authorization header
+			authHeader := c.Request().Header.Get("Authorization")
+			if authHeader == "" {
 				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
 					Success: false,
-					Error:   "User authentication required",
+					Error:   "Authorization header required",
 				})
 			}
 
-			userID, err := strconv.Atoi(userIDStr)
-			if err != nil {
-				return c.JSON(http.StatusBadRequest, handlers.GeocodeResponse{
+			// Parse Bearer token
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) != 2 || parts[0] != "Bearer" {
+				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
 					Success: false,
-					Error:   "Invalid user ID",
+					Error:   "Invalid authorization format. Use 'Bearer <token>'",
 				})
 			}
 
-			c.Set("user_id", userID)
+			tokenString := parts[1]
+
+			// Validate JWT token
+			claims, err := services.Auth.ValidateJWT(tokenString)
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
+					Success: false,
+					Error:   "Invalid or expired token",
+				})
+			}
+
+			// Store user info in context
+			c.Set("user_id", claims.UserID)
+			c.Set("user_email", claims.Email)
+			c.Set("is_admin", claims.IsAdmin)
+			c.Set("jwt_claims", claims)
+
 			return next(c)
 		}
 	}

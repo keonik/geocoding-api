@@ -195,6 +195,7 @@ func main() {
 	// User management routes (require user auth)
 	user := api.Group("/user")
 	user.Use(middleware.RequireUserAuth())
+	user.GET("/profile", handlers.GetUserProfileHandler)
 	user.POST("/api-keys", handlers.CreateAPIKeyHandler)
 	user.GET("/api-keys", handlers.GetAPIKeysHandler)
 	user.DELETE("/api-keys/:id", handlers.DeleteAPIKeyHandler)

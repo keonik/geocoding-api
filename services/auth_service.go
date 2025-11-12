@@ -7,17 +7,87 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"geocoding-api/database"
 	"geocoding-api/models"
 
+	"github.com/golang-jwt/jwt"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // AuthService handles authentication and API key management
 type AuthService struct{}
+
+// JWTClaims represents the JWT token claims
+type JWTClaims struct {
+	UserID   int    `json:"user_id"`
+	Email    string `json:"email"`
+	IsAdmin  bool   `json:"is_admin"`
+	jwt.StandardClaims
+}
+
+// GenerateJWT creates a new JWT token for a user
+func (as *AuthService) GenerateJWT(user *models.User) (string, error) {
+	// Get JWT secret from environment or use default for development
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "your-secret-key-change-in-production"
+	}
+
+	// Create claims with user data
+	claims := JWTClaims{
+		UserID:  user.ID,
+		Email:   user.Email,
+		IsAdmin: user.IsAdmin,
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: time.Now().Add(24 * time.Hour).Unix(), // Token expires in 24 hours
+			IssuedAt:  time.Now().Unix(),
+		},
+	}
+
+	// Create token with claims
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	// Sign token with secret
+	tokenString, err := token.SignedString([]byte(secret))
+	if err != nil {
+		return "", fmt.Errorf("failed to sign token: %w", err)
+	}
+
+	return tokenString, nil
+}
+
+// ValidateJWT validates a JWT token and returns the claims
+func (as *AuthService) ValidateJWT(tokenString string) (*JWTClaims, error) {
+	// Get JWT secret from environment or use default for development
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		secret = "your-secret-key-change-in-production"
+	}
+
+	// Parse token
+	token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// Validate signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(secret), nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract claims
+	if claims, ok := token.Claims.(*JWTClaims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, fmt.Errorf("invalid token")
+}
 
 var Auth = &AuthService{}
 
@@ -85,6 +155,27 @@ func (as *AuthService) AuthenticateUser(email, password string) (*models.User, e
 	err = bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password))
 	if err != nil {
 		return nil, fmt.Errorf("invalid email or password")
+	}
+
+	return &user, nil
+}
+
+// GetUserByID retrieves a user by their ID
+func (as *AuthService) GetUserByID(userID int) (*models.User, error) {
+	var user models.User
+
+	err := database.DB.QueryRow(`
+		SELECT id, email, name, company, is_active, is_admin, plan_type, created_at, updated_at
+		FROM users WHERE id = $1
+	`, userID).Scan(
+		&user.ID, &user.Email, &user.Name, &user.Company,
+		&user.IsActive, &user.IsAdmin, &user.PlanType, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
 	return &user, nil

@@ -99,12 +99,47 @@ func LoginHandler(c echo.Context) error {
 		})
 	}
 
+	// Generate JWT token
+	token, err := services.Auth.GenerateJWT(user)
+	if err != nil {
+		log.Printf("Failed to generate JWT for user %s: %v", user.Email, err)
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to generate authentication token",
+		})
+	}
+
 	return c.JSON(http.StatusOK, GeocodeResponse{
 		Success: true,
 		Data: map[string]interface{}{
-			"user": user,
+			"user":    user,
+			"token":   token,
 			"message": "Login successful",
 		},
+	})
+}
+
+// GetUserProfileHandler returns the profile of the authenticated user
+func GetUserProfileHandler(c echo.Context) error {
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
+			Success: false,
+			Error:   "User not authenticated",
+		})
+	}
+
+	user, err := services.Auth.GetUserByID(userID)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, GeocodeResponse{
+			Success: false,
+			Error:   "User not found",
+		})
+	}
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data:    user,
 	})
 }
 
