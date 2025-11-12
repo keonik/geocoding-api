@@ -78,7 +78,6 @@ func loadMissingCounties(loadedCounties map[string]bool) error {
 
 	// Get list of all Ohio counties
 	counties := utils.GetOhioCountyList()
-	downloader := utils.NewRealDataDownloader("cache")
 	
 	totalRecords := 0
 	successfulCounties := 0
@@ -93,25 +92,10 @@ func loadMissingCounties(loadedCounties map[string]bool) error {
 		
 		addressFile := filepath.Join(ohDir, fmt.Sprintf("%s-addresses-county.geojson", county))
 		
-		// Check if file exists, download/convert if not
+		// Check if file exists - skip download/conversion since we're using compressed files from repo
 		if _, err := os.Stat(addressFile); os.IsNotExist(err) {
-			log.Printf("GeoJSON file not found for %s, downloading and converting...", county)
-			
-			// Download and convert just this county
-			if err := downloader.DownloadAndConvertCounty(county, destDir); err != nil {
-				if strings.Contains(err.Error(), "ArcGIS FeatureServer") {
-					log.Printf("Info: %s uses ArcGIS FeatureServer (not yet supported), skipping", strings.Title(county))
-				} else {
-					log.Printf("Warning: Failed to download/convert %s: %v", county, err)
-				}
-				continue
-			}
-			
-			// Check again if file exists after conversion
-			if _, err := os.Stat(addressFile); os.IsNotExist(err) {
-				log.Printf("Warning: GeoJSON file still not found after conversion for %s", county)
-				continue
-			}
+			log.Printf("GeoJSON file not found for %s, skipping (no compressed file available)", county)
+			continue
 		}
 		
 		// Load county data
