@@ -14,7 +14,7 @@ if [ -d "oh" ]; then
             if [ ! -f "$jsonfile" ] || [ "$gzfile" -nt "$jsonfile" ]; then
                 echo "Decompressing $(basename "$gzfile")..."
                 gunzip -k -f "$gzfile"
-                ((count++))
+                count=$((count + 1))
             fi
         fi
     done
