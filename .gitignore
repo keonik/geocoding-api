@@ -27,7 +27,13 @@ build-errors.log
 
 # Downloaded data cache
 cache/
-oh/
+
+# Uncompressed data files (keep .gz versions in git)
+oh/*.geojson
+oh/*.geojson.meta
+!oh/*.geojson.gz
+georef-united-states-of-america-zc-point.csv
+!georef-united-states-of-america-zc-point.csv.gz
 
 # IDE files
 .vscode/

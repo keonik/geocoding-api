@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,65 +15,103 @@ import (
 
 // InitializeOhioData checks if Ohio address data exists and loads it if empty
 func InitializeOhioData() error {
-	// Check if we have any data
-	var count int
-	err := database.DB.QueryRow("SELECT COUNT(*) FROM ohio_addresses").Scan(&count)
+	// Check total count first
+	var totalCount int
+	err := database.DB.QueryRow("SELECT COUNT(*) FROM ohio_addresses").Scan(&totalCount)
 	if err != nil {
 		return fmt.Errorf("failed to count existing Ohio address records: %w", err)
 	}
 
-	if count > 0 {
-		log.Printf("Database already contains %d Ohio address records", count)
-		return nil
+	if totalCount == 0 {
+		log.Println("No Ohio address data found, loading all counties...")
+		return LoadOhioAddressData()
 	}
 
-	log.Println("No Ohio address data found, attempting to load from GeoJSON files...")
-	return LoadOhioAddressData()
+	// Check which counties are missing
+	log.Printf("Database contains %d Ohio address records, checking for missing counties...", totalCount)
+	
+	// Get list of counties already loaded
+	rows, err := database.DB.Query("SELECT DISTINCT county FROM ohio_addresses")
+	if err != nil {
+		return fmt.Errorf("failed to query existing counties: %w", err)
+	}
+	defer rows.Close()
+	
+	loadedCounties := make(map[string]bool)
+	for rows.Next() {
+		var county string
+		if err := rows.Scan(&county); err != nil {
+			continue
+		}
+		loadedCounties[strings.ToLower(county)] = true
+	}
+	
+	log.Printf("Found %d counties already loaded", len(loadedCounties))
+	
+	// If we have all 88 counties, we're done
+	if len(loadedCounties) >= 88 {
+		log.Println("All Ohio counties already loaded")
+		return nil
+	}
+	
+	// Load missing counties only
+	log.Printf("Loading missing counties (have %d of 88)...", len(loadedCounties))
+	return loadMissingCounties(loadedCounties)
 }
 
 // LoadOhioAddressData loads address data from all Ohio county GeoJSON files
 func LoadOhioAddressData() error {
+	return loadMissingCounties(make(map[string]bool))
+}
+
+// loadMissingCounties loads data for counties not already in the database
+func loadMissingCounties(loadedCounties map[string]bool) error {
 	log.Println("Loading Ohio address data from GeoJSON files...")
 	
-	// Download/generate data if needed
 	destDir := "."
 	ohDir := filepath.Join(destDir, "oh")
 	
-	// Always trigger download if directory doesn't exist or is empty
-	needsDownload := false
-	if _, err := os.Stat(ohDir); os.IsNotExist(err) {
-		needsDownload = true
-		log.Println("Ohio data directory not found, will download...")
-	} else {
-		// Check if directory is empty
-		entries, err := os.ReadDir(ohDir)
-		if err != nil || len(entries) == 0 {
-			needsDownload = true
-			log.Println("Ohio data directory is empty, will download...")
-		}
-	}
-	
-	if needsDownload {
-		log.Println("Downloading Ohio county data...")
-		downloader := utils.NewRealDataDownloader("cache")
-		if err := downloader.DownloadOhioRealData(destDir); err != nil {
-			return fmt.Errorf("failed to download Ohio data: %w", err)
-		}
+	// Create oh directory if it doesn't exist
+	if err := os.MkdirAll(ohDir, 0755); err != nil {
+		return fmt.Errorf("failed to create ohio data directory: %w", err)
 	}
 
 	// Get list of all Ohio counties
 	counties := utils.GetOhioCountyList()
+	downloader := utils.NewRealDataDownloader("cache")
 	
 	totalRecords := 0
 	successfulCounties := 0
+	skippedCounties := 0
 	
 	for _, county := range counties {
+		// Skip if already loaded
+		if loadedCounties[strings.ToLower(county)] {
+			skippedCounties++
+			continue
+		}
+		
 		addressFile := filepath.Join(ohDir, fmt.Sprintf("%s-addresses-county.geojson", county))
 		
-		// Check if file exists
+		// Check if file exists, download/convert if not
 		if _, err := os.Stat(addressFile); os.IsNotExist(err) {
-			log.Printf("Warning: GeoJSON file not found for %s: %s", county, addressFile)
-			continue
+			log.Printf("GeoJSON file not found for %s, downloading and converting...", county)
+			
+			// Download and convert just this county
+			if err := downloader.DownloadAndConvertCounty(county, destDir); err != nil {
+				if strings.Contains(err.Error(), "ArcGIS FeatureServer") {
+					log.Printf("Info: %s uses ArcGIS FeatureServer (not yet supported), skipping", strings.Title(county))
+				} else {
+					log.Printf("Warning: Failed to download/convert %s: %v", county, err)
+				}
+				continue
+			}
+			
+			// Check again if file exists after conversion
+			if _, err := os.Stat(addressFile); os.IsNotExist(err) {
+				log.Printf("Warning: GeoJSON file still not found after conversion for %s", county)
+				continue
+			}
 		}
 		
 		// Load county data
@@ -88,16 +127,36 @@ func LoadOhioAddressData() error {
 		if count > 0 {
 			log.Printf("Loaded %d records from %s", count, strings.Title(county))
 		} else {
-			log.Printf("Loaded 0 records from %s (no features in file)", strings.Title(county))
+			// Check if it's a placeholder file with ArcGIS source
+			content, readErr := os.ReadFile(addressFile)
+			if readErr != nil {
+				log.Printf("Loaded 0 records from %s (could not read file: %v)", strings.Title(county), readErr)
+			} else {
+				contentStr := string(content)
+				
+				// Check for ArcGIS indicators
+				if strings.Contains(contentStr, "FeatureServer") {
+					log.Printf("Info: %s uses ArcGIS FeatureServer (not yet supported)", strings.Title(county))
+				} else if len(contentStr) < 500 && strings.Contains(contentStr, `"features": []`) {
+					log.Printf("Info: %s has empty placeholder file", strings.Title(county))
+				} else {
+					log.Printf("Loaded 0 records from %s (no features in shapefile - may be empty)", strings.Title(county))
+				}
+			}
 		}
 	}
 	
+	if skippedCounties > 0 {
+		log.Printf("Skipped %d counties (already loaded)", skippedCounties)
+	}
 	log.Printf("Completed loading Ohio address data: %d records from %d counties", totalRecords, successfulCounties)
 	return nil
 }
 
 // loadCountyAddresses loads address data from a single county GeoJSON file
 func loadCountyAddresses(county, filePath string) (int, error) {
+	// Loading address file
+	
 	// Open and read the GeoJSON file
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -105,25 +164,91 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 	}
 	defer file.Close()
 
-	// Parse GeoJSON
-	var geoJSON struct {
+	// Try to detect format - peek at first bytes
+	firstBytes := make([]byte, 100)
+	n, err := file.Read(firstBytes)
+	if err != nil {
+
+		return 0, fmt.Errorf("failed to read file: %w", err)
+	}
+	file.Seek(0, 0) // Reset to beginning
+	
+	firstLine := string(firstBytes[:n])
+	isNDJSON := strings.HasPrefix(strings.TrimSpace(firstLine), `{"type":"Feature"`) || 
+	            strings.HasPrefix(strings.TrimSpace(firstLine), `{"type": "Feature"`)
+	
+	previewLen := 50
+	if len(firstLine) < previewLen {
+		previewLen = len(firstLine)
+	}
+	// Detect format and parse accordingly
+	
+	var features []struct {
 		Type     string `json:"type"`
-		Features []struct {
+		Geometry struct {
+			Type        string    `json:"type"`
+			Coordinates []float64 `json:"coordinates"`
+		} `json:"geometry"`
+		Properties map[string]interface{} `json:"properties"`
+	}
+
+	if isNDJSON {
+		// Parse newline-delimited JSON
+
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // 10MB max line size
+		
+
+		lineCount := 0
+		for scanner.Scan() {
+			lineCount++
+			var feature struct {
+				Type     string `json:"type"`
+				Geometry struct {
+					Type        string    `json:"type"`
+					Coordinates []float64 `json:"coordinates"`
+				} `json:"geometry"`
+				Properties map[string]interface{} `json:"properties"`
+			}
+			
+			if err := json.Unmarshal(scanner.Bytes(), &feature); err != nil {
+				if lineCount <= 3 {
+
+				}
+				continue // Skip malformed lines
+			}
+			
+			features = append(features, feature)
+		}
+		
+
+		
+		if err := scanner.Err(); err != nil {
+			return 0, fmt.Errorf("failed to scan NDJSON file: %w", err)
+		}
+	} else {
+		// Parse FeatureCollection format
+		var geoJSON struct {
 			Type     string `json:"type"`
-			Geometry struct {
-				Type        string    `json:"type"`
-				Coordinates []float64 `json:"coordinates"`
-			} `json:"geometry"`
-			Properties map[string]interface{} `json:"properties"`
-		} `json:"features"`
+			Features []struct {
+				Type     string `json:"type"`
+				Geometry struct {
+					Type        string    `json:"type"`
+					Coordinates []float64 `json:"coordinates"`
+				} `json:"geometry"`
+				Properties map[string]interface{} `json:"properties"`
+			} `json:"features"`
+		}
+
+		decoder := json.NewDecoder(file)
+		if err := decoder.Decode(&geoJSON); err != nil {
+			return 0, fmt.Errorf("failed to parse GeoJSON: %w", err)
+		}
+		
+		features = geoJSON.Features
 	}
 
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&geoJSON); err != nil {
-		return 0, fmt.Errorf("failed to parse GeoJSON: %w", err)
-	}
-
-	if len(geoJSON.Features) == 0 {
+	if len(features) == 0 {
 		return 0, nil
 	}
 
@@ -141,7 +266,7 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 
 	insertedCount := 0
 
-	for _, feature := range geoJSON.Features {
+	for _, feature := range features {
 		if feature.Geometry.Type != "Point" || len(feature.Geometry.Coordinates) < 2 {
 			continue
 		}
@@ -153,16 +278,22 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 		longitude := feature.Geometry.Coordinates[0]
 		latitude := feature.Geometry.Coordinates[1]
 
-		// Extract address components with various possible field names from Ohio LBRS shapefiles
-		houseNumber := getStringProperty(props, "HOUSENUM", "HouseNum", "house_number", "housenumber")
-		streetName := getStringProperty(props, "ST_NAME", "StreetName", "street_name", "STREETNAME", "LSN")
-		unit := getStringProperty(props, "UNITNUM", "Unit", "unit", "UNIT")
-		city := getStringProperty(props, "USPS_CITY", "City", "city", "CITY", "MUNI")
-		state := getStringProperty(props, "STATE", "State", "state", "REGION")
-		zipCode := getStringProperty(props, "ZIPCODE", "ZipCode", "zip_code", "POSTCODE", "postcode")
-		
-		// Generate hash for uniqueness (similar to what migration does)
-		hash := fmt.Sprintf("%s_%s_%s_%f_%f", county, houseNumber, streetName, latitude, longitude)
+		// Extract address components with various possible field names from Ohio LBRS shapefiles and OpenAddresses
+	houseNumber := getStringProperty(props, "number", "HOUSENUM", "HouseNum", "house_number", "housenumber")
+	streetName := getStringProperty(props, "street", "ST_NAME", "StreetName", "street_name", "STREETNAME", "LSN")
+	unit := getStringProperty(props, "unit", "UNITNUM", "Unit", "UNIT")
+	city := getStringProperty(props, "city", "USPS_CITY", "City", "CITY", "MUNI")
+	state := getStringProperty(props, "region", "STATE", "State", "state", "REGION")
+	// Truncate state to 2 characters to match database schema VARCHAR(2)
+	if len(state) > 2 {
+		state = state[:2]
+	}
+	zipCode := getStringProperty(props, "postcode", "ZIPCODE", "ZipCode", "zip_code", "POSTCODE")		
+		// Use existing hash if available (OpenAddresses format), otherwise generate one
+		hash := getStringProperty(props, "hash")
+		if hash == "" {
+			hash = fmt.Sprintf("%s_%s_%s_%f_%f", county, houseNumber, streetName, latitude, longitude)
+		}
 		
 		// Skip if no meaningful address data
 		if houseNumber == "" && streetName == "" {

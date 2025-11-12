@@ -159,6 +159,68 @@ func (rdd *RealDataDownloader) generateOpenAddressesURLs() map[string]string {
 	return urls
 }
 
+// DownloadAndConvertCounty downloads and converts a single county's data
+func (rdd *RealDataDownloader) DownloadAndConvertCounty(county, destDir string) error {
+	// Get the OpenAddresses configuration for this county
+	configURL := fmt.Sprintf("https://raw.githubusercontent.com/openaddresses/openaddresses/master/sources/us/oh/%s.json", county)
+	
+	resp, err := rdd.Client.Get(configURL)
+	if err != nil {
+		return fmt.Errorf("failed to download config: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("config returned status %d", resp.StatusCode)
+	}
+
+	// Parse the configuration
+	var source OpenAddressesSource
+	if err := json.NewDecoder(resp.Body).Decode(&source); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Get the data source URL
+	if len(source.Layers.Addresses) == 0 {
+		return fmt.Errorf("no address data layer found in config")
+	}
+
+	dataSourceURL := source.Layers.Addresses[0].Data
+	
+	// Check if it's an Ohio LBRS source
+	if !strings.Contains(dataSourceURL, "gis1.oit.ohio.gov/LBRS") {
+		// Check if it's an ArcGIS FeatureServer
+		if strings.Contains(dataSourceURL, "arcgis.com") || strings.Contains(dataSourceURL, "FeatureServer") {
+			return fmt.Errorf("county uses ArcGIS FeatureServer (not supported yet): %s", dataSourceURL)
+		}
+		return fmt.Errorf("not an Ohio LBRS source, cannot convert: %s", dataSourceURL)
+	}
+
+	fmt.Printf("Downloading real data from Ohio LBRS for %s...\n", county)
+	
+	ohDir := filepath.Join(destDir, "oh")
+	addressFile := filepath.Join(ohDir, fmt.Sprintf("%s-addresses-county.geojson", county))
+	
+	// Download the ZIP file
+	zipPath := filepath.Join(rdd.CacheDir, fmt.Sprintf("%s_ADDS.zip", strings.ToUpper(county[:3])))
+	
+	// Check if already downloaded and recent
+	if !rdd.isCached(zipPath, 24*time.Hour) {
+		if err := rdd.DownloadFileFromURL(dataSourceURL, zipPath); err != nil {
+			return fmt.Errorf("failed to download ZIP: %w", err)
+		}
+	} else {
+		fmt.Printf("Using cached ZIP file for %s\n", county)
+	}
+
+	// Convert to GeoJSON
+	if err := rdd.convertShapefileToGeoJSON(zipPath, addressFile, county); err != nil {
+		return fmt.Errorf("failed to convert shapefile: %w", err)
+	}
+
+	return nil
+}
+
 // downloadOpenAddressesConfigs downloads OpenAddresses configuration files
 func (rdd *RealDataDownloader) downloadOpenAddressesConfigs(urls map[string]string, destDir string) error {
 	successCount := 0

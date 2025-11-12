@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -38,17 +38,27 @@ RUN addgroup -g 1001 -S appgroup && \
 
 WORKDIR /app
 
+# Create directories first
+RUN mkdir -p /app/oh /app/cache /app/scripts
+
 # Copy binary from builder
 COPY --from=builder /app/main ./main
 
-# Copy necessary files for runtime
-COPY --from=builder /app/georef-united-states-of-america-zc-point.csv .
+# Copy scripts first
+COPY --from=builder /app/scripts/decompress_data.sh ./scripts/
+
+# Copy compressed data files
+COPY --from=builder /app/georef-united-states-of-america-zc-point.csv.gz* ./
+COPY --from=builder /app/oh/ ./oh/
+
+# Copy other runtime files
 COPY --from=builder /app/static ./static
 COPY --from=builder /app/docs ./docs
 COPY --from=builder /app/api-docs.yaml ./api-docs.yaml
 
-# Create directories for downloaded data (with proper permissions)
-RUN mkdir -p /app/oh /app/cache && \
+# Decompress data files and set permissions
+RUN chmod +x /app/scripts/decompress_data.sh && \
+    /app/scripts/decompress_data.sh || echo "No compressed files to decompress" && \
     chown -R appuser:appgroup /app
 
 # Set environment variables for production
