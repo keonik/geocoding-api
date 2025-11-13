@@ -61,9 +61,23 @@ export interface APIKeysResponse {
 }
 
 // Usage types
-export interface UsageStats {
+export interface UsageSummary {
+  user_id: number
+  month: string
+  total_calls: number
+  billable_calls: number
+  total_cost: number
+  endpoint_breakdown: Record<string, number>
+}
+
+export interface RateLimit {
+  within_limit: boolean
   current_usage: number
   monthly_limit: number
-  period_start: string
-  period_end: string
+  remaining: number
+}
+
+export interface UsageStats {
+  usage_summary: UsageSummary
+  rate_limit: RateLimit
 }

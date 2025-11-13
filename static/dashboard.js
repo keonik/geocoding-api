@@ -155,8 +155,12 @@ async function loadAPIKeys() {
 }
 
 function updateUsageStats(data) {
-    document.getElementById('current-usage').textContent = data.current_usage || 0;
-    document.getElementById('monthly-limit').textContent = data.monthly_limit || 1000;
+    // Handle both the nested structure from the API and flat structure
+    const currentUsage = data.rate_limit?.current_usage || data.current_usage || 0;
+    const monthlyLimit = data.rate_limit?.monthly_limit || data.monthly_limit || 1000;
+    
+    document.getElementById('current-usage').textContent = currentUsage;
+    document.getElementById('monthly-limit').textContent = monthlyLimit;
     // API key count will be updated separately when we load actual keys
 }
 

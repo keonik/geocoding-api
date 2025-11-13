@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -84,7 +85,22 @@ func APIKeyAuth() echo.MiddlewareFunc {
 
 			if !withinLimit {
 				// Record over-limit usage (non-billable)
-				go recordUsage(c, user.ID, keyRecord.ID, startTime, false)
+				overLimitEndpoint := getEndpointName(path)
+				method := c.Request().Method
+				statusCode := http.StatusTooManyRequests
+				responseTime := int(time.Since(startTime).Milliseconds())
+				ipAddress := c.RealIP()
+				userAgent := c.Request().UserAgent()
+				
+				go func() {
+					err := services.Auth.RecordUsage(
+						user.ID, keyRecord.ID, overLimitEndpoint, method,
+						statusCode, responseTime, ipAddress, userAgent, false,
+					)
+					if err != nil {
+						log.Printf("Failed to record over-limit usage: %v", err)
+					}
+				}()
 				
 				return c.JSON(http.StatusTooManyRequests, handlers.GeocodeResponse{
 					Success: false,
@@ -120,30 +136,26 @@ func APIKeyAuth() echo.MiddlewareFunc {
 			// Call next handler
 			err = next(c)
 
+			// Capture needed values before goroutine (don't pass context to goroutine)
+			responseTime := int(time.Since(startTime).Milliseconds())
+			method := c.Request().Method
+			statusCode := c.Response().Status
+			ipAddress := c.RealIP()
+			userAgent := c.Request().UserAgent()
+
 			// Record usage after request completes
-			go recordUsage(c, user.ID, keyRecord.ID, startTime, true)
+			go func() {
+				err := services.Auth.RecordUsage(
+					user.ID, keyRecord.ID, endpoint, method,
+					statusCode, responseTime, ipAddress, userAgent, true,
+				)
+				if err != nil {
+					log.Printf("Failed to record usage: %v", err)
+				}
+			}()
 
 			return err
 		}
-	}
-}
-
-// recordUsage logs the API call for billing and analytics
-func recordUsage(c echo.Context, userID, apiKeyID int, startTime time.Time, billable bool) {
-	responseTime := int(time.Since(startTime).Milliseconds())
-	endpoint := getEndpointName(c.Request().URL.Path)
-	method := c.Request().Method
-	statusCode := c.Response().Status
-	ipAddress := c.RealIP()
-	userAgent := c.Request().UserAgent()
-
-	err := services.Auth.RecordUsage(
-		userID, apiKeyID, endpoint, method, 
-		statusCode, responseTime, ipAddress, userAgent, billable,
-	)
-	if err != nil {
-		// Log error but don't fail the request
-		c.Logger().Errorf("Failed to record usage: %v", err)
 	}
 }
 

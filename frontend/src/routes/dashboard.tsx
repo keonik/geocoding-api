@@ -176,7 +176,7 @@ function Dashboard() {
             <CardHeader>
               <CardDescription>Current Usage</CardDescription>
               <CardTitle className="text-3xl">
-                {usage?.current_usage || 0}
+                {usage?.rate_limit?.current_usage || 0}
               </CardTitle>
             </CardHeader>
           </Card>
@@ -184,7 +184,7 @@ function Dashboard() {
             <CardHeader>
               <CardDescription>Monthly Limit</CardDescription>
               <CardTitle className="text-3xl">
-                {usage?.monthly_limit || 0}
+                {usage?.rate_limit?.monthly_limit || 0}
               </CardTitle>
             </CardHeader>
           </Card>
