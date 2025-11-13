@@ -214,7 +214,7 @@ async function toggleUserStatus(userId, currentStatus) {
     try {
         const token = localStorage.getItem('authToken');
         const response = await fetch(`/api/v1/admin/users/${userId}/status`, {
-            method: 'PATCH',
+            method: 'PUT',
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'
@@ -242,7 +242,7 @@ async function makeAdmin(userId, currentAdmin) {
     try {
         const token = localStorage.getItem('authToken');
         const response = await fetch(`/api/v1/admin/users/${userId}/admin`, {
-            method: 'PATCH',
+            method: 'PUT',
             headers: {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json'

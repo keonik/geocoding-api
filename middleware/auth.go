@@ -269,34 +269,61 @@ func isAdminEmail(email string) bool {
 	return false
 }
 
-// RequireAdminAuth middleware ensures user is authenticated and has admin privileges
+// RequireAdminAuth middleware ensures user is authenticated via JWT and has admin privileges
 func RequireAdminAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			// Use API key authentication first
-			apiKeyAuth := APIKeyAuth()
-			if err := apiKeyAuth(func(c echo.Context) error { return nil })(c); err != nil {
-				return err
-			}
-
-			// Get user from API key authentication context
-			user, ok := c.Get("user").(*models.User)
-			if !ok {
-				return c.JSON(http.StatusUnauthorized, map[string]interface{}{
-					"success": false,
-					"error":   "User authentication required",
+			// Use JWT authentication for admin routes
+			authHeader := c.Request().Header.Get("Authorization")
+			if authHeader == "" {
+				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
+					Success: false,
+					Error:   "Authorization header required",
 				})
 			}
 
-			// Check if user has admin privileges using environment variable
-			if !isAdminEmail(user.Email) {
-				return c.JSON(http.StatusForbidden, map[string]interface{}{
-					"success": false,
-					"error":   "Admin privileges required",
-					"user_id": user.ID,
-					"email":   user.Email,
+			// Parse Bearer token
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) != 2 || parts[0] != "Bearer" {
+				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
+					Success: false,
+					Error:   "Invalid authorization format. Use 'Bearer <token>'",
 				})
 			}
+
+			tokenString := parts[1]
+
+			// Validate JWT token
+			claims, err := services.Auth.ValidateJWT(tokenString)
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
+					Success: false,
+					Error:   "Invalid or expired token",
+				})
+			}
+
+			// Get user from database to check admin status
+			user, err := services.Auth.GetUserByID(claims.UserID)
+			if err != nil {
+				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
+					Success: false,
+					Error:   "User not found",
+				})
+			}
+
+			// Check if user has admin privileges
+			if !user.IsAdmin && !isAdminEmail(user.Email) {
+				return c.JSON(http.StatusForbidden, handlers.GeocodeResponse{
+					Success: false,
+					Error:   "Admin privileges required",
+				})
+			}
+
+			// Store user info in context
+			c.Set("user_id", user.ID)
+			c.Set("user_email", user.Email)
+			c.Set("is_admin", true)
+			c.Set("user", user)
 
 			return next(c)
 		}

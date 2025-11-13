@@ -331,7 +331,7 @@ func GetPlansHandler(c echo.Context) error {
 			"plans": map[string]interface{}{
 				"free": map[string]interface{}{
 					"name":           "Free",
-					"monthly_limit":  1000,
+					"monthly_limit":  100000,
 					"price_per_call": 0,
 					"price_monthly":  0,
 					"features":       []string{"Basic geocoding", "City search", "Community support"},
