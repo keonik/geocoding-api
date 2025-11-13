@@ -6,6 +6,9 @@
 *.dylib
 geocoding-api
 
+# frontend static output
+static-new/
+
 # Test binary, built with `go test -c`
 *.test
 
