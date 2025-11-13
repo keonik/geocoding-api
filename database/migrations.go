@@ -76,15 +76,19 @@ func RunMigrations() error {
 			Up:          addSubscriptionsUniqueConstraint,
 			Down:        removeSubscriptionsUniqueConstraint,
 		},
-		{
-			Version:     11,
-			Description: "Add trigram indexes for faster text search",
-			Up:          addTrigramIndexes,
-			Down:        removeTrigramIndexes,
-		},
-	}
-
-	// Create migrations table if it doesn't exist
+	{
+		Version:     11,
+		Description: "Add trigram indexes for faster text search",
+		Up:          addTrigramIndexes,
+		Down:        removeTrigramIndexes,
+	},
+	{
+		Version:     12,
+		Description: "Add composite index for rate limit queries",
+		Up:          addRateLimitIndex,
+		Down:        removeRateLimitIndex,
+	},
+}	// Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
 	}
@@ -792,4 +796,25 @@ func removeTrigramIndexes() error {
 	}
 
 	return nil
+}
+
+func addRateLimitIndex() error {
+	log.Println("Creating composite index for rate limit queries...")
+	
+	// Composite index for the rate limit query: user_id + billable + created_at
+	_, err := DB.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_usage_records_rate_limit 
+		ON usage_records(user_id, billable, created_at DESC);
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create rate limit index: %w", err)
+	}
+	
+	log.Println("Created composite index for rate limit queries")
+	return nil
+}
+
+func removeRateLimitIndex() error {
+	_, err := DB.Exec(`DROP INDEX IF EXISTS idx_usage_records_rate_limit;`)
+	return err
 }
