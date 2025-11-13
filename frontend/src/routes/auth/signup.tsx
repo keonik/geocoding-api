@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 export const Route = createFileRoute('/auth/signup')({
   component: SignUp,
@@ -58,9 +59,9 @@ function SignUp() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
       {/* Navigation */}
-      <nav className="bg-white shadow-sm border-b">
+      <nav className="bg-card shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
             <div className="flex items-center">
@@ -69,9 +70,10 @@ function SignUp() {
               </Link>
             </div>
             <div className="flex items-center space-x-4">
-              <a href="/docs" target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">
+              <a href="/docs" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary px-3 py-2 rounded-md text-sm font-medium">
                 Documentation
               </a>
+              <ThemeToggle />
             </div>
           </div>
         </div>

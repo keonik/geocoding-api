@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Toaster } from '@/components/ui/toaster'
 import { Key, Trash2, Copy, Plus, LogOut } from 'lucide-react'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 export const Route = createFileRoute('/dashboard')({
   beforeLoad: () => {
@@ -141,18 +142,19 @@ function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="bg-white border-b">
+      <header className="bg-card border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-bold">GeoCode API Dashboard</h1>
             <p className="text-sm text-muted-foreground">{user.email}</p>
           </div>
           <div className="flex items-center space-x-4">
-            <a href="/docs" target="_blank" rel="noopener noreferrer" className="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium">
+            <a href="/docs" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary px-3 py-2 rounded-md text-sm font-medium">
               Documentation
             </a>
+            <ThemeToggle />
             <Button variant="outline" onClick={handleLogout}>
               <LogOut className="mr-2 h-4 w-4" />
               Logout
@@ -226,7 +228,7 @@ function Dashboard() {
                 {apiKeys.map((key) => (
                   <div
                     key={key.id}
-                    className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50"
+                    className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent"
                   >
                     <div className="flex-1">
                       <h4 className="font-medium">{key.name}</h4>
