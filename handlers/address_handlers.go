@@ -13,12 +13,38 @@ import (
 func SearchOhioAddressesHandler(c echo.Context) error {
 	var params models.AddressSearchParams
 	
-	// Bind query parameters
-	if err := c.Bind(&params); err != nil {
-		return c.JSON(http.StatusBadRequest, models.AddressSearchResponse{
-			Success: false,
-			Error:   "Invalid search parameters",
-		})
+	// Manually parse query parameters (Echo's Bind doesn't always work for query params)
+	params.Query = c.QueryParam("query")
+	params.County = c.QueryParam("county")
+	params.City = c.QueryParam("city")
+	params.Postcode = c.QueryParam("postcode")
+	params.Street = c.QueryParam("street")
+	
+	// Parse numeric parameters
+	if lat := c.QueryParam("lat"); lat != "" {
+		if val, err := strconv.ParseFloat(lat, 64); err == nil {
+			params.Lat = val
+		}
+	}
+	if lng := c.QueryParam("lng"); lng != "" {
+		if val, err := strconv.ParseFloat(lng, 64); err == nil {
+			params.Lng = val
+		}
+	}
+	if radius := c.QueryParam("radius"); radius != "" {
+		if val, err := strconv.ParseFloat(radius, 64); err == nil {
+			params.Radius = val
+		}
+	}
+	if limit := c.QueryParam("limit"); limit != "" {
+		if val, err := strconv.Atoi(limit); err == nil {
+			params.Limit = val
+		}
+	}
+	if offset := c.QueryParam("offset"); offset != "" {
+		if val, err := strconv.Atoi(offset); err == nil {
+			params.Offset = val
+		}
 	}
 
 	// Search addresses
