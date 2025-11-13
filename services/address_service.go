@@ -351,17 +351,21 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 		relevanceScore = "(" + strings.Join(scoreComponents, " + ") + ")"
 	}
 
-	// Simplified query - let PostgreSQL's query planner optimize with indexes
+	// Use CTE to calculate score once and filter efficiently
 	searchQuery := fmt.Sprintf(`
-		SELECT 
-			id, hash, house_number, street, unit, city, district, region, postcode, county,
-			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
-			%s as relevance_score
-		FROM ohio_addresses
-		%s
-		ORDER BY (%s) DESC
+		WITH scored AS (
+			SELECT 
+				id, hash, house_number, street, unit, city, district, region, postcode, county,
+				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
+				%s as relevance_score
+			FROM ohio_addresses
+			%s
+		)
+		SELECT * FROM scored
+		WHERE relevance_score > 0
+		ORDER BY relevance_score DESC
 		LIMIT $%d
-	`, relevanceScore, whereClause, relevanceScore, argIndex)
+	`, relevanceScore, whereClause, argIndex)
 
 	args = append(args, limit)
 
@@ -379,67 +383,39 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 func (s *AddressService) singleWordSearch(word string, limit int) ([]models.OhioAddress, error) {
 	wordPattern := "%" + word + "%"
 	
-	// Try exact street match first (fastest path using index)
-	quickQuery := `
-		SELECT 
-			id, hash, house_number, street, unit, city, district, region, postcode, county,
-			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
-			100 as relevance_score
-		FROM ohio_addresses
-		WHERE street ILIKE $1
-		LIMIT $2
-	`
-	
-	rows, err := s.db.Query(quickQuery, wordPattern, limit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute quick search: %w", err)
-	}
-	defer rows.Close()
-	
-	results, err := s.scanAddressResults(rows)
-	if err != nil {
-		return nil, err
-	}
-	
-	// If we got enough results from street search, return early
-	if len(results) >= limit {
-		return results, nil
-	}
-	
-	// Otherwise fall back to full search
-	rows.Close()
-	
-	fullQuery := `
-		SELECT 
-			id, hash, house_number, street, unit, city, district, region, postcode, county,
-			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
-			CASE 
-				WHEN city ILIKE $1 THEN 60
-				WHEN house_number ILIKE $1 THEN 80
-				WHEN postcode ILIKE $1 THEN 50
-				WHEN county ILIKE $1 THEN 30
-				ELSE 0
-			END as relevance_score
-		FROM ohio_addresses
-		WHERE 
-			(city ILIKE $1 OR house_number ILIKE $1 OR postcode ILIKE $1 OR county ILIKE $1)
-			AND NOT (street ILIKE $1)
+	// Use subquery to calculate score once
+	query := `
+		SELECT * FROM (
+			SELECT 
+				id, hash, house_number, street, unit, city, district, region, postcode, county,
+				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
+				CASE 
+					WHEN street ILIKE $1 THEN 100
+					WHEN house_number ILIKE $1 THEN 80
+					WHEN city ILIKE $1 THEN 60
+					WHEN postcode ILIKE $1 THEN 50
+					WHEN county ILIKE $1 THEN 30
+					ELSE 0
+				END as relevance_score
+			FROM ohio_addresses
+			WHERE 
+				street ILIKE $1 OR 
+				house_number ILIKE $1 OR
+				city ILIKE $1 OR
+				postcode ILIKE $1 OR
+				county ILIKE $1
+		) scored
 		ORDER BY relevance_score DESC
 		LIMIT $2
 	`
 	
-	rows, err = s.db.Query(fullQuery, wordPattern, limit-len(results))
+	rows, err := s.db.Query(query, wordPattern, limit)
 	if err != nil {
-		return results, nil // Return partial results on error
+		return nil, fmt.Errorf("failed to execute single word search: %w", err)
 	}
 	defer rows.Close()
 	
-	additional, err := s.scanAddressResults(rows)
-	if err != nil {
-		return results, nil
-	}
-	
-	return append(results, additional...), nil
+	return s.scanAddressResults(rows)
 }
 
 // scanAddressResults is a helper to scan address results with relevance score
