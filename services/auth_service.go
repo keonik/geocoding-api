@@ -271,11 +271,11 @@ func (as *AuthService) CheckRateLimit(userID int) (bool, int, int, error) {
 	err := database.DB.QueryRow(`
 		SELECT COALESCE(s.monthly_limit, 
 			CASE 
-				WHEN u.plan_type = 'free' THEN 1000
+				WHEN u.plan_type = 'free' THEN 100000
 				WHEN u.plan_type = 'starter' THEN 10000
 				WHEN u.plan_type = 'pro' THEN 100000
 				WHEN u.plan_type = 'enterprise' THEN 1000000
-				ELSE 1000
+				ELSE 100000
 			END
 		) as monthly_limit
 		FROM users u

@@ -117,7 +117,7 @@ var PlanLimits = map[string]struct {
 	Features     []string
 }{
 	"free": {
-		MonthlyLimit: 1000,
+		MonthlyLimit: 100000,
 		PricePerCall: 0,
 		Features:     []string{"geocode", "search"},
 	},
