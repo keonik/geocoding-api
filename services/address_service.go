@@ -288,49 +288,76 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 	}
 
 	// Clean and prepare the search query
-	cleanQuery := strings.TrimSpace(strings.ToLower(query))
+	cleanQuery := strings.TrimSpace(query)
 	if cleanQuery == "" {
 		return []models.OhioAddress{}, nil
 	}
 
-	// Split query into tokens for flexible matching
-	tokens := strings.Fields(cleanQuery)
-	if len(tokens) == 0 {
+	// Split query into words for flexible matching
+	queryWords := strings.Fields(cleanQuery)
+	if len(queryWords) == 0 {
 		return []models.OhioAddress{}, nil
 	}
 
-	// Simplified semantic search to avoid parameter mismatches
-	// Use a simpler approach that's more reliable
+	// Build word-based search with relevance scoring (same as main search)
 	var args []interface{}
+	var scoreComponents []string
+	var searchConditions []string
+	argIndex := 1
 	
-	// Build a simple text search across all relevant fields
-	searchPattern := "%" + cleanQuery + "%"
+	for _, word := range queryWords {
+		wordPattern := "%" + word + "%"
+		
+		// Score: exact match in street gets highest score, partial matches get lower scores
+		scoreComponents = append(scoreComponents, fmt.Sprintf(`
+			CASE 
+				WHEN street ILIKE $%d THEN 100
+				WHEN (house_number || ' ' || street) ILIKE $%d THEN 90
+				WHEN house_number ILIKE $%d THEN 80
+				WHEN city ILIKE $%d THEN 60
+				WHEN postcode ILIKE $%d THEN 50
+				WHEN county ILIKE $%d THEN 30
+				ELSE 0
+			END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
+		
+		// Search condition: word appears in ANY field (OR logic)
+		searchConditions = append(searchConditions, fmt.Sprintf(`(
+			house_number ILIKE $%d OR
+			street ILIKE $%d OR
+			city ILIKE $%d OR
+			county ILIKE $%d OR
+			postcode ILIKE $%d OR
+			(house_number || ' ' || street) ILIKE $%d
+		)`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
+		
+		args = append(args, wordPattern)
+		argIndex++
+	}
 	
-	searchQuery := `
+	// At least ONE word must match
+	whereClause := ""
+	if len(searchConditions) > 0 {
+		whereClause = "WHERE (" + strings.Join(searchConditions, " OR ") + ")"
+	}
+	
+	// Build relevance score
+	relevanceScore := "0"
+	if len(scoreComponents) > 0 {
+		relevanceScore = "(" + strings.Join(scoreComponents, " + ") + ")"
+	}
+
+	searchQuery := fmt.Sprintf(`
 		SELECT 
 			id, hash, house_number, street, unit, city, district, region, postcode, county,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
-			-- Simple relevance scoring
-			(
-				CASE WHEN LOWER(house_number || ' ' || street || ' ' || city) LIKE $1 THEN 100 ELSE 0 END +
-				CASE WHEN LOWER(street || ' ' || city) LIKE $1 THEN 80 ELSE 0 END +
-				CASE WHEN LOWER(city) LIKE $1 THEN 60 ELSE 0 END +
-				CASE WHEN LOWER(street) LIKE $1 THEN 40 ELSE 0 END +
-				CASE WHEN LOWER(house_number) LIKE $1 THEN 20 ELSE 0 END
-			) as relevance_score
+			%s as relevance_score
 		FROM ohio_addresses
-		WHERE (
-			LOWER(house_number) LIKE $1 OR
-			LOWER(street) LIKE $1 OR  
-			LOWER(city) LIKE $1 OR
-			LOWER(county) LIKE $1 OR
-			LOWER(postcode) LIKE $1
-		)
-		ORDER BY relevance_score DESC, city ASC, street ASC, house_number ASC
-		LIMIT $2
-	`
+		%s
+		ORDER BY relevance_score DESC, county, city, street, house_number
+		LIMIT $%d
+	`, relevanceScore, whereClause, argIndex)
 
-	args = append(args, searchPattern, limit)
+	args = append(args, limit)
 
 	// Execute the query
 	rows, err := s.db.Query(searchQuery, args...)
@@ -343,13 +370,13 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 	var addresses []models.OhioAddress
 	for rows.Next() {
 		var addr models.OhioAddress
-		var relevanceScore int
+		var relevanceScoreVal int
 		var unit, district sql.NullString
 
 		err := rows.Scan(
 			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &unit,
 			&addr.City, &district, &addr.Region, &addr.Postcode, &addr.County,
-			&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &relevanceScore,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &relevanceScoreVal,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan address: %w", err)
