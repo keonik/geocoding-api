@@ -33,6 +33,11 @@ func InitDB() error {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// Optimize connection pool for performance
+	DB.SetMaxOpenConns(25)          // Maximum open connections
+	DB.SetMaxIdleConns(10)           // Keep connections ready
+	DB.SetConnMaxLifetime(0)         // Reuse connections indefinitely
+
 	if err = DB.Ping(); err != nil {
 		return fmt.Errorf("failed to ping database: %w", err)
 	}
