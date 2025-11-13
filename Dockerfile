@@ -61,10 +61,7 @@ RUN mkdir -p /app/oh /app/cache /app/scripts
 # Copy binary from backend builder
 COPY --from=backend-builder /app/main ./main
 
-# Copy scripts first
-COPY --from=backend-builder /app/scripts/decompress_data.sh ./scripts/
-
-# Copy compressed data files
+# Copy compressed data files (will decompress on-demand at runtime)
 COPY --from=backend-builder /app/georef-united-states-of-america-zc-point.csv.gz* ./
 COPY --from=backend-builder /app/oh/ ./oh/
 
@@ -76,10 +73,8 @@ COPY --from=backend-builder /app/static ./static
 COPY --from=backend-builder /app/docs ./docs
 COPY --from=backend-builder /app/api-docs.yaml ./api-docs.yaml
 
-# Decompress data files and set permissions
-RUN chmod +x /app/scripts/decompress_data.sh && \
-    /app/scripts/decompress_data.sh || echo "No compressed files to decompress" && \
-    chown -R appuser:appgroup /app
+# Set permissions
+RUN chown -R appuser:appgroup /app
 
 # Set environment variables for production
 ENV ENV=production

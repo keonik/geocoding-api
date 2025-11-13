@@ -2,8 +2,10 @@ package services
 
 import (
 	"bufio"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -92,7 +94,13 @@ func loadMissingCounties(loadedCounties map[string]bool) error {
 		
 		addressFile := filepath.Join(ohDir, fmt.Sprintf("%s-addresses-county.geojson", county))
 		
-		// Check if file exists - skip download/conversion since we're using compressed files from repo
+		// Decompress if needed (lazy decompression)
+		if err := decompressIfNeeded(addressFile); err != nil {
+			log.Printf("Failed to decompress %s: %v", county, err)
+			continue
+		}
+		
+		// Check if file exists after decompression attempt
 		if _, err := os.Stat(addressFile); os.IsNotExist(err) {
 			log.Printf("GeoJSON file not found for %s, skipping (no compressed file available)", county)
 			continue
@@ -399,4 +407,52 @@ func getStringProperty(props map[string]interface{}, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// decompressIfNeeded decompresses a .geojson.gz file if the .geojson doesn't exist
+func decompressIfNeeded(geojsonPath string) error {
+	// If decompressed file already exists, nothing to do
+	if _, err := os.Stat(geojsonPath); err == nil {
+		return nil
+	}
+	
+	// Check if compressed version exists
+	compressedPath := geojsonPath + ".gz"
+	if _, err := os.Stat(compressedPath); os.IsNotExist(err) {
+		// Neither compressed nor decompressed file exists
+		return nil
+	}
+	
+	log.Printf("Decompressing %s...", filepath.Base(compressedPath))
+	
+	// Open compressed file
+	compressedFile, err := os.Open(compressedPath)
+	if err != nil {
+		return fmt.Errorf("failed to open compressed file: %w", err)
+	}
+	defer compressedFile.Close()
+	
+	// Create gzip reader
+	gzReader, err := gzip.NewReader(compressedFile)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+	
+	// Create output file
+	outputFile, err := os.Create(geojsonPath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer outputFile.Close()
+	
+	// Copy decompressed data
+	if _, err := io.Copy(outputFile, gzReader); err != nil {
+		// Clean up partial file on error
+		os.Remove(geojsonPath)
+		return fmt.Errorf("failed to decompress: %w", err)
+	}
+	
+	log.Printf("Successfully decompressed %s", filepath.Base(geojsonPath))
+	return nil
 }
