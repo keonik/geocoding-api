@@ -76,6 +76,12 @@ func RunMigrations() error {
 			Up:          addSubscriptionsUniqueConstraint,
 			Down:        removeSubscriptionsUniqueConstraint,
 		},
+		{
+			Version:     11,
+			Description: "Add trigram indexes for faster text search",
+			Up:          addTrigramIndexes,
+			Down:        removeTrigramIndexes,
+		},
 	}
 
 	// Create migrations table if it doesn't exist
@@ -743,5 +749,47 @@ func removeSubscriptionsUniqueConstraint() error {
 	if err != nil {
 		return fmt.Errorf("failed to remove unique constraint from subscriptions: %w", err)
 	}
+	return nil
+}
+
+// addTrigramIndexes adds pg_trgm extension and GIN indexes for faster ILIKE queries
+func addTrigramIndexes() error {
+	// Enable pg_trgm extension for trigram-based text search
+	_, err := DB.Exec(`CREATE EXTENSION IF NOT EXISTS pg_trgm`)
+	if err != nil {
+		return fmt.Errorf("failed to create pg_trgm extension: %w", err)
+	}
+
+	// Create GIN indexes using trigram operator class for ILIKE performance
+	queries := []string{
+		`CREATE INDEX IF NOT EXISTS idx_ohio_addresses_street_trgm ON ohio_addresses USING gin (street gin_trgm_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_ohio_addresses_city_trgm ON ohio_addresses USING gin (city gin_trgm_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_ohio_addresses_house_number_trgm ON ohio_addresses USING gin (house_number gin_trgm_ops)`,
+	}
+
+	for _, query := range queries {
+		if _, err := DB.Exec(query); err != nil {
+			return fmt.Errorf("failed to create trigram index: %w", err)
+		}
+	}
+
+	log.Println("Created trigram indexes for faster text search")
+	return nil
+}
+
+// removeTrigramIndexes removes trigram indexes
+func removeTrigramIndexes() error {
+	queries := []string{
+		`DROP INDEX IF EXISTS idx_ohio_addresses_street_trgm`,
+		`DROP INDEX IF EXISTS idx_ohio_addresses_city_trgm`,
+		`DROP INDEX IF EXISTS idx_ohio_addresses_house_number_trgm`,
+	}
+
+	for _, query := range queries {
+		if _, err := DB.Exec(query); err != nil {
+			return fmt.Errorf("failed to drop trigram index: %w", err)
+		}
+	}
+
 	return nil
 }

@@ -299,6 +299,11 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 		return []models.OhioAddress{}, nil
 	}
 
+	// Optimize for single word searches (most common case)
+	if len(queryWords) == 1 {
+		return s.singleWordSearch(queryWords[0], limit)
+	}
+
 	// Build word-based search with relevance scoring (same as main search)
 	var args []interface{}
 	var scoreComponents []string
@@ -346,13 +351,18 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 		relevanceScore = "(" + strings.Join(scoreComponents, " + ") + ")"
 	}
 
+	// Use CTE to pre-filter and calculate score once, limit early for better performance
 	searchQuery := fmt.Sprintf(`
-		SELECT 
-			id, hash, house_number, street, unit, city, district, region, postcode, county,
-			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
-			%s as relevance_score
-		FROM ohio_addresses
-		%s
+		WITH scored_results AS (
+			SELECT 
+				id, hash, house_number, street, unit, city, district, region, postcode, county,
+				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
+				%s as relevance_score
+			FROM ohio_addresses
+			%s
+		)
+		SELECT * FROM scored_results 
+		WHERE relevance_score > 0
 		ORDER BY relevance_score DESC, county, city, street, house_number
 		LIMIT $%d
 	`, relevanceScore, whereClause, argIndex)
@@ -366,7 +376,50 @@ func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]mod
 	}
 	defer rows.Close()
 
-	// Parse results
+	return s.scanAddressResults(rows)
+}
+
+// singleWordSearch optimizes for the common case of single-word searches
+func (s *AddressService) singleWordSearch(word string, limit int) ([]models.OhioAddress, error) {
+	wordPattern := "%" + word + "%"
+	
+	// Optimized query for single word - uses indexes better
+	query := `
+		SELECT 
+			id, hash, house_number, street, unit, city, district, region, postcode, county,
+			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
+			CASE 
+				WHEN street ILIKE $1 THEN 100
+				WHEN (house_number || ' ' || street) ILIKE $1 THEN 90
+				WHEN house_number ILIKE $1 THEN 80
+				WHEN city ILIKE $1 THEN 60
+				WHEN postcode ILIKE $1 THEN 50
+				WHEN county ILIKE $1 THEN 30
+				ELSE 0
+			END as relevance_score
+		FROM ohio_addresses
+		WHERE 
+			street ILIKE $1 OR 
+			house_number ILIKE $1 OR
+			city ILIKE $1 OR
+			county ILIKE $1 OR
+			postcode ILIKE $1 OR
+			(house_number || ' ' || street) ILIKE $1
+		ORDER BY relevance_score DESC, county, city, street, house_number
+		LIMIT $2
+	`
+	
+	rows, err := s.db.Query(query, wordPattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute single word search: %w", err)
+	}
+	defer rows.Close()
+	
+	return s.scanAddressResults(rows)
+}
+
+// scanAddressResults is a helper to scan address results with relevance score
+func (s *AddressService) scanAddressResults(rows *sql.Rows) ([]models.OhioAddress, error) {
 	var addresses []models.OhioAddress
 	for rows.Next() {
 		var addr models.OhioAddress
