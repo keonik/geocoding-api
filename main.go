@@ -231,24 +231,7 @@ func main() {
 	admin.GET("/system-status", handlers.GetSystemStatusHandler)
 	admin.GET("/counties", handlers.GetCountyStatsHandler)
 
-	// Explicit routes for static HTML pages (must come before SPA catch-all)
-	e.GET("/admin", func(c echo.Context) error {
-		return c.File("static/admin.html")
-	})
-	e.GET("/admin.html", func(c echo.Context) error {
-		return c.File("static/admin.html")
-	})
-	e.GET("/dashboard", func(c echo.Context) error {
-		return c.File("static/dashboard.html")
-	})
-	e.GET("/dashboard.html", func(c echo.Context) error {
-		return c.File("static/dashboard.html")
-	})
-	
-	// Serve static JS files
-	e.Static("/static", "static")
-
-	// SPA fallback - MUST be registered AFTER all API routes and explicit routes
+	// SPA fallback - MUST be registered AFTER all API routes
 	// This serves the React app for all non-API routes
 	e.GET("/*", func(c echo.Context) error {
 		path := c.Request().URL.Path

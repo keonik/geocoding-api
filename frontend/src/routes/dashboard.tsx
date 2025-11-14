@@ -154,6 +154,11 @@ function Dashboard() {
             <a href="/docs" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary px-3 py-2 rounded-md text-sm font-medium">
               Documentation
             </a>
+            {user.is_admin && (
+              <Button variant="outline" onClick={() => navigate({ to: '/admin' })}>
+                Admin
+              </Button>
+            )}
             <ThemeToggle />
             <Button variant="outline" onClick={handleLogout}>
               <LogOut className="mr-2 h-4 w-4" />
