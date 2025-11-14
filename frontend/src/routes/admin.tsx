@@ -56,7 +56,7 @@ function AdminDashboard() {
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('users')
   const [selectedUserMetrics, setSelectedUserMetrics] = useState<UserUsageMetrics | null>(null)
-  const [metricsLoading, setMetricsLoading] = useState(false)
+  const [_metricsLoading, setMetricsLoading] = useState(false)
 
   const user = JSON.parse(localStorage.getItem('user') || '{}')
 
