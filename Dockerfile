@@ -65,9 +65,7 @@ COPY --from=backend-builder /app/main ./main
 COPY --from=backend-builder /app/georef-united-states-of-america-zc-point.csv.gz* ./
 COPY --from=backend-builder /app/oh/ ./oh/
 
-# Copy built frontend (prioritize Vite build, fallback to old static)
 COPY --from=frontend-builder /app/static-new ./static-new
-COPY --from=backend-builder /app/static ./static
 
 # Copy other runtime files
 COPY --from=backend-builder /app/docs ./docs

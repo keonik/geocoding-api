@@ -114,7 +114,7 @@ func main() {
 	// Determine which frontend to serve
 	staticDir := "static-new"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
-		log.Println("Vite build (static-new) not found, falling back to old static files")
+		log.Println("Vite build (static) not found, falling back to old static files")
 		staticDir = "static"
 	} else {
 		log.Println("Serving Vite build from static-new/")
