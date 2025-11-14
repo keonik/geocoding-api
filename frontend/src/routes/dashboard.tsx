@@ -177,12 +177,13 @@ function Dashboard() {
 
         {/* Stats */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <Card>
+          <Card className="cursor-pointer hover:bg-accent" onClick={() => navigate({ to: '/usage' })}>
             <CardHeader>
               <CardDescription>Current Usage</CardDescription>
               <CardTitle className="text-3xl">
                 {usage?.rate_limit?.current_usage || 0}
               </CardTitle>
+              <p className="text-xs text-muted-foreground mt-2">Click for detailed analytics →</p>
             </CardHeader>
           </Card>
           <Card>

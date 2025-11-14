@@ -17,6 +17,33 @@ export interface AdminUser {
   is_active: boolean
   is_admin: boolean
   created_at: string
+  monthly_usage?: number
+  today_usage?: number
+  total_usage?: number
+  active_keys?: number
+}
+
+export interface UserUsageMetrics {
+  user_id: number
+  email: string
+  name: string
+  plan_type: string
+  total_calls: number
+  billable_calls: number
+  avg_response_time: number
+  success_count: number
+  error_count: number
+  endpoints: Array<{
+    endpoint: string
+    total: number
+    billable: number
+    avg_time: number
+  }>
+  daily_usage: Array<{
+    date: string
+    total: number
+    billable: number
+  }>
 }
 
 export interface AdminAPIKey {
@@ -75,5 +102,12 @@ export const adminAPI = {
     return fetchAPI('/api/v1/admin/load-data', {
       method: 'POST',
     })
+  },
+
+  getUserMetrics: async (
+    userId: number,
+    days: number = 30
+  ): Promise<APIResponse<UserUsageMetrics>> => {
+    return fetchAPI(`/api/v1/admin/users/${userId}/metrics?days=${days}`)
   },
 }
