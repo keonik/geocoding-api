@@ -447,12 +447,48 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 	return stats, nil
 }
 
-// GetAllUsers returns all users for admin dashboard
+// GetAllUsers returns all users for admin dashboard with usage metrics
 func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
 	rows, err := database.DB.Query(`
-		SELECT id, email, name, company, plan_type, is_active, is_admin, created_at
-		FROM users 
-		ORDER BY created_at DESC
+		SELECT 
+			u.id, 
+			u.email, 
+			u.name, 
+			u.company, 
+			u.plan_type, 
+			u.is_active, 
+			u.is_admin, 
+			u.created_at,
+			COALESCE(
+				(SELECT COUNT(*) 
+				 FROM usage_records ur 
+				 WHERE ur.user_id = u.id 
+				 AND ur.billable = true
+				 AND ur.created_at >= date_trunc('month', CURRENT_DATE)),
+				0
+			) as monthly_usage,
+			COALESCE(
+				(SELECT COUNT(*) 
+				 FROM usage_records ur 
+				 WHERE ur.user_id = u.id
+				 AND ur.created_at >= CURRENT_DATE),
+				0
+			) as today_usage,
+			COALESCE(
+				(SELECT COUNT(*) 
+				 FROM usage_records ur 
+				 WHERE ur.user_id = u.id),
+				0
+			) as total_usage,
+			COALESCE(
+				(SELECT COUNT(*) 
+				 FROM api_keys ak 
+				 WHERE ak.user_id = u.id 
+				 AND ak.is_active = true),
+				0
+			) as active_keys
+		FROM users u
+		ORDER BY u.created_at DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -466,26 +502,172 @@ func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
 		var name, company *string
 		var isActive, isAdmin bool
 		var createdAt time.Time
+		var monthlyUsage, todayUsage, totalUsage, activeKeys int
 		
-		err := rows.Scan(&id, &email, &name, &company, &planType, &isActive, &isAdmin, &createdAt)
+		err := rows.Scan(&id, &email, &name, &company, &planType, &isActive, &isAdmin, &createdAt,
+			&monthlyUsage, &todayUsage, &totalUsage, &activeKeys)
 		if err != nil {
 			return nil, err
 		}
 		
 		user := map[string]interface{}{
-			"id":         id,
-			"email":      email,
-			"name":       name,
-			"company":    company,
-			"plan_type":  planType,
-			"is_active":  isActive,
-			"is_admin":   isAdmin,
-			"created_at": createdAt,
+			"id":            id,
+			"email":         email,
+			"name":          name,
+			"company":       company,
+			"plan_type":     planType,
+			"is_active":     isActive,
+			"is_admin":      isAdmin,
+			"created_at":    createdAt,
+			"monthly_usage": monthlyUsage,
+			"today_usage":   todayUsage,
+			"total_usage":   totalUsage,
+			"active_keys":   activeKeys,
 		}
 		users = append(users, user)
 	}
 	
 	return users, nil
+}
+
+// GetUserUsageMetrics returns detailed usage metrics for a specific user
+func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]interface{}, error) {
+	metrics := make(map[string]interface{})
+	
+	// Get user info
+	var email, planType string
+	var name *string
+	err := database.DB.QueryRow(`
+		SELECT email, name, plan_type FROM users WHERE id = $1
+	`, userID).Scan(&email, &name, &planType)
+	if err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+	
+	metrics["user_id"] = userID
+	metrics["email"] = email
+	metrics["name"] = name
+	metrics["plan_type"] = planType
+	
+	// Total calls
+	var totalCalls, billableCalls int
+	err = database.DB.QueryRow(`
+		SELECT 
+			COUNT(*),
+			COUNT(*) FILTER (WHERE billable = true)
+		FROM usage_records 
+		WHERE user_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '1 day' * $2
+	`, userID, days).Scan(&totalCalls, &billableCalls)
+	if err != nil {
+		return nil, err
+	}
+	metrics["total_calls"] = totalCalls
+	metrics["billable_calls"] = billableCalls
+	
+	// Average response time
+	var avgResponseTime sql.NullFloat64
+	err = database.DB.QueryRow(`
+		SELECT AVG(response_time_ms)
+		FROM usage_records 
+		WHERE user_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '1 day' * $2
+	`, userID, days).Scan(&avgResponseTime)
+	if err == nil && avgResponseTime.Valid {
+		metrics["avg_response_time"] = avgResponseTime.Float64
+	} else {
+		metrics["avg_response_time"] = 0
+	}
+	
+	// Success/Error rate
+	var successCount, errorCount int
+	err = database.DB.QueryRow(`
+		SELECT 
+			COUNT(*) FILTER (WHERE status_code >= 200 AND status_code < 400),
+			COUNT(*) FILTER (WHERE status_code >= 400)
+		FROM usage_records 
+		WHERE user_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '1 day' * $2
+	`, userID, days).Scan(&successCount, &errorCount)
+	if err != nil {
+		return nil, err
+	}
+	metrics["success_count"] = successCount
+	metrics["error_count"] = errorCount
+	
+	// Endpoint breakdown
+	endpointRows, err := database.DB.Query(`
+		SELECT 
+			endpoint,
+			COUNT(*) as total,
+			COUNT(*) FILTER (WHERE billable = true) as billable,
+			AVG(response_time_ms) as avg_time
+		FROM usage_records 
+		WHERE user_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '1 day' * $2
+		GROUP BY endpoint
+		ORDER BY total DESC
+	`, userID, days)
+	if err != nil {
+		return nil, err
+	}
+	defer endpointRows.Close()
+	
+	var endpoints []map[string]interface{}
+	for endpointRows.Next() {
+		var endpoint string
+		var total, billable int
+		var avgTime sql.NullFloat64
+		
+		if err := endpointRows.Scan(&endpoint, &total, &billable, &avgTime); err != nil {
+			continue
+		}
+		
+		endpointData := map[string]interface{}{
+			"endpoint":       endpoint,
+			"total":          total,
+			"billable":       billable,
+			"avg_time":       0.0,
+		}
+		
+		if avgTime.Valid {
+			endpointData["avg_time"] = avgTime.Float64
+		}
+		
+		endpoints = append(endpoints, endpointData)
+	}
+	metrics["endpoints"] = endpoints
+	
+	// Daily breakdown
+	dailyRows, err := database.DB.Query(`
+		SELECT 
+			DATE(created_at) as date,
+			COUNT(*) as total,
+			COUNT(*) FILTER (WHERE billable = true) as billable
+		FROM usage_records 
+		WHERE user_id = $1 AND created_at >= CURRENT_DATE - INTERVAL '1 day' * $2
+		GROUP BY DATE(created_at)
+		ORDER BY date DESC
+	`, userID, days)
+	if err != nil {
+		return nil, err
+	}
+	defer dailyRows.Close()
+	
+	var dailyUsage []map[string]interface{}
+	for dailyRows.Next() {
+		var date time.Time
+		var total, billable int
+		
+		if err := dailyRows.Scan(&date, &total, &billable); err != nil {
+			continue
+		}
+		
+		dailyUsage = append(dailyUsage, map[string]interface{}{
+			"date":     date.Format("2006-01-02"),
+			"total":    total,
+			"billable": billable,
+		})
+	}
+	metrics["daily_usage"] = dailyUsage
+	
+	return metrics, nil
 }
 
 // GetAllAPIKeys returns all API keys for admin dashboard
@@ -641,6 +823,183 @@ func (as *AuthService) GetUsageSummary(userID int, month string) (*models.UsageS
 	}
 
 	return &summary, nil
+}
+
+// GetDailyUsage returns daily usage statistics for a user over a date range
+func (as *AuthService) GetDailyUsage(userID int, days int) ([]models.DailyUsage, error) {
+	if days <= 0 {
+		days = 30 // Default to 30 days
+	}
+
+	query := `
+		SELECT 
+			DATE(created_at) as date,
+			COUNT(*) as total_calls,
+			COUNT(*) FILTER (WHERE billable = true) as billable_calls,
+			COUNT(DISTINCT endpoint) as unique_endpoints
+		FROM usage_records 
+		WHERE user_id = $1 
+			AND created_at >= CURRENT_DATE - INTERVAL '1 day' * $2
+		GROUP BY DATE(created_at)
+		ORDER BY date DESC
+	`
+
+	rows, err := database.DB.Query(query, userID, days)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get daily usage: %w", err)
+	}
+	defer rows.Close()
+
+	var dailyUsage []models.DailyUsage
+	for rows.Next() {
+		var usage models.DailyUsage
+		err := rows.Scan(&usage.Date, &usage.TotalCalls, &usage.BillableCalls, &usage.UniqueEndpoints)
+		if err != nil {
+			continue
+		}
+		dailyUsage = append(dailyUsage, usage)
+	}
+
+	return dailyUsage, nil
+}
+
+// GetEndpointUsage returns usage statistics by endpoint for a user
+func (as *AuthService) GetEndpointUsage(userID int, days int) ([]models.EndpointUsage, error) {
+	if days <= 0 {
+		days = 30 // Default to 30 days
+	}
+
+	query := `
+		SELECT 
+			endpoint,
+			COUNT(*) as total_calls,
+			COUNT(*) FILTER (WHERE billable = true) as billable_calls,
+			AVG(response_time_ms) as avg_response_time,
+			COUNT(*) FILTER (WHERE status_code >= 200 AND status_code < 300) as success_count,
+			COUNT(*) FILTER (WHERE status_code >= 400) as error_count
+		FROM usage_records 
+		WHERE user_id = $1 
+			AND created_at >= CURRENT_DATE - INTERVAL '1 day' * $2
+		GROUP BY endpoint
+		ORDER BY total_calls DESC
+	`
+
+	rows, err := database.DB.Query(query, userID, days)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get endpoint usage: %w", err)
+	}
+	defer rows.Close()
+
+	var endpointUsage []models.EndpointUsage
+	for rows.Next() {
+		var usage models.EndpointUsage
+		err := rows.Scan(
+			&usage.Endpoint, 
+			&usage.TotalCalls, 
+			&usage.BillableCalls, 
+			&usage.AvgResponseTime,
+			&usage.SuccessCount,
+			&usage.ErrorCount,
+		)
+		if err != nil {
+			continue
+		}
+		endpointUsage = append(endpointUsage, usage)
+	}
+
+	return endpointUsage, nil
+}
+
+// SyncAdminUsers updates admin status for users listed in ADMIN_EMAILS environment variable
+func (as *AuthService) SyncAdminUsers() error {
+	adminEmails := os.Getenv("ADMIN_EMAILS")
+	if adminEmails == "" {
+		log.Println("No ADMIN_EMAILS configured, skipping admin sync")
+		return nil
+	}
+
+	// Split and trim email addresses
+	emails := []string{}
+	for _, email := range splitAndTrim(adminEmails, ",") {
+		if email != "" {
+			emails = append(emails, email)
+		}
+	}
+
+	if len(emails) == 0 {
+		return nil
+	}
+
+	// Update users to be admins if they match the email list
+	query := `
+		UPDATE users 
+		SET is_admin = true 
+		WHERE email = ANY($1) AND is_admin = false
+		RETURNING email
+	`
+
+	rows, err := database.DB.Query(query, pq.Array(emails))
+	if err != nil {
+		return fmt.Errorf("failed to sync admin users: %w", err)
+	}
+	defer rows.Close()
+
+	var updatedEmails []string
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			continue
+		}
+		updatedEmails = append(updatedEmails, email)
+	}
+
+	if len(updatedEmails) > 0 {
+		log.Printf("✅ Granted admin privileges to: %v", updatedEmails)
+	} else {
+		log.Println("No new admin users to sync")
+	}
+
+	return nil
+}
+
+// Helper function to split and trim strings
+func splitAndTrim(s, sep string) []string {
+	parts := []string{}
+	for _, part := range splitString(s, sep) {
+		trimmed := trimSpace(part)
+		if trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return parts
+}
+
+func splitString(s, sep string) []string {
+	if s == "" {
+		return []string{}
+	}
+	result := []string{}
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i:i+1] == sep {
+			result = append(result, s[start:i])
+			start = i + 1
+		}
+	}
+	result = append(result, s[start:])
+	return result
+}
+
+func trimSpace(s string) string {
+	start := 0
+	end := len(s)
+	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
+		start++
+	}
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
+		end--
+	}
+	return s[start:end]
 }
 
 // HasPermission checks if an API key has permission for a specific endpoint

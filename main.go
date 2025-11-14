@@ -58,6 +58,12 @@ func main() {
 		log.Println("Ohio addresses can be loaded manually if needed")
 	}
 
+	// Sync admin privileges from ADMIN_EMAILS environment variable
+	authService := &services.AuthService{}
+	if err := authService.SyncAdminUsers(); err != nil {
+		log.Printf("Warning: Failed to sync admin users: %v", err)
+	}
+
 	// Create Echo instance
 	e := echo.New()
 
@@ -192,6 +198,8 @@ func main() {
 	user.GET("/api-keys", handlers.GetAPIKeysHandler)
 	user.DELETE("/api-keys/:id", handlers.DeleteAPIKeyHandler)
 	user.GET("/usage", handlers.GetUsageHandler)
+	user.GET("/usage/daily", handlers.GetDailyUsageHandler)
+	user.GET("/usage/endpoints", handlers.GetEndpointUsageHandler)
 	
 	// Protected API endpoints (require API key)
 	protected := api.Group("")
@@ -225,6 +233,7 @@ func main() {
 	admin.POST("/load-data", handlers.LoadDataHandler)
 	admin.GET("/stats", handlers.GetAdminStatsHandler)
 	admin.GET("/users", handlers.GetAllUsersHandler)
+	admin.GET("/users/:id/metrics", handlers.GetUserUsageMetricsHandler)
 	admin.PUT("/users/:id/status", handlers.UpdateUserStatusHandler)
 	admin.PUT("/users/:id/admin", handlers.UpdateUserAdminHandler)
 	admin.GET("/api-keys", handlers.GetAllAPIKeysHandler)

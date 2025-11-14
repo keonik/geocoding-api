@@ -237,3 +237,34 @@ func GetSystemStatusHandler(c echo.Context) error {
 		Data:    status,
 	})
 }
+
+// GetUserUsageMetricsHandler returns detailed usage metrics for a specific user
+func GetUserUsageMetricsHandler(c echo.Context) error {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+			Success: false,
+			Error:   "Invalid user ID",
+		})
+	}
+
+	days := 30
+	if daysParam := c.QueryParam("days"); daysParam != "" {
+		if d, err := strconv.Atoi(daysParam); err == nil && d > 0 && d <= 365 {
+			days = d
+		}
+	}
+
+	metrics, err := services.Auth.GetUserUsageMetrics(userID, days)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to get user metrics",
+		})
+	}
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data:    metrics,
+	})
+}

@@ -77,6 +77,24 @@ type UsageSummary struct {
 	EndpointBreakdown map[string]int `json:"endpoint_breakdown"`
 }
 
+// DailyUsage represents usage statistics for a single day
+type DailyUsage struct {
+	Date            string `json:"date"` // YYYY-MM-DD format
+	TotalCalls      int    `json:"total_calls"`
+	BillableCalls   int    `json:"billable_calls"`
+	UniqueEndpoints int    `json:"unique_endpoints"`
+}
+
+// EndpointUsage represents usage statistics by endpoint
+type EndpointUsage struct {
+	Endpoint        string  `json:"endpoint"`
+	TotalCalls      int     `json:"total_calls"`
+	BillableCalls   int     `json:"billable_calls"`
+	AvgResponseTime float64 `json:"avg_response_time"` // in milliseconds
+	SuccessCount    int     `json:"success_count"`
+	ErrorCount      int     `json:"error_count"`
+}
+
 // JSONArray for storing array data in database
 type JSONArray []string
 
