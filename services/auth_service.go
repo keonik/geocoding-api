@@ -266,9 +266,35 @@ func (as *AuthService) ValidateAPIKey(apiKey string) (*models.User, *models.APIK
 
 // CheckRateLimit verifies if user has exceeded their monthly limit
 func (as *AuthService) CheckRateLimit(userID int) (bool, int, int, error) {
+	// Check if user is admin - admins get unlimited usage
+	var isAdmin bool
+	var email string
+	err := database.DB.QueryRow(`SELECT is_admin, email FROM users WHERE id = $1`, userID).Scan(&isAdmin, &email)
+	if err != nil {
+		return false, 0, 0, fmt.Errorf("failed to get user info: %w", err)
+	}
+
+	// Check if user is in ADMIN_EMAILS environment variable
+	adminEmails := os.Getenv("ADMIN_EMAILS")
+	isAdminEmail := false
+	if adminEmails != "" {
+		emails := strings.Split(adminEmails, ",")
+		for _, adminEmail := range emails {
+			if strings.TrimSpace(adminEmail) == email {
+				isAdminEmail = true
+				break
+			}
+		}
+	}
+
+	// Admins get unlimited usage
+	if isAdmin || isAdminEmail {
+		return true, 0, -1, nil // -1 indicates unlimited
+	}
+
 	// Get user's plan type from users table if no subscription exists
 	var monthlyLimit int
-	err := database.DB.QueryRow(`
+	err = database.DB.QueryRow(`
 		SELECT COALESCE(s.monthly_limit, 
 			CASE 
 				WHEN u.plan_type = 'free' THEN 100000
@@ -930,12 +956,12 @@ func (as *AuthService) SyncAdminUsers() error {
 		return nil
 	}
 
-	// Update users to be admins if they match the email list
+	// Update users to be admins and upgrade to enterprise plan
 	query := `
 		UPDATE users 
-		SET is_admin = true 
-		WHERE email = ANY($1) AND is_admin = false
-		RETURNING email
+		SET is_admin = true, plan_type = 'enterprise'
+		WHERE email = ANY($1) AND (is_admin = false OR plan_type != 'enterprise')
+		RETURNING email, plan_type
 	`
 
 	rows, err := database.DB.Query(query, pq.Array(emails))
@@ -946,17 +972,17 @@ func (as *AuthService) SyncAdminUsers() error {
 
 	var updatedEmails []string
 	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
+		var email, planType string
+		if err := rows.Scan(&email, &planType); err != nil {
 			continue
 		}
 		updatedEmails = append(updatedEmails, email)
 	}
 
 	if len(updatedEmails) > 0 {
-		log.Printf("✅ Granted admin privileges to: %v", updatedEmails)
+		log.Printf("✅ Granted admin privileges and enterprise plan to: %v", updatedEmails)
 	} else {
-		log.Println("No new admin users to sync")
+		log.Println("No admin users to sync")
 	}
 
 	return nil
