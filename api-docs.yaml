@@ -17,14 +17,22 @@ info:
     
     ## ✨ Features
     - **Lightning Fast**: PostgreSQL + PostGIS backed with optimized spatial indexes
-    - **Multi-Level Coverage**: ZIP codes, addresses, and county boundaries
+    - **Multi-Level Coverage**: ZIP codes, cities, addresses, and county boundaries
     - **Comprehensive Data**: Population, density, coordinates, and geographic boundaries
     - **Flexible Search**: Multiple search modes with proximity and filtering
+    - **ZIP Code Fallback**: City-based ZIP code lookup for flexible address searching
     - **Rich Metadata**: Timezone, county weights, administrative data
     - **GeoJSON Support**: Ready-to-use geographic data for mapping applications
     - **Usage Tracking**: Monitor your API usage and billing
     
     ## 📊 Data Coverage
+    
+    ### **🏙️ City Data**
+    - **31,000+ US Cities**: Nationwide city coverage with demographics
+    - **ZIP Code Associations**: All ZIP codes for each city
+    - **Population & Density**: Demographic statistics
+    - **Coordinates**: Precise latitude/longitude for each city
+    - **Fallback Search**: Find addresses when ZIP code is unknown or incorrect
     
     ### **🏠 Address-Level Data**
     - **5.5+ Million Ohio Addresses**: Complete street-level geocoding
@@ -957,6 +965,223 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /cities:
+    get:
+      summary: Search US Cities
+      description: |
+        Search for US cities using various filters including name, state, county, population, and location-based queries.
+        
+        The endpoint supports fuzzy text matching on city names and can filter by:
+        - City name (partial match)
+        - State (by ID or name)
+        - County name
+        - Minimum population
+        - Geographic proximity (latitude/longitude with radius)
+        
+        Results are ordered by ranking (major cities first) and population.
+        
+        **Use Case**: Use this endpoint as a fallback when ZIP code searches fail. For example,
+        if searching for an address with an incorrect ZIP code, search for the city to get all
+        valid ZIP codes for that city, then search addresses in each ZIP.
+      operationId: searchCities
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - Cities
+      parameters:
+        - name: query
+          in: query
+          required: false
+          description: Free text search query for city name
+          schema:
+            type: string
+            example: "Dayton"
+        - name: city
+          in: query
+          required: false
+          description: Filter by city name (supports fuzzy matching)
+          schema:
+            type: string
+            example: "Dayton"
+        - name: state
+          in: query
+          required: false
+          description: Filter by state ID (e.g., "OH") or state name (e.g., "Ohio")
+          schema:
+            type: string
+            example: "OH"
+        - name: county
+          in: query
+          required: false
+          description: Filter by county name
+          schema:
+            type: string
+            example: "Montgomery"
+        - name: lat
+          in: query
+          required: false
+          description: Latitude for location-based search (requires lng and optionally radius)
+          schema:
+            type: number
+            format: double
+            example: 39.7589
+        - name: lng
+          in: query
+          required: false
+          description: Longitude for location-based search (requires lat and optionally radius)
+          schema:
+            type: number
+            format: double
+            example: -84.1916
+        - name: radius
+          in: query
+          required: false
+          description: Search radius in kilometers (requires lat and lng)
+          schema:
+            type: number
+            format: double
+            example: 50
+        - name: min_population
+          in: query
+          required: false
+          description: Minimum population filter
+          schema:
+            type: integer
+            example: 100000
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return (max 100)
+          schema:
+            type: integer
+            default: 10
+            maximum: 100
+            example: 10
+        - name: offset
+          in: query
+          required: false
+          description: Number of results to skip for pagination
+          schema:
+            type: integer
+            default: 0
+            example: 0
+      responses:
+        '200':
+          description: Cities found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CitySearchResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /cities/{id}:
+    get:
+      summary: Get City by ID
+      description: |
+        Retrieve detailed information for a specific city by its unique ID.
+        
+        Returns comprehensive city data including coordinates, population, associated ZIP codes,
+        and administrative information.
+      operationId: getCityById
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - Cities
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Unique city identifier
+          schema:
+            type: integer
+            format: int64
+            example: 12345
+      responses:
+        '200':
+          description: City found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CityResponse'
+        '400':
+          description: Invalid city ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: City not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /cities/zips:
+    get:
+      summary: Get ZIP Codes for a City
+      description: |
+        Retrieve all ZIP codes associated with a specific city.
+        
+        **Important Use Case**: This endpoint is essential for the ZIP code fallback pattern.
+        When searching for an address with an incorrect or unknown ZIP code:
+        1. Use this endpoint to get all valid ZIP codes for the city
+        2. Search addresses in each returned ZIP code
+        3. Find the correct address match
+        
+        Example: Looking for "1424 WYOMING STREET, DAYTON, OH" but unsure of ZIP code.
+        Query this endpoint with `city=Dayton&state=OH` to get all Dayton ZIP codes
+        (45401, 45402, 45410, etc.), then search addresses in each.
+      operationId: getCityZipCodes
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - Cities
+      parameters:
+        - name: city
+          in: query
+          required: true
+          description: City name
+          schema:
+            type: string
+            example: "Dayton"
+        - name: state
+          in: query
+          required: true
+          description: State ID (two-letter code)
+          schema:
+            type: string
+            example: "OH"
+      responses:
+        '200':
+          description: ZIP codes retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CityZipsResponse'
+        '400':
+          description: Missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /admin/load-data:
     post:
       summary: Load ZIP Code Data
@@ -1583,6 +1808,170 @@ components:
             $ref: '#/components/schemas/GeoJSONFeature'
           description: Array of GeoJSON features
 
+    City:
+      type: object
+      description: US city information including location, demographics, and associated ZIP codes
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Unique city identifier
+          example: 12345
+        city:
+          type: string
+          description: City name
+          example: "Dayton"
+        city_ascii:
+          type: string
+          description: ASCII-only version of city name
+          example: "Dayton"
+        state_id:
+          type: string
+          description: Two-letter state code
+          example: "OH"
+        state_name:
+          type: string
+          description: Full state name
+          example: "Ohio"
+        county_fips:
+          type: string
+          description: County FIPS code
+          example: "39113"
+        county_name:
+          type: string
+          description: County name
+          example: "Montgomery"
+        lat:
+          type: number
+          format: double
+          description: Latitude coordinate
+          example: 39.7589
+        lng:
+          type: number
+          format: double
+          description: Longitude coordinate
+          example: -84.1916
+        population:
+          type: integer
+          description: City population
+          example: 140407
+        density:
+          type: number
+          format: double
+          description: Population density (people per sq km)
+          example: 1234.56
+        source:
+          type: string
+          description: Data source
+          example: "shape"
+        military:
+          type: boolean
+          description: Whether this is a military base
+          example: false
+        incorporated:
+          type: boolean
+          description: Whether the city is incorporated
+          example: true
+        timezone:
+          type: string
+          description: IANA timezone identifier
+          example: "America/New_York"
+        ranking:
+          type: integer
+          description: City ranking (1 = major city)
+          example: 1
+        zips:
+          type: string
+          description: Space-separated list of ZIP codes
+          example: "45401 45402 45403 45404 45405 45406 45409 45410 45414 45415"
+        external_id:
+          type: string
+          description: External identifier from source data
+          example: "1840034016"
+
+    CitySearchResponse:
+      type: object
+      description: Response for city search operations
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/City'
+        count:
+          type: integer
+          description: Number of results in current response
+          example: 1
+        total:
+          type: integer
+          description: Total number of matching cities
+          example: 1
+        query:
+          type: string
+          description: Original search query
+          example: "Dayton"
+        filters:
+          type: object
+          description: Applied filters
+          additionalProperties: true
+          example:
+            state: "OH"
+        message:
+          type: string
+          description: Optional message
+        error:
+          type: string
+          description: Error message if success is false
+
+    CityResponse:
+      type: object
+      description: Response for single city lookup
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/City'
+        count:
+          type: integer
+          example: 1
+        total:
+          type: integer
+          example: 1
+
+    CityZipsResponse:
+      type: object
+      description: Response containing ZIP codes for a city
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            city:
+              type: string
+              description: City name
+              example: "Dayton"
+            state:
+              type: string
+              description: State code
+              example: "OH"
+            zips:
+              type: array
+              items:
+                type: string
+              description: Array of ZIP codes
+              example: ["45401", "45402", "45403", "45404", "45405", "45406", "45409", "45410"]
+            count:
+              type: integer
+              description: Number of ZIP codes
+              example: 8
+
 tags:
   - name: Geocoding
     description: Core geocoding operations for ZIP code lookup
@@ -1594,6 +1983,8 @@ tags:
     description: Ohio address search and lookup operations (5.5M+ addresses)
   - name: County Boundaries
     description: Ohio county boundary and geographic data operations (89 counties)
+  - name: Cities
+    description: US city search and ZIP code lookup operations (31,000+ cities). Use for fallback when ZIP code is unknown or incorrect.
   - name: Admin
     description: Administrative operations for data management
   - name: System

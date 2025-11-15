@@ -173,7 +173,7 @@ func CreateAPIKeyHandler(c echo.Context) error {
 	}
 
 	// Validate permissions
-	validPermissions := []string{"geocode", "search", "distance", "nearby", "proximity", "*"}
+	validPermissions := []string{"geocode", "search", "distance", "nearby", "proximity", "addresses", "counties", "cities", "*"}
 	for _, perm := range req.Permissions {
 		valid := false
 		for _, validPerm := range validPermissions {

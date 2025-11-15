@@ -58,6 +58,12 @@ func main() {
 		log.Println("Ohio addresses can be loaded manually if needed")
 	}
 
+	// Initialize US cities data if needed
+	if err := services.InitializeCityData(); err != nil {
+		log.Printf("Warning: Failed to initialize city data: %v", err)
+		log.Println("City data can be loaded manually if needed")
+	}
+
 	// Sync admin privileges from ADMIN_EMAILS environment variable
 	authService := &services.AuthService{}
 	if err := authService.SyncAdminUsers(); err != nil {
@@ -225,6 +231,11 @@ func main() {
 	protected.GET("/counties/:name", handlers.GetCountyDetailHandler)
 	protected.GET("/counties/:name/boundary", handlers.GetCountyBoundaryHandler)
 	protected.GET("/counties/bounds/search", handlers.GetCountiesInBoundsHandler)
+	
+	// City endpoints
+	protected.GET("/cities", handlers.SearchCitiesHandler)
+	protected.GET("/cities/:id", handlers.GetCityHandler)
+	protected.GET("/cities/zips", handlers.GetCityZIPCodesHandler)
 	
 	// Admin routes (require admin auth)
 	admin := api.Group("/admin")

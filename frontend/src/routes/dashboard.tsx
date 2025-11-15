@@ -295,7 +295,7 @@ function Dashboard() {
             <div className="space-y-2">
               <Label>Permissions</Label>
               <div className="space-y-2">
-                {['*', 'geocode', 'reverse_geocode', 'batch_geocode'].map((perm) => (
+                {['*', 'geocode', 'search', 'distance', 'addresses', 'counties', 'cities'].map((perm) => (
                   <div key={perm} className="flex items-center">
                     <input
                       type="checkbox"

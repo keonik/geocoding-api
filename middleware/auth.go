@@ -182,6 +182,9 @@ func getEndpointName(path string) string {
 	if strings.Contains(path, "/counties") {
 		return "counties"
 	}
+	if strings.Contains(path, "/cities") {
+		return "cities"
+	}
 	if strings.Contains(path, "/admin/") {
 		return "admin"
 	}
