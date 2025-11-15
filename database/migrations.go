@@ -94,6 +94,12 @@ func RunMigrations() error {
 		Up:          createCitiesTable,
 		Down:        dropCitiesTable,
 	},
+	{
+		Version:     14,
+		Description: "Create US states table with boundary data",
+		Up:          createStatesTable,
+		Down:        dropStatesTable,
+	},
 }	// Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -887,3 +893,57 @@ func dropCitiesTable() error {
 	_, err := DB.Exec("DROP TABLE IF EXISTS cities")
 	return err
 }
+
+// createStatesTable creates the us_states table with PostGIS geometry for state boundaries
+func createStatesTable() error {
+	// Enable PostGIS extension if not already enabled
+	if _, err := DB.Exec("CREATE EXTENSION IF NOT EXISTS postgis"); err != nil {
+		return fmt.Errorf("failed to enable PostGIS extension: %w", err)
+	}
+
+	query := `
+	-- Create states table for US state boundary data
+	CREATE TABLE IF NOT EXISTS us_states (
+		id BIGSERIAL PRIMARY KEY,
+		state_fips VARCHAR(2) NOT NULL UNIQUE,
+		state_abbr VARCHAR(2) NOT NULL UNIQUE,
+		state_name VARCHAR(255) NOT NULL UNIQUE,
+		state_ns VARCHAR(50),
+		geoid VARCHAR(10),
+		region VARCHAR(10),
+		division VARCHAR(10),
+		lsad VARCHAR(10),
+		mtfcc VARCHAR(10),
+		funcstat VARCHAR(10),
+		area_land BIGINT,
+		area_water BIGINT,
+		internal_lat DECIMAL(10, 7),
+		internal_lng DECIMAL(11, 7),
+		geometry GEOMETRY(MULTIPOLYGON, 4326),
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- Create indexes for efficient lookups
+	CREATE INDEX idx_states_fips ON us_states (state_fips);
+	CREATE INDEX idx_states_abbr ON us_states (state_abbr);
+	CREATE INDEX idx_states_name ON us_states (state_name);
+
+	-- Create spatial index for geometry queries
+	CREATE INDEX idx_states_geometry ON us_states USING GIST (geometry);
+	`
+
+	_, err := DB.Exec(query)
+	if err != nil {
+		return fmt.Errorf("failed to create states table: %w", err)
+	}
+
+	log.Println("US states table created successfully. Data will be loaded by service on startup.")
+	return nil
+}
+
+// dropStatesTable drops the us_states table
+func dropStatesTable() error {
+	_, err := DB.Exec("DROP TABLE IF EXISTS us_states")
+	return err
+}
+

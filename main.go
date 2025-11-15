@@ -64,6 +64,12 @@ func main() {
 		log.Println("City data can be loaded manually if needed")
 	}
 
+	// Initialize US states data if needed
+	if err := services.InitializeStateData(); err != nil {
+		log.Printf("Warning: Failed to initialize state data: %v", err)
+		log.Println("State data can be loaded manually if needed")
+	}
+
 	// Sync admin privileges from ADMIN_EMAILS environment variable
 	authService := &services.AuthService{}
 	if err := authService.SyncAdminUsers(); err != nil {
@@ -236,6 +242,12 @@ func main() {
 	protected.GET("/cities", handlers.SearchCitiesHandler)
 	protected.GET("/cities/:id", handlers.GetCityHandler)
 	protected.GET("/cities/zips", handlers.GetCityZIPCodesHandler)
+	
+	// State endpoints
+	protected.GET("/states", handlers.SearchStatesHandler)
+	protected.GET("/states/lookup", handlers.GetStateByLocationHandler)
+	protected.GET("/states/:identifier", handlers.GetStateHandler)
+	protected.GET("/states/:identifier/boundary", handlers.GetStateBoundaryHandler)
 	
 	// Admin routes (require admin auth)
 	admin := api.Group("/admin")

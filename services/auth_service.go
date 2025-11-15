@@ -1069,6 +1069,7 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 		"addresses": "addresses",
 		"counties":  "counties",
 		"cities":    "cities",
+		"states":    "states",
 		"admin":     "admin",
 	}
 
