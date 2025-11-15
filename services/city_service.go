@@ -358,10 +358,10 @@ func (cs *CityService) GetZIPCodesForCity(cityAscii, state string) ([]string, er
 	stateUpper := strings.ToUpper(state)
 	if len(state) == 2 {
 		// State ID like "OH"
-		query = "SELECT zips FROM cities WHERE city_ascii = $1 AND state_id = $2"
+		query = "SELECT zips FROM cities WHERE city_ascii ILIKE $1 AND state_id = $2"
 	} else {
 		// State name like "Ohio" - check both state_id and state_name
-		query = "SELECT zips FROM cities WHERE city_ascii = $1 AND (state_id = $2 OR state_name ILIKE $2)"
+		query = "SELECT zips FROM cities WHERE city_ascii ILIKE $1 AND (state_id = $2 OR state_name ILIKE $2)"
 	}
 	
 	err := database.DB.QueryRow(query, cityAscii, stateUpper).Scan(&zips)
