@@ -1158,7 +1158,7 @@ paths:
         - name: state
           in: query
           required: true
-          description: State ID (two-letter code)
+          description: State ID (e.g., "OH") or full state name (e.g., "Ohio")
           schema:
             type: string
             example: "OH"

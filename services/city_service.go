@@ -162,8 +162,17 @@ func (cs *CityService) SearchCities(params models.CitySearchParams) ([]models.Ci
 
 	if params.State != "" {
 		argCount++
-		conditions = append(conditions, fmt.Sprintf("(state_id = $%d OR state_name ILIKE $%d)", argCount, argCount))
-		args = append(args, strings.ToUpper(params.State))
+		// Check if state is 2-letter code or full name
+		stateUpper := strings.ToUpper(params.State)
+		if len(params.State) == 2 {
+			// Likely state_id (e.g., "OH")
+			conditions = append(conditions, fmt.Sprintf("state_id = $%d", argCount))
+			args = append(args, stateUpper)
+		} else {
+			// Likely state_name (e.g., "Ohio") - check both to be flexible
+			conditions = append(conditions, fmt.Sprintf("(state_id = $%d OR state_name ILIKE $%d)", argCount, argCount))
+			args = append(args, stateUpper)
+		}
 	}
 
 	if params.County != "" {
@@ -341,11 +350,21 @@ func (cs *CityService) GetCityByID(id int64) (*models.City, error) {
 }
 
 // GetZIPCodesForCity returns the list of ZIP codes for a city
-func (cs *CityService) GetZIPCodesForCity(cityAscii, stateID string) ([]string, error) {
+func (cs *CityService) GetZIPCodesForCity(cityAscii, state string) ([]string, error) {
 	var zips sql.NullString
-	query := "SELECT zips FROM cities WHERE city_ascii = $1 AND state_id = $2"
+	var query string
 	
-	err := database.DB.QueryRow(query, cityAscii, stateID).Scan(&zips)
+	// Handle state as either state_id (2 chars) or state_name
+	stateUpper := strings.ToUpper(state)
+	if len(state) == 2 {
+		// State ID like "OH"
+		query = "SELECT zips FROM cities WHERE city_ascii = $1 AND state_id = $2"
+	} else {
+		// State name like "Ohio" - check both state_id and state_name
+		query = "SELECT zips FROM cities WHERE city_ascii = $1 AND (state_id = $2 OR state_name ILIKE $2)"
+	}
+	
+	err := database.DB.QueryRow(query, cityAscii, stateUpper).Scan(&zips)
 	if err == sql.ErrNoRows {
 		return []string{}, nil
 	}
