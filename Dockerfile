@@ -62,7 +62,7 @@ RUN mkdir -p /app/oh /app/cache /app/scripts
 COPY --from=backend-builder /app/main ./main
 
 # Copy compressed data files (will decompress on-demand at runtime)
-COPY --from=backend-builder /app/georef-united-states-of-america-zc-point.csv.gz* ./
+COPY --from=backend-builder /app/*gz* ./
 COPY --from=backend-builder /app/oh/ ./oh/
 
 COPY --from=frontend-builder /app/static-new ./static-new
