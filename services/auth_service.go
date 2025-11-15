@@ -294,21 +294,29 @@ func (as *AuthService) CheckRateLimit(userID int) (bool, int, int, error) {
 	}
 
 	// Get user's plan type from users table if no subscription exists
-	var monthlyLimit int
+	var monthlyLimit, dailyLimit int
 	err = database.DB.QueryRow(`
-		SELECT COALESCE(s.monthly_limit, 
+		SELECT 
+			COALESCE(s.monthly_limit, 
+				CASE 
+					WHEN u.plan_type = 'free' THEN 3000
+					WHEN u.plan_type = 'starter' THEN 30000
+					WHEN u.plan_type = 'pro' THEN 500000
+					WHEN u.plan_type = 'enterprise' THEN -1
+					ELSE 3000
+				END
+			) as monthly_limit,
 			CASE 
-				WHEN u.plan_type = 'free' THEN 100000
-				WHEN u.plan_type = 'starter' THEN 10000
+				WHEN u.plan_type = 'free' THEN 500
+				WHEN u.plan_type = 'starter' THEN 5000
 				WHEN u.plan_type = 'pro' THEN 100000
-				WHEN u.plan_type = 'enterprise' THEN 1000000
-				ELSE 100000
-			END
-		) as monthly_limit
+				WHEN u.plan_type = 'enterprise' THEN -1
+				ELSE 500
+			END as daily_limit
 		FROM users u
 		LEFT JOIN subscriptions s ON u.id = s.user_id AND s.is_active = true
 		WHERE u.id = $1
-	`, userID).Scan(&monthlyLimit)
+	`, userID).Scan(&monthlyLimit, &dailyLimit)
 	if err != nil {
 		return false, 0, 0, fmt.Errorf("failed to get user plan: %w", err)
 	}
@@ -324,7 +332,27 @@ func (as *AuthService) CheckRateLimit(userID int) (bool, int, int, error) {
 		return false, 0, 0, fmt.Errorf("failed to get usage count: %w", err)
 	}
 
-	withinLimit := currentUsage < monthlyLimit
+	// Count today's usage
+	var dailyUsage int
+	err = database.DB.QueryRow(`
+		SELECT COUNT(*) FROM usage_records 
+		WHERE user_id = $1 AND billable = true 
+		AND created_at >= CURRENT_DATE
+	`, userID).Scan(&dailyUsage)
+	if err != nil {
+		return false, 0, 0, fmt.Errorf("failed to get daily usage count: %w", err)
+	}
+
+	// Enterprise plan has unlimited usage (-1 indicates no limit)
+	if monthlyLimit == -1 || dailyLimit == -1 {
+		return true, currentUsage, monthlyLimit, nil
+	}
+
+	// Check both monthly and daily limits
+	withinMonthlyLimit := currentUsage < monthlyLimit
+	withinDailyLimit := dailyUsage < dailyLimit
+	withinLimit := withinMonthlyLimit && withinDailyLimit
+	
 	return withinLimit, currentUsage, monthlyLimit, nil
 }
 
