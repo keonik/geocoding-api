@@ -1087,3 +1087,128 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 
 	return false
 }
+
+// GetAdminAnalytics returns system-wide analytics data
+func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, error) {
+	analytics := make(map[string]interface{})
+	
+	// Total calls across all users
+	var totalCalls, billableCalls int
+	err := database.DB.QueryRow(`
+		SELECT 
+			COUNT(*),
+			COUNT(*) FILTER (WHERE billable = true)
+		FROM usage_records 
+		WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' * $1
+	`, days).Scan(&totalCalls, &billableCalls)
+	if err != nil {
+		return nil, err
+	}
+	analytics["total_calls"] = totalCalls
+	analytics["billable_calls"] = billableCalls
+	
+	// Average response time
+	var avgResponseTime sql.NullFloat64
+	err = database.DB.QueryRow(`
+		SELECT AVG(response_time_ms)
+		FROM usage_records 
+		WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' * $1
+	`, days).Scan(&avgResponseTime)
+	if err == nil && avgResponseTime.Valid {
+		analytics["avg_response_time"] = avgResponseTime.Float64
+	} else {
+		analytics["avg_response_time"] = 0
+	}
+	
+	// Success/Error rate
+	var successCount, errorCount int
+	err = database.DB.QueryRow(`
+		SELECT 
+			COUNT(*) FILTER (WHERE status_code >= 200 AND status_code < 400),
+			COUNT(*) FILTER (WHERE status_code >= 400)
+		FROM usage_records 
+		WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' * $1
+	`, days).Scan(&successCount, &errorCount)
+	if err != nil {
+		return nil, err
+	}
+	analytics["success_count"] = successCount
+	analytics["error_count"] = errorCount
+	
+	// Endpoint breakdown
+	endpointRows, err := database.DB.Query(`
+		SELECT 
+			endpoint,
+			COUNT(*) as total,
+			COUNT(*) FILTER (WHERE billable = true) as billable,
+			AVG(response_time_ms) as avg_time
+		FROM usage_records 
+		WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' * $1
+		GROUP BY endpoint
+		ORDER BY total DESC
+	`, days)
+	if err != nil {
+		return nil, err
+	}
+	defer endpointRows.Close()
+	
+	var endpoints []map[string]interface{}
+	for endpointRows.Next() {
+		var endpoint string
+		var total, billable int
+		var avgTime sql.NullFloat64
+		
+		if err := endpointRows.Scan(&endpoint, &total, &billable, &avgTime); err != nil {
+			continue
+		}
+		
+		endpointData := map[string]interface{}{
+			"endpoint":       endpoint,
+			"total":          total,
+			"billable":       billable,
+			"avg_time":       0.0,
+		}
+		
+		if avgTime.Valid {
+			endpointData["avg_time"] = avgTime.Float64
+		}
+		
+		endpoints = append(endpoints, endpointData)
+	}
+	analytics["endpoints"] = endpoints
+	
+	// Daily breakdown
+	dailyRows, err := database.DB.Query(`
+		SELECT 
+			DATE(created_at) as date,
+			COUNT(*) as total,
+			COUNT(*) FILTER (WHERE billable = true) as billable
+		FROM usage_records 
+		WHERE created_at >= CURRENT_DATE - INTERVAL '1 day' * $1
+		GROUP BY DATE(created_at)
+		ORDER BY date DESC
+	`, days)
+	if err != nil {
+		return nil, err
+	}
+	defer dailyRows.Close()
+	
+	var dailyUsage []map[string]interface{}
+	for dailyRows.Next() {
+		var date time.Time
+		var total, billable int
+		
+		if err := dailyRows.Scan(&date, &total, &billable); err != nil {
+			continue
+		}
+		
+		dailyUsage = append(dailyUsage, map[string]interface{}{
+			"date":           date.Format("2006-01-02"),
+			"total_calls":    total,
+			"billable_calls": billable,
+		})
+	}
+	analytics["daily_usage"] = dailyUsage
+	
+	return analytics, nil
+}

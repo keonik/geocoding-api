@@ -56,6 +56,25 @@ export interface AdminAPIKey {
   created_at: string
 }
 
+export interface AdminAnalytics {
+  total_calls: number
+  billable_calls: number
+  success_count: number
+  error_count: number
+  avg_response_time: number
+  endpoints: Array<{
+    endpoint: string
+    total: number
+    billable: number
+    avg_time: number
+  }>
+  daily_usage: Array<{
+    date: string
+    total_calls: number
+    billable_calls: number
+  }>
+}
+
 export interface SystemStatus {
   database_connected: boolean
   migrations_current: boolean
@@ -109,5 +128,9 @@ export const adminAPI = {
     days: number = 30
   ): Promise<APIResponse<UserUsageMetrics>> => {
     return fetchAPI(`/api/v1/admin/users/${userId}/metrics?days=${days}`)
+  },
+
+  getAnalytics: async (days: number = 30): Promise<APIResponse<AdminAnalytics>> => {
+    return fetchAPI(`/api/v1/admin/analytics?days=${days}`)
   },
 }

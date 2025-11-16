@@ -94,6 +94,29 @@ func GetAdminStatsHandler(c echo.Context) error {
 	})
 }
 
+// GetAdminAnalyticsHandler returns system-wide analytics data
+func GetAdminAnalyticsHandler(c echo.Context) error {
+	days := 30
+	if daysParam := c.QueryParam("days"); daysParam != "" {
+		if d, err := strconv.Atoi(daysParam); err == nil && d > 0 && d <= 365 {
+			days = d
+		}
+	}
+
+	analytics, err := services.Auth.GetAdminAnalytics(days)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to get analytics data",
+		})
+	}
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data:    analytics,
+	})
+}
+
 // GetAllUsersHandler returns all users for admin dashboard
 func GetAllUsersHandler(c echo.Context) error {
 	users, err := services.Auth.GetAllUsers()

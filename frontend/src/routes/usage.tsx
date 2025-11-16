@@ -173,7 +173,7 @@ function UsageAnalytics() {
               <Activity className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{totalCalls}</div>
+              <div className="text-2xl font-bold">{totalCalls.toLocaleString()}</div>
               <p className="text-xs text-muted-foreground">Last {days} days</p>
             </CardContent>
           </Card>
@@ -184,7 +184,7 @@ function UsageAnalytics() {
               <TrendingUp className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{totalBillable}</div>
+              <div className="text-2xl font-bold">{totalBillable.toLocaleString()}</div>
               <p className="text-xs text-muted-foreground">
                 {totalCalls > 0 ? Math.round((totalBillable / totalCalls) * 100) : 0}% of total
               </p>
@@ -197,7 +197,7 @@ function UsageAnalytics() {
               <Activity className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{avgCallsPerDay}</div>
+              <div className="text-2xl font-bold">{avgCallsPerDay.toLocaleString()}</div>
               <p className="text-xs text-muted-foreground">Per day average</p>
             </CardContent>
           </Card>

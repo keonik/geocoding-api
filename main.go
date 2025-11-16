@@ -262,6 +262,7 @@ func main() {
 	admin.GET("/api-keys", handlers.GetAllAPIKeysHandler)
 	admin.GET("/system-status", handlers.GetSystemStatusHandler)
 	admin.GET("/counties", handlers.GetCountyStatsHandler)
+	admin.GET("/analytics", handlers.GetAdminAnalyticsHandler)
 
 	// SPA fallback - MUST be registered AFTER all API routes
 	// This serves the React app for all non-API routes

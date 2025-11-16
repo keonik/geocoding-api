@@ -1,7 +1,7 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { adminAPI, type AdminStats, type AdminUser, type AdminAPIKey, type UserUsageMetrics } from '@/api/admin'
+import { adminAPI, type AdminStats, type AdminUser, type AdminAPIKey, type UserUsageMetrics, type AdminAnalytics } from '@/api/admin'
 import { authAPI } from '@/api/auth'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -29,8 +29,11 @@ import {
   XCircle,
   BarChart3,
   TrendingUp,
+  Clock,
+  CheckCircle2,
 } from 'lucide-react'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 
 export const Route = createFileRoute('/admin')({
   beforeLoad: () => {
@@ -57,6 +60,8 @@ function AdminDashboard() {
   const [activeTab, setActiveTab] = useState('users')
   const [selectedUserMetrics, setSelectedUserMetrics] = useState<UserUsageMetrics | null>(null)
   const [_metricsLoading, setMetricsLoading] = useState(false)
+  const [analytics, setAnalytics] = useState<AdminAnalytics | null>(null)
+  const [days, setDays] = useState(30)
 
   const user = JSON.parse(localStorage.getItem('user') || '{}')
 
@@ -156,6 +161,24 @@ function AdminDashboard() {
     }
   }
 
+  const loadAnalytics = async () => {
+    try {
+      const response = await adminAPI.getAnalytics(days)
+      if (response.success && response.data) {
+        setAnalytics(response.data)
+      }
+    } catch (err) {
+      console.error('Error loading analytics:', err)
+      toast.error('Failed to load analytics data')
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'analytics') {
+      loadAnalytics()
+    }
+  }, [activeTab, days])
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -247,6 +270,10 @@ function AdminDashboard() {
                 <TabsTrigger value="api-keys">
                   <Key className="mr-2 h-4 w-4" />
                   API Keys
+                </TabsTrigger>
+                <TabsTrigger value="analytics">
+                  <BarChart3 className="mr-2 h-4 w-4" />
+                  Analytics
                 </TabsTrigger>
                 <TabsTrigger value="system">
                   <Database className="mr-2 h-4 w-4" />
@@ -419,6 +446,196 @@ function AdminDashboard() {
                     </TableBody>
                   </Table>
                 </div>
+              </TabsContent>
+
+              {/* Analytics Tab */}
+              <TabsContent value="analytics" className="space-y-4">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-lg font-medium">System-Wide Analytics</h3>
+                  <div className="flex gap-2">
+                    <select 
+                      value={days} 
+                      onChange={(e) => setDays(Number(e.target.value))}
+                      className="px-3 py-1 border rounded-md"
+                    >
+                      <option value={7}>Last 7 days</option>
+                      <option value={30}>Last 30 days</option>
+                      <option value={90}>Last 90 days</option>
+                    </select>
+                    <Button variant="outline" size="sm" onClick={loadAnalytics}>
+                      <RefreshCw className="mr-2 h-4 w-4" />
+                      Refresh
+                    </Button>
+                  </div>
+                </div>
+
+                {analytics && (
+                  <>
+                    {/* Summary Stats */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                      <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                          <CardTitle className="text-sm font-medium">Total Calls</CardTitle>
+                          <Activity className="h-4 w-4 text-muted-foreground" />
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-2xl font-bold">{analytics.total_calls.toLocaleString()}</div>
+                          <p className="text-xs text-muted-foreground">Last {days} days</p>
+                        </CardContent>
+                      </Card>
+
+                      <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                          <CardTitle className="text-sm font-medium">Billable Calls</CardTitle>
+                          <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-2xl font-bold">{analytics.billable_calls.toLocaleString()}</div>
+                          <p className="text-xs text-muted-foreground">
+                            {analytics.total_calls > 0 ? Math.round((analytics.billable_calls / analytics.total_calls) * 100) : 0}% of total
+                          </p>
+                        </CardContent>
+                      </Card>
+
+                      <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                          <CardTitle className="text-sm font-medium">Avg Response Time</CardTitle>
+                          <Clock className="h-4 w-4 text-muted-foreground" />
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-2xl font-bold">{analytics.avg_response_time.toFixed(0)}ms</div>
+                          <p className="text-xs text-muted-foreground">Average across all calls</p>
+                        </CardContent>
+                      </Card>
+
+                      <Card>
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                          <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
+                          <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
+                        </CardHeader>
+                        <CardContent>
+                          <div className="text-2xl font-bold">
+                            {analytics.total_calls > 0 
+                              ? Math.round((analytics.success_count / analytics.total_calls) * 100) 
+                              : 0}%
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {analytics.success_count.toLocaleString()} successful
+                          </p>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    {/* Daily Usage Chart */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Daily Usage</CardTitle>
+                        <CardDescription>API calls over time (system-wide)</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <ResponsiveContainer width="100%" height={300}>
+                          <LineChart data={analytics.daily_usage}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="date" />
+                            <YAxis />
+                            <Tooltip />
+                            <Legend />
+                            <Line 
+                              type="monotone" 
+                              dataKey="total_calls" 
+                              stroke="hsl(var(--primary))" 
+                              name="Total Calls"
+                            />
+                            <Line 
+                              type="monotone" 
+                              dataKey="billable_calls" 
+                              stroke="hsl(var(--chart-2))" 
+                              name="Billable Calls"
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </CardContent>
+                    </Card>
+
+                    {/* Endpoint Usage Charts */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      <Card>
+                        <CardHeader>
+                          <CardTitle>Endpoint Usage</CardTitle>
+                          <CardDescription>Total calls per endpoint</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <ResponsiveContainer width="100%" height={300}>
+                            <BarChart data={analytics.endpoints}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="endpoint" angle={-45} textAnchor="end" height={100} />
+                              <YAxis />
+                              <Tooltip />
+                              <Bar dataKey="total" fill="hsl(var(--primary))" name="Total Calls" />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </CardContent>
+                      </Card>
+
+                      <Card>
+                        <CardHeader>
+                          <CardTitle>Response Times</CardTitle>
+                          <CardDescription>Average response time by endpoint</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <ResponsiveContainer width="100%" height={300}>
+                            <BarChart data={analytics.endpoints}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="endpoint" angle={-45} textAnchor="end" height={100} />
+                              <YAxis />
+                              <Tooltip />
+                              <Bar dataKey="avg_time" fill="hsl(var(--chart-3))" name="Avg Time (ms)" />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    {/* Success/Error Distribution */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Success vs Errors</CardTitle>
+                        <CardDescription>Distribution of successful and failed requests</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <ResponsiveContainer width="100%" height={300}>
+                          <PieChart>
+                            <Pie
+                              data={[
+                                { name: 'Success', value: analytics.success_count, color: 'hsl(var(--chart-1))' },
+                                { name: 'Errors', value: analytics.error_count, color: 'hsl(var(--chart-5))' }
+                              ]}
+                              cx="50%"
+                              cy="50%"
+                              labelLine={false}
+                              label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                              outerRadius={80}
+                              fill="#8884d8"
+                              dataKey="value"
+                            >
+                              <Cell fill="hsl(var(--chart-1))" />
+                              <Cell fill="hsl(var(--chart-5))" />
+                            </Pie>
+                            <Tooltip />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </CardContent>
+                    </Card>
+                  </>
+                )}
+
+                {!analytics && (
+                  <Card>
+                    <CardContent className="py-10 text-center text-muted-foreground">
+                      Loading analytics...
+                    </CardContent>
+                  </Card>
+                )}
               </TabsContent>
 
               {/* System Tab */}
