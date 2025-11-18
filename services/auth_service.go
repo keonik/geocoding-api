@@ -1156,7 +1156,7 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 	for endpointRows.Next() {
 		var endpoint string
 		var total, billable int
-		var avgTime sql.NullFloat64
+		var avgTime sql.NullFloat64	
 		
 		if err := endpointRows.Scan(&endpoint, &total, &billable, &avgTime); err != nil {
 			continue

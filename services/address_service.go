@@ -62,7 +62,7 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 						ELSE 0
 					END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
 				
-				// Search condition: word appears in ANY field (prioritize full_address)
+				// Search condition: word must appear in SOME field (each word required via AND)
 				searchConditions = append(searchConditions, fmt.Sprintf(`(
 					full_address ILIKE $%d OR
 					house_number ILIKE $%d OR
@@ -76,9 +76,9 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 				argIndex++
 			}
 			
-			// At least ONE word must match (OR logic for flexibility)
+			// ALL words must match (AND logic) - each word must appear somewhere
 			if len(searchConditions) > 0 {
-				conditions = append(conditions, "("+strings.Join(searchConditions, " OR ")+")")
+				conditions = append(conditions, "("+strings.Join(searchConditions, " AND ")+")")
 			}
 			
 			// Add relevance score to select
