@@ -76,9 +76,9 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 				argIndex++
 			}
 			
-			// ALL words must match (AND logic) - each word must appear somewhere
+			// At least ONE word must match (OR logic for flexibility)
 			if len(searchConditions) > 0 {
-				conditions = append(conditions, "("+strings.Join(searchConditions, " AND ")+")")
+				conditions = append(conditions, "("+strings.Join(searchConditions, " OR ")+")")
 			}
 			
 			// Add relevance score to select
@@ -275,6 +275,79 @@ func (s *AddressService) GetCountyStats() (map[string]int, error) {
 	}
 
 	return stats, nil
+}
+
+// FullTextSearchAddresses performs a simple full-text search on the full_address column
+func (s *AddressService) FullTextSearchAddresses(query string, limit int) ([]models.OhioAddress, error) {
+	// Set default limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	// Clean query
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []models.OhioAddress{}, nil
+	}
+
+	// Search using the full_address column with trigram index
+	searchQuery := `
+		SELECT 
+			id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at
+		FROM ohio_addresses
+		WHERE full_address ILIKE $1
+		ORDER BY 
+			CASE 
+				WHEN full_address ILIKE $2 THEN 1  -- Exact match
+				ELSE 2
+			END,
+			full_address
+		LIMIT $3
+	`
+
+	pattern := "%" + query + "%"
+	exactPattern := query
+
+	rows, err := s.db.Query(searchQuery, pattern, exactPattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute full-text search: %w", err)
+	}
+	defer rows.Close()
+
+	var addresses []models.OhioAddress
+	for rows.Next() {
+		var addr models.OhioAddress
+		var unit, district sql.NullString
+
+		err := rows.Scan(
+			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &unit,
+			&addr.City, &district, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan address: %w", err)
+		}
+
+		// Handle nullable fields
+		if unit.Valid {
+			addr.Unit = unit.String
+		}
+		if district.Valid {
+			addr.District = district.String
+		}
+
+		addresses = append(addresses, addr)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating address rows: %w", err)
+	}
+
+	return addresses, nil
 }
 
 

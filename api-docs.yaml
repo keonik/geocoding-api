@@ -613,6 +613,103 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /addresses/search:
+    get:
+      summary: Full-Text Address Search
+      description: |
+        Fast full-text search across complete formatted addresses using the indexed `full_address` column.
+        
+        **Simple and Fast**: Just search the complete address string as you'd type it:
+        - `q=7 westerfield drive` → Finds "7 Westerfield Dr, City, OH 12345"
+        - `q=123 main st columbus` → Finds Main Street addresses in Columbus
+        - `q=maple street 43215` → Finds Maple Street in ZIP 43215
+        
+        This endpoint uses PostgreSQL's trigram indexes for blazing-fast partial matches
+        on the full formatted address. Perfect for autocomplete and quick address lookups.
+        
+        **Use this when:**
+        - You want simple, Google-like address search
+        - You need fast autocomplete suggestions
+        - You have a partial or complete address string
+        
+        **Use `/addresses` when:**
+        - You need to filter by specific fields (county, city, ZIP)
+        - You want proximity/radius search
+        - You need pagination for large result sets
+      operationId: fullTextSearchAddresses
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - Ohio Addresses
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Address search query (partial or complete address)
+          schema:
+            type: string
+            minLength: 2
+            example: "7 westerfield drive"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of results to return (1-500)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+            example: 10
+      responses:
+        '200':
+          description: Search completed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OhioAddress'
+                  count:
+                    type: integer
+                    description: Number of addresses returned
+                    example: 5
+                  query:
+                    type: string
+                    description: The search query that was executed
+                    example: "7 westerfield drive"
+              example:
+                success: true
+                data:
+                  - id: 12345
+                    house_number: "7"
+                    street: "Westerfield Dr"
+                    city: "Columbus"
+                    county: "Franklin"
+                    postcode: "43215"
+                    full_address: "7 Westerfield Dr, Columbus, OH 43215"
+                    latitude: 39.9612
+                    longitude: -82.9988
+                count: 1
+                query: "7 westerfield drive"
+        '400':
+          description: Invalid search parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /addresses/{id}:
     get:
       summary: Get Address Details

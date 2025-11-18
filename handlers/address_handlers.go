@@ -137,3 +137,38 @@ func GetOhioCountyStatsHandler(c echo.Context) error {
 		"data":    stats,
 	})
 }
+
+// FullTextSearchAddressesHandler handles full-text address search requests
+func FullTextSearchAddressesHandler(c echo.Context) error {
+	query := c.QueryParam("q")
+	if query == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "Query parameter 'q' is required",
+		})
+	}
+
+	// Parse limit parameter
+	limit := 50 // Default
+	if limitStr := c.QueryParam("limit"); limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 && parsedLimit <= 500 {
+			limit = parsedLimit
+		}
+	}
+
+	// Perform full-text search
+	addresses, err := services.Address.FullTextSearchAddresses(query, limit)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   "Failed to search addresses: " + err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success": true,
+		"data":    addresses,
+		"count":   len(addresses),
+		"query":   query,
+	})
+}
