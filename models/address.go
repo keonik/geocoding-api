@@ -16,6 +16,7 @@ type OhioAddress struct {
 	Region       string    `json:"region" db:"region"`     // State code
 	Postcode     string    `json:"postcode" db:"postcode"`
 	County       string    `json:"county" db:"county"`     // Full county name
+	FullAddress  string    `json:"full_address" db:"full_address"` // Complete formatted address
 	Latitude     float64   `json:"latitude" db:"latitude"`
 	Longitude    float64   `json:"longitude" db:"longitude"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`

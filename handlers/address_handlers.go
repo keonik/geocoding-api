@@ -137,38 +137,3 @@ func GetOhioCountyStatsHandler(c echo.Context) error {
 		"data":    stats,
 	})
 }
-
-// SemanticSearchAddressesHandler handles semantic address search requests
-func SemanticSearchAddressesHandler(c echo.Context) error {
-	query := c.QueryParam("q")
-	if query == "" {
-		return c.JSON(http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "Query parameter 'q' is required",
-		})
-	}
-
-	// Parse limit parameter
-	limit := 5 // Default
-	if limitStr := c.QueryParam("limit"); limitStr != "" {
-		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 && parsedLimit <= 50 {
-			limit = parsedLimit
-		}
-	}
-
-	// Perform semantic search
-	addresses, err := services.Address.SemanticSearchAddresses(query, limit)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
-			"success": false,
-			"error":   "Failed to search addresses: " + err.Error(),
-		})
-	}
-
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"success": true,
-		"data":    addresses,
-		"count":   len(addresses),
-		"query":   query,
-	})
-}

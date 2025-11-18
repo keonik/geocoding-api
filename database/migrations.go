@@ -100,6 +100,12 @@ func RunMigrations() error {
 		Up:          createStatesTable,
 		Down:        dropStatesTable,
 	},
+	{
+		Version:     15,
+		Description: "Add full_address column to ohio_addresses table",
+		Up:          addFullAddressColumn,
+		Down:        removeFullAddressColumn,
+	},
 }	// Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -944,6 +950,95 @@ func createStatesTable() error {
 // dropStatesTable drops the us_states table
 func dropStatesTable() error {
 	_, err := DB.Exec("DROP TABLE IF EXISTS us_states")
+	return err
+}
+
+// addFullAddressColumn adds full_address column to ohio_addresses table
+func addFullAddressColumn() error {
+	log.Println("Adding full_address column to ohio_addresses table...")
+	
+	query := `
+	-- Add full_address column
+	ALTER TABLE ohio_addresses ADD COLUMN IF NOT EXISTS full_address TEXT;
+
+	-- Populate full_address with formatted address
+	UPDATE ohio_addresses SET full_address = 
+	  CONCAT_WS(', ',
+		NULLIF(CONCAT_WS(' ', 
+		  NULLIF(house_number, ''), 
+		  NULLIF(street, ''),
+		  CASE WHEN unit != '' THEN 'Unit ' || unit ELSE NULL END
+		), ''),
+		NULLIF(city, ''),
+		CONCAT_WS(' ', NULLIF(region, ''), NULLIF(postcode, ''))
+	  );
+
+	-- Create GIN index for fast full-text search on the full address
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_full_address_trgm ON ohio_addresses USING gin (full_address gin_trgm_ops);
+
+	-- Create regular index for sorting/filtering
+	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_full_address ON ohio_addresses(full_address);
+	`
+	
+	if _, err := DB.Exec(query); err != nil {
+		return fmt.Errorf("failed to add full_address column: %w", err)
+	}
+
+	// Create trigger function
+	triggerFunc := `
+	CREATE OR REPLACE FUNCTION update_full_address()
+	RETURNS TRIGGER AS $$
+	BEGIN
+	  NEW.full_address := CONCAT_WS(', ',
+		NULLIF(CONCAT_WS(' ', 
+		  NULLIF(NEW.house_number, ''), 
+		  NULLIF(NEW.street, ''),
+		  CASE WHEN NEW.unit != '' THEN 'Unit ' || NEW.unit ELSE NULL END
+		), ''),
+		NULLIF(NEW.city, ''),
+		CONCAT_WS(' ', NULLIF(NEW.region, ''), NULLIF(NEW.postcode, ''))
+	  );
+	  RETURN NEW;
+	END;
+	$$ LANGUAGE plpgsql;
+	`
+	
+	if _, err := DB.Exec(triggerFunc); err != nil {
+		return fmt.Errorf("failed to create trigger function: %w", err)
+	}
+
+	// Create trigger
+	trigger := `
+	CREATE TRIGGER ohio_addresses_full_address_trigger
+	  BEFORE INSERT OR UPDATE ON ohio_addresses
+	  FOR EACH ROW
+	  EXECUTE FUNCTION update_full_address();
+	`
+	
+	if _, err := DB.Exec(trigger); err != nil {
+		return fmt.Errorf("failed to create trigger: %w", err)
+	}
+
+	log.Println("Full address column, indexes, and trigger added successfully")
+	return nil
+}
+
+// removeFullAddressColumn removes full_address column from ohio_addresses table
+func removeFullAddressColumn() error {
+	query := `
+	-- Drop trigger and function
+	DROP TRIGGER IF EXISTS ohio_addresses_full_address_trigger ON ohio_addresses;
+	DROP FUNCTION IF EXISTS update_full_address();
+
+	-- Drop indexes
+	DROP INDEX IF EXISTS idx_ohio_addresses_full_address_trgm;
+	DROP INDEX IF EXISTS idx_ohio_addresses_full_address;
+
+	-- Drop column
+	ALTER TABLE ohio_addresses DROP COLUMN IF EXISTS full_address;
+	`
+	
+	_, err := DB.Exec(query)
 	return err
 }
 

@@ -28,7 +28,7 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 	}
 
 	// Build the base query (will add relevance_score if needed)
-	baseFields := `id, hash, house_number, street, unit, city, district, region, postcode, county,
+	baseFields := `id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at`
 
 	// Build WHERE conditions and relevance scoring
@@ -49,10 +49,10 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 			for _, word := range queryWords {
 				wordPattern := "%" + word + "%"
 				
-				// Score: exact match in street gets highest score, partial matches get lower scores
-				// Each CASE needs the SAME parameter value, so we pass the pattern once
+				// Score: full_address match gets highest priority, then specific fields
 				scoreComponents = append(scoreComponents, fmt.Sprintf(`
 					CASE 
+						WHEN full_address ILIKE $%d THEN 150
 						WHEN street ILIKE $%d THEN 100
 						WHEN (house_number || ' ' || street) ILIKE $%d THEN 90
 						WHEN house_number ILIKE $%d THEN 80
@@ -60,16 +60,16 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 						WHEN postcode ILIKE $%d THEN 50
 						WHEN county ILIKE $%d THEN 30
 						ELSE 0
-					END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
+					END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
 				
-				// Search condition: word appears in ANY field (same parameter reused)
+				// Search condition: word appears in ANY field (prioritize full_address)
 				searchConditions = append(searchConditions, fmt.Sprintf(`(
+					full_address ILIKE $%d OR
 					house_number ILIKE $%d OR
 					street ILIKE $%d OR
 					city ILIKE $%d OR
 					county ILIKE $%d OR
-					postcode ILIKE $%d OR
-					(house_number || ' ' || street) ILIKE $%d
+					postcode ILIKE $%d
 				)`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
 				
 				args = append(args, wordPattern)
@@ -196,7 +196,7 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 		if hasRelevanceScore {
 			err := rows.Scan(
 				&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
-				&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County,
+				&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
 				&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &relevanceScore,
 			)
 			if err != nil {
@@ -205,7 +205,7 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 		} else {
 			err := rows.Scan(
 				&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
-				&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County,
+				&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
 				&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
 			)
 			if err != nil {
@@ -226,7 +226,7 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 func (s *AddressService) GetAddressByID(id int64) (*models.OhioAddress, error) {
 	query := `
 		SELECT 
-			id, hash, house_number, street, unit, city, district, region, postcode, county,
+			id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at
 		FROM ohio_addresses 
 		WHERE id = $1
@@ -235,7 +235,7 @@ func (s *AddressService) GetAddressByID(id int64) (*models.OhioAddress, error) {
 	var addr models.OhioAddress
 	err := s.db.QueryRow(query, id).Scan(
 		&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
-		&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County,
+		&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
 		&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
 	)
 
@@ -275,178 +275,6 @@ func (s *AddressService) GetCountyStats() (map[string]int, error) {
 	}
 
 	return stats, nil
-}
-
-// SemanticSearchAddresses performs a semantic search for addresses with flexible token-based matching
-func (s *AddressService) SemanticSearchAddresses(query string, limit int) ([]models.OhioAddress, error) {
-	// Set default limit
-	if limit <= 0 {
-		limit = 5
-	}
-	if limit > 50 {
-		limit = 50
-	}
-
-	// Clean and prepare the search query
-	cleanQuery := strings.TrimSpace(query)
-	if cleanQuery == "" {
-		return []models.OhioAddress{}, nil
-	}
-
-	// Split query into words for flexible matching
-	queryWords := strings.Fields(cleanQuery)
-	if len(queryWords) == 0 {
-		return []models.OhioAddress{}, nil
-	}
-
-	// Optimize for single word searches (most common case)
-	if len(queryWords) == 1 {
-		return s.singleWordSearch(queryWords[0], limit)
-	}
-
-	// Build word-based search with relevance scoring (same as main search)
-	var args []interface{}
-	var scoreComponents []string
-	var searchConditions []string
-	argIndex := 1
-	
-	for _, word := range queryWords {
-		wordPattern := "%" + word + "%"
-		
-		// Score: exact match in street gets highest score, partial matches get lower scores
-		scoreComponents = append(scoreComponents, fmt.Sprintf(`
-			CASE 
-				WHEN street ILIKE $%d THEN 100
-				WHEN (house_number || ' ' || street) ILIKE $%d THEN 90
-				WHEN house_number ILIKE $%d THEN 80
-				WHEN city ILIKE $%d THEN 60
-				WHEN postcode ILIKE $%d THEN 50
-				WHEN county ILIKE $%d THEN 30
-				ELSE 0
-			END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
-		
-		// Search condition: word appears in ANY field (OR logic)
-		searchConditions = append(searchConditions, fmt.Sprintf(`(
-			house_number ILIKE $%d OR
-			street ILIKE $%d OR
-			city ILIKE $%d OR
-			county ILIKE $%d OR
-			postcode ILIKE $%d OR
-			(house_number || ' ' || street) ILIKE $%d
-		)`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
-		
-		args = append(args, wordPattern)
-		argIndex++
-	}
-	
-	// At least ONE word must match
-	whereClause := ""
-	if len(searchConditions) > 0 {
-		whereClause = "WHERE (" + strings.Join(searchConditions, " OR ") + ")"
-	}
-	
-	// Build relevance score
-	relevanceScore := "0"
-	if len(scoreComponents) > 0 {
-		relevanceScore = "(" + strings.Join(scoreComponents, " + ") + ")"
-	}
-
-	// Use CTE to calculate score once and filter efficiently
-	searchQuery := fmt.Sprintf(`
-		WITH scored AS (
-			SELECT 
-				id, hash, house_number, street, unit, city, district, region, postcode, county,
-				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
-				%s as relevance_score
-			FROM ohio_addresses
-			%s
-		)
-		SELECT * FROM scored
-		WHERE relevance_score > 0
-		ORDER BY relevance_score DESC
-		LIMIT $%d
-	`, relevanceScore, whereClause, argIndex)
-
-	args = append(args, limit)
-
-	// Execute the query
-	rows, err := s.db.Query(searchQuery, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute semantic search: %w", err)
-	}
-	defer rows.Close()
-
-	return s.scanAddressResults(rows)
-}
-
-// singleWordSearch optimizes for the common case of single-word searches
-func (s *AddressService) singleWordSearch(word string, limit int) ([]models.OhioAddress, error) {
-	wordPattern := "%" + word + "%"
-	
-	// Use subquery to calculate score once
-	query := `
-		SELECT * FROM (
-			SELECT 
-				id, hash, house_number, street, unit, city, district, region, postcode, county,
-				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
-				CASE 
-					WHEN street ILIKE $1 THEN 100
-					WHEN house_number ILIKE $1 THEN 80
-					WHEN city ILIKE $1 THEN 60
-					WHEN postcode ILIKE $1 THEN 50
-					WHEN county ILIKE $1 THEN 30
-					ELSE 0
-				END as relevance_score
-			FROM ohio_addresses
-			WHERE 
-				street ILIKE $1 OR 
-				house_number ILIKE $1 OR
-				city ILIKE $1 OR
-				postcode ILIKE $1 OR
-				county ILIKE $1
-		) scored
-		ORDER BY relevance_score DESC
-		LIMIT $2
-	`
-	
-	rows, err := s.db.Query(query, wordPattern, limit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute single word search: %w", err)
-	}
-	defer rows.Close()
-	
-	return s.scanAddressResults(rows)
-}
-
-// scanAddressResults is a helper to scan address results with relevance score
-func (s *AddressService) scanAddressResults(rows *sql.Rows) ([]models.OhioAddress, error) {
-	var addresses []models.OhioAddress
-	for rows.Next() {
-		var addr models.OhioAddress
-		var relevanceScoreVal int
-		var unit, district sql.NullString
-
-		err := rows.Scan(
-			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &unit,
-			&addr.City, &district, &addr.Region, &addr.Postcode, &addr.County,
-			&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &relevanceScoreVal,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan address: %w", err)
-		}
-
-		// Handle nullable fields
-		if unit.Valid {
-			addr.Unit = unit.String
-		}
-		if district.Valid {
-			addr.District = district.String
-		}
-
-		addresses = append(addresses, addr)
-	}
-
-	return addresses, nil
 }
 
 
