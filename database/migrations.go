@@ -106,6 +106,12 @@ func RunMigrations() error {
 		Up:          addFullAddressColumn,
 		Down:        removeFullAddressColumn,
 	},
+	{
+		Version:     16,
+		Description: "Expand street abbreviations in full_address column",
+		Up:          expandStreetAbbreviations,
+		Down:        revertStreetAbbreviations,
+	},
 }	// Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1042,3 +1048,40 @@ func removeFullAddressColumn() error {
 	return err
 }
 
+// expandStreetAbbreviations adds function to expand street abbreviations and updates trigger
+func expandStreetAbbreviations() error {
+	migrationFile := "migrations/000016_expand_street_abbreviations.up.sql"
+	
+	// Read the migration file
+	content, err := os.ReadFile(migrationFile)
+	if err != nil {
+		return fmt.Errorf("failed to read migration file: %w", err)
+	}
+	
+	// Execute the migration
+	if _, err := DB.Exec(string(content)); err != nil {
+		return fmt.Errorf("failed to execute migration: %w", err)
+	}
+	
+	log.Println("Street abbreviations expanded in full_address column")
+	return nil
+}
+
+// revertStreetAbbreviations reverts the street abbreviation expansion
+func revertStreetAbbreviations() error {
+	migrationFile := "migrations/000016_expand_street_abbreviations.down.sql"
+	
+	// Read the migration file
+	content, err := os.ReadFile(migrationFile)
+	if err != nil {
+		return fmt.Errorf("failed to read migration file: %w", err)
+	}
+	
+	// Execute the rollback
+	if _, err := DB.Exec(string(content)); err != nil {
+		return fmt.Errorf("failed to execute rollback: %w", err)
+	}
+	
+	log.Println("Street abbreviation expansion reverted")
+	return nil
+}

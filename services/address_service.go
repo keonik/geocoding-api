@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"geocoding-api/models"
+	"geocoding-api/utils"
 	"strings"
 )
 
@@ -293,6 +294,10 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) ([]mod
 		return []models.OhioAddress{}, nil
 	}
 
+	// Expand abbreviations in the query (e.g., "dr" -> "drive")
+	// This allows users to search with abbreviations and still match expanded full_address
+	expandedQuery := utils.ExpandAddressQuery(query)
+
 	// Search using the full_address column with trigram index
 	searchQuery := `
 		SELECT 
@@ -309,8 +314,8 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) ([]mod
 		LIMIT $3
 	`
 
-	pattern := "%" + query + "%"
-	exactPattern := query
+	pattern := "%" + expandedQuery + "%"
+	exactPattern := expandedQuery
 
 	rows, err := s.db.Query(searchQuery, pattern, exactPattern, limit)
 	if err != nil {
