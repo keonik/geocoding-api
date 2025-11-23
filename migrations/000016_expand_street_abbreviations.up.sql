@@ -89,7 +89,7 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 
 -- Drop the old trigger and function
 DROP TRIGGER IF EXISTS update_full_address_trigger ON ohio_addresses;
-DROP FUNCTION IF EXISTS update_full_address();
+DROP FUNCTION IF EXISTS update_full_address() CASCADE;
 
 -- Create new trigger function with abbreviation expansion
 CREATE OR REPLACE FUNCTION update_full_address() RETURNS TRIGGER AS $$

@@ -4,10 +4,10 @@
 DROP TRIGGER IF EXISTS update_full_address_trigger ON ohio_addresses;
 
 -- Drop the new trigger function
-DROP FUNCTION IF EXISTS update_full_address();
+DROP FUNCTION IF EXISTS update_full_address() CASCADE;
 
 -- Drop the abbreviation expansion function
-DROP FUNCTION IF EXISTS expand_street_abbreviation(TEXT);
+DROP FUNCTION IF EXISTS expand_street_abbreviation(TEXT) CASCADE;
 
 -- Restore original trigger function (without expansion)
 CREATE OR REPLACE FUNCTION update_full_address() RETURNS TRIGGER AS $$
