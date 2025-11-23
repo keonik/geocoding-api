@@ -20,8 +20,8 @@ BEGIN
         ), ''),
         NULLIF(NEW.city, ''),
         CASE 
-            WHEN NEW.state IS NOT NULL AND NEW.state != '' 
-            THEN NEW.state 
+            WHEN NEW.region IS NOT NULL AND NEW.region != '' 
+            THEN NEW.region 
             ELSE 'OH' 
         END,
         NULLIF(NEW.postcode, '')
@@ -46,8 +46,8 @@ SET full_address = CONCAT_WS(', ',
     ), ''),
     NULLIF(city, ''),
     CASE 
-        WHEN state IS NOT NULL AND state != '' 
-        THEN state 
+        WHEN region IS NOT NULL AND region != '' 
+        THEN region 
         ELSE 'OH' 
     END,
     NULLIF(postcode, '')
