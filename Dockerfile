@@ -70,6 +70,7 @@ COPY --from=frontend-builder /app/static-new ./static-new
 # Copy other runtime files
 COPY --from=backend-builder /app/docs ./docs
 COPY --from=backend-builder /app/api-docs.yaml ./api-docs.yaml
+COPY --from=backend-builder /app/migrations ./migrations
 
 # Set permissions
 RUN chown -R appuser:appgroup /app
