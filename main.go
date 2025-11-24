@@ -280,6 +280,11 @@ func main() {
 	e.GET("/*", func(c echo.Context) error {
 		path := c.Request().URL.Path
 		
+		// Don't handle API routes here - they're already registered above
+		if len(path) >= 4 && path[:4] == "/api" {
+			return echo.ErrNotFound
+		}
+		
 		// Serve static files if they exist
 		filePath := staticDir + path
 		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
