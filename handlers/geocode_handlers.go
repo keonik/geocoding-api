@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"geocoding-api/database"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
@@ -98,13 +99,24 @@ func SearchZipCodesHandler(c echo.Context) error {
 
 // HealthCheckHandler handles health check requests
 func HealthCheckHandler(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"status":        "healthy",
 		"service":       "geocoding-api",
 		"version":       "1.0.0",
 		"documentation": "http://localhost:8080/docs",
 		"openapi_spec":  "http://localhost:8080/api-docs.yaml",
-	})
+	}
+	
+	// Include migration status if migrations are running in background
+	if database.MigrationRunning {
+		response["migrations_running"] = true
+		response["note"] = "Database migrations in progress - some features may be limited"
+	} else if database.MigrationError != nil {
+		response["migration_error"] = database.MigrationError.Error()
+		response["note"] = "Migration error occurred - check logs"
+	}
+	
+	return c.JSON(http.StatusOK, response)
 }
 
 // DocsRedirectHandler redirects root requests to documentation

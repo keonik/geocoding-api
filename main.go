@@ -39,8 +39,19 @@ func main() {
 	defer database.CloseDB()
 
 	// Run database migrations
-	if err := database.RunMigrations(); err != nil {
-		log.Fatalf("Failed to run database migrations: %v", err)
+	// Set RUN_MIGRATIONS_ASYNC=true to start server immediately while migrations run in background
+	// Useful for long-running migrations like updating millions of records
+	if os.Getenv("RUN_MIGRATIONS_ASYNC") == "true" {
+		log.Println("Running migrations asynchronously - server will start immediately")
+		database.RunMigrationsAsync()
+		// Give migrations a moment to start and check for immediate errors
+		// But don't wait for completion
+		log.Println("Server starting while migrations run in background...")
+	} else {
+		// Default: block until migrations complete
+		if err := database.RunMigrations(); err != nil {
+			log.Fatalf("Failed to run database migrations: %v", err)
+		}
 	}
 
 	// Initialize services

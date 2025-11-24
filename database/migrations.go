@@ -11,6 +11,12 @@ import (
 	"geocoding-api/utils"
 )
 
+// MigrationStatus tracks the status of async migrations
+var (
+	MigrationRunning = false
+	MigrationError   error
+)
+
 // RunMigrations runs all database migrations in order
 func RunMigrations() error {
 	log.Println("Running database migrations...")
@@ -140,6 +146,25 @@ func RunMigrations() error {
 
 	log.Println("All migrations completed successfully")
 	return nil
+}
+
+// RunMigrationsAsync runs migrations in a background goroutine
+// Returns immediately, allowing the server to start while migrations run
+func RunMigrationsAsync() {
+	go func() {
+		MigrationRunning = true
+		defer func() {
+			MigrationRunning = false
+		}()
+		
+		log.Println("Starting migrations in background...")
+		if err := RunMigrations(); err != nil {
+			MigrationError = err
+			log.Printf("ERROR: Background migrations failed: %v", err)
+		} else {
+			log.Println("Background migrations completed successfully")
+		}
+	}()
 }
 
 // Migration represents a database migration
