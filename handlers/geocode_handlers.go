@@ -1,7 +1,12 @@
 package handlers
 
 import (
+	"compress/gzip"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 
 	"geocoding-api/database"
@@ -128,11 +133,25 @@ func DocsRedirectHandler(c echo.Context) error {
 
 // LoadDataHandler handles POST requests to load CSV data (admin endpoint)
 func LoadDataHandler(c echo.Context) error {
-	// In a production environment, you might want to add authentication here
-	
 	filePath := c.QueryParam("file")
 	if filePath == "" {
 		filePath = "georef-united-states-of-america-zc-point.csv" // Default file
+	}
+
+	// Check if compressed version exists
+	gzPath := filePath + ".gz"
+	if _, err := os.Stat(gzPath); err == nil && !os.IsNotExist(err) {
+		// Decompress the file
+		decompressedPath := filepath.Join(os.TempDir(), filepath.Base(filePath))
+		
+		if err := decompressFile(gzPath, decompressedPath); err != nil {
+			return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+				Success: false,
+				Error:   "Failed to decompress data file: " + err.Error(),
+			})
+		}
+		defer os.Remove(decompressedPath) // Clean up temp file
+		filePath = decompressedPath
 	}
 
 	err := services.LoadZipCodesFromCSV(filePath)
@@ -147,6 +166,33 @@ func LoadDataHandler(c echo.Context) error {
 		Success: true,
 		Data:    "CSV data loaded successfully",
 	})
+}
+
+// decompressFile decompresses a gzipped file
+func decompressFile(srcPath, destPath string) error {
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("failed to open compressed file: %w", err)
+	}
+	defer srcFile.Close()
+
+	gzReader, err := gzip.NewReader(srcFile)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	destFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer destFile.Close()
+
+	if _, err := io.Copy(destFile, gzReader); err != nil {
+		return fmt.Errorf("failed to decompress file: %w", err)
+	}
+
+	return nil
 }
 
 // CalculateDistanceHandler handles GET requests to calculate distance between two ZIP codes
