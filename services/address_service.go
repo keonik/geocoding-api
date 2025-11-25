@@ -278,8 +278,22 @@ func (s *AddressService) GetCountyStats() (map[string]int, error) {
 	return stats, nil
 }
 
+// AddressSearchResult contains search results along with metadata about the search
+type AddressSearchResult struct {
+	Addresses       []models.OhioAddress
+	ExactCount      int    // Number of exact matches
+	FallbackCount   int    // Number of fallback (street-only) matches
+	FallbackQuery   string // The query used for fallback (empty if no fallback)
+	OriginalQuery   string
+}
+
 // FullTextSearchAddresses performs a simple full-text search on the full_address column
-func (s *AddressService) FullTextSearchAddresses(query string, limit int) ([]models.OhioAddress, error) {
+// Returns exact matches first, followed by street-level matches (fallback) with lower priority
+func (s *AddressService) FullTextSearchAddresses(query string, limit int) (*AddressSearchResult, error) {
+	result := &AddressSearchResult{
+		OriginalQuery: query,
+	}
+
 	// Set default limit
 	if limit <= 0 {
 		limit = 50
@@ -291,9 +305,154 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) ([]mod
 	// Clean query
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return []models.OhioAddress{}, nil
+		result.Addresses = []models.OhioAddress{}
+		return result, nil
 	}
 
+	// Get the street-only version of the query for fallback
+	fallbackQuery := extractStreetFromQuery(query)
+	hasFallback := fallbackQuery != "" && fallbackQuery != query
+
+	// If there's no fallback possible (query has no house number), just do a simple search
+	if !hasFallback {
+		addresses, err := s.searchAddressesWithVariants(query, limit)
+		if err != nil {
+			return nil, err
+		}
+		result.Addresses = addresses
+		result.ExactCount = len(addresses)
+		return result, nil
+	}
+
+	// Build a combined query that returns exact matches first, then street matches
+	// This uses a single query with UNION to get both result sets in priority order
+	addresses, exactCount, fallbackCount, err := s.searchWithFallback(query, fallbackQuery, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	result.Addresses = addresses
+	result.ExactCount = exactCount
+	result.FallbackCount = fallbackCount
+	if fallbackCount > 0 {
+		result.FallbackQuery = fallbackQuery
+	}
+
+	return result, nil
+}
+
+// searchWithFallback performs a search that returns exact matches first, then street-level fallback matches
+func (s *AddressService) searchWithFallback(exactQuery, fallbackQuery string, limit int) ([]models.OhioAddress, int, int, error) {
+	// Get variants for both queries
+	exactVariants := utils.GetAddressQueryVariants(exactQuery)
+	fallbackVariants := utils.GetAddressQueryVariants(fallbackQuery)
+
+	// Build exact match conditions
+	var exactConditions []string
+	var args []interface{}
+	argNum := 1
+
+	for _, variant := range exactVariants {
+		pattern := "%" + variant + "%"
+		exactConditions = append(exactConditions, fmt.Sprintf("full_address ILIKE $%d", argNum))
+		args = append(args, pattern)
+		argNum++
+	}
+
+	// Build fallback match conditions (but exclude exact matches)
+	var fallbackConditions []string
+	for _, variant := range fallbackVariants {
+		pattern := "%" + variant + "%"
+		fallbackConditions = append(fallbackConditions, fmt.Sprintf("full_address ILIKE $%d", argNum))
+		args = append(args, pattern)
+		argNum++
+	}
+
+	// Build the combined query using UNION ALL with priority ordering
+	// Priority 1 = exact matches, Priority 2 = fallback matches
+	searchQuery := fmt.Sprintf(`
+		WITH exact_matches AS (
+			SELECT 
+				id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
+				1 as priority
+			FROM ohio_addresses
+			WHERE %s
+		),
+		fallback_matches AS (
+			SELECT 
+				id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
+				2 as priority
+			FROM ohio_addresses
+			WHERE (%s)
+			AND id NOT IN (SELECT id FROM exact_matches)
+		),
+		combined AS (
+			SELECT * FROM exact_matches
+			UNION ALL
+			SELECT * FROM fallback_matches
+		)
+		SELECT id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+			   latitude, longitude, created_at, priority
+		FROM combined
+		ORDER BY priority, full_address
+		LIMIT $%d
+	`, strings.Join(exactConditions, " OR "), strings.Join(fallbackConditions, " OR "), argNum)
+
+	args = append(args, limit)
+
+	rows, err := s.db.Query(searchQuery, args...)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to execute search with fallback: %w", err)
+	}
+	defer rows.Close()
+
+	var addresses []models.OhioAddress
+	exactCount := 0
+	fallbackCount := 0
+
+	for rows.Next() {
+		var addr models.OhioAddress
+		var unit, district sql.NullString
+		var priority int
+
+		err := rows.Scan(
+			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &unit,
+			&addr.City, &district, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &priority,
+		)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("failed to scan address: %w", err)
+		}
+
+		// Handle nullable fields
+		if unit.Valid {
+			addr.Unit = unit.String
+		}
+		if district.Valid {
+			addr.District = district.String
+		}
+
+		addresses = append(addresses, addr)
+
+		// Count by priority
+		if priority == 1 {
+			exactCount++
+		} else {
+			fallbackCount++
+		}
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, 0, 0, fmt.Errorf("error iterating address rows: %w", err)
+	}
+
+	return addresses, exactCount, fallbackCount, nil
+}
+
+// searchAddressesWithVariants performs the actual search with abbreviation variants
+func (s *AddressService) searchAddressesWithVariants(query string, limit int) ([]models.OhioAddress, error) {
 	// Get all variants of the query (handles both abbreviations and full forms)
 	// This allows "dr" to match "drive" and "drive" to match "dr"
 	queryVariants := utils.GetAddressQueryVariants(query)
@@ -366,6 +525,51 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) ([]mod
 	}
 
 	return addresses, nil
+}
+
+// extractStreetFromQuery removes the house number from an address query
+// to enable street-only fallback search.
+// Example: "8 Prestige Plaza, Miamisburg OH" -> "Prestige Plaza, Miamisburg OH"
+// Example: "123 Main St" -> "Main St"
+func extractStreetFromQuery(query string) string {
+	query = strings.TrimSpace(query)
+	words := strings.Fields(query)
+	
+	if len(words) < 2 {
+		return query
+	}
+	
+	// Check if the first word looks like a house number
+	firstWord := words[0]
+	
+	// House numbers are typically:
+	// - Pure digits: "123"
+	// - Digits with letter suffix: "123A", "456B"
+	// - Digit ranges: "100-102"
+	isHouseNumber := false
+	
+	// Check if it starts with a digit
+	if len(firstWord) > 0 && firstWord[0] >= '0' && firstWord[0] <= '9' {
+		isHouseNumber = true
+		// Verify it's mostly numeric (allow for suffixes like "A", "B" or ranges like "100-102")
+		digitCount := 0
+		for _, c := range firstWord {
+			if c >= '0' && c <= '9' {
+				digitCount++
+			}
+		}
+		// At least half should be digits
+		if digitCount < len(firstWord)/2 {
+			isHouseNumber = false
+		}
+	}
+	
+	if isHouseNumber {
+		// Return everything after the house number
+		return strings.Join(words[1:], " ")
+	}
+	
+	return query
 }
 
 // CreateAddress inserts a new address into the database

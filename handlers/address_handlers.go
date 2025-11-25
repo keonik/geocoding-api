@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"geocoding-api/models"
 	"geocoding-api/services"
 	"net/http"
@@ -157,7 +158,7 @@ func FullTextSearchAddressesHandler(c echo.Context) error {
 	}
 
 	// Perform full-text search
-	addresses, err := services.Address.FullTextSearchAddresses(query, limit)
+	result, err := services.Address.FullTextSearchAddresses(query, limit)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
 			"success": false,
@@ -165,10 +166,21 @@ func FullTextSearchAddressesHandler(c echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
-		"success": true,
-		"data":    addresses,
-		"count":   len(addresses),
-		"query":   query,
-	})
+	response := map[string]interface{}{
+		"success":       true,
+		"data":          result.Addresses,
+		"count":         len(result.Addresses),
+		"exact_count":   result.ExactCount,
+		"query":         query,
+	}
+
+	// Add fallback information if street-level matches were included
+	if result.FallbackCount > 0 {
+		response["fallback_count"] = result.FallbackCount
+		response["fallback_query"] = result.FallbackQuery
+		response["message"] = fmt.Sprintf("Found %d exact matches and %d additional addresses on the same street.", 
+			result.ExactCount, result.FallbackCount)
+	}
+
+	return c.JSON(http.StatusOK, response)
 }
