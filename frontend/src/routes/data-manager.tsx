@@ -179,16 +179,23 @@ function DataManager() {
       setUploading(true)
       setBulkUploadResults([])
       setUploadStatus(`Uploading ${bulkUploadForm.files.length} files...`)
+      console.log('[BulkUpload] Starting upload of', bulkUploadForm.files.length, 'files')
+      console.log('[BulkUpload] State:', bulkUploadForm.state)
+      console.log('[BulkUpload] Files:', bulkUploadForm.files.map(f => f.name))
 
       const formData = new FormData()
       formData.append('state', bulkUploadForm.state)
-      bulkUploadForm.files.forEach(file => {
+      bulkUploadForm.files.forEach((file, idx) => {
+        console.log(`[BulkUpload] Appending file ${idx + 1}: ${file.name} (${file.size} bytes)`)
         formData.append('files', file)
       })
 
+      console.log('[BulkUpload] Sending request to /api/v1/admin/datasets/upload-bulk')
       const response = await datasetAPI.uploadBulk(formData)
+      console.log('[BulkUpload] Response received:', response)
 
       if (response.success && response.data) {
+        console.log('[BulkUpload] Upload successful:', response.data)
         setBulkUploadResults(response.data.results)
         const { success_count, fail_count, total_files } = response.data
         setUploadStatus(`Completed: ${success_count}/${total_files} files uploaded successfully`)
@@ -202,15 +209,18 @@ function DataManager() {
         // Reload data to show new datasets
         loadData()
       } else {
-        setUploadStatus('Upload failed')
+        console.error('[BulkUpload] Upload failed:', response)
+        setUploadStatus(`Upload failed: ${response.error || 'Unknown error'}`)
         toast.error(response.error || 'Bulk upload failed')
       }
     } catch (err: unknown) {
+      console.error('[BulkUpload] Exception:', err)
       const errorMessage = err instanceof Error ? err.message : 'Failed to upload files'
       setUploadStatus(`Error: ${errorMessage}`)
       toast.error(errorMessage)
     } finally {
       setUploading(false)
+      console.log('[BulkUpload] Upload process finished')
     }
   }
 

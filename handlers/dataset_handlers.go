@@ -84,10 +84,14 @@ type BatchUploadResult struct {
 
 // UploadMultipleHandler handles multiple file uploads with concurrent processing
 func UploadMultipleHandler(c echo.Context) error {
+	fmt.Println("[BulkUpload] Starting bulk upload request")
+	
 	// Get form values
 	state := c.FormValue("state")
+	fmt.Printf("[BulkUpload] State: %s\n", state)
 
 	if state == "" {
+		fmt.Println("[BulkUpload] ERROR: state is required")
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"success": false,
 			"error":   "state is required",
@@ -104,20 +108,29 @@ func UploadMultipleHandler(c echo.Context) error {
 	}
 
 	// Get the multipart form
+	fmt.Println("[BulkUpload] Parsing multipart form...")
 	form, err := c.MultipartForm()
 	if err != nil {
+		fmt.Printf("[BulkUpload] ERROR parsing form: %v\n", err)
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"success": false,
-			"error":   "failed to parse multipart form",
+			"error":   "failed to parse multipart form: " + err.Error(),
 		})
 	}
 
 	files := form.File["files"]
+	fmt.Printf("[BulkUpload] Found %d files in form\n", len(files))
 	if len(files) == 0 {
+		fmt.Println("[BulkUpload] ERROR: no files provided")
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"success": false,
 			"error":   "no files provided",
 		})
+	}
+	
+	// Log all file names
+	for i, f := range files {
+		fmt.Printf("[BulkUpload] File %d: %s (size: %d bytes)\n", i+1, f.Filename, f.Size)
 	}
 
 	// Ensure upload directory exists
@@ -139,16 +152,25 @@ func UploadMultipleHandler(c echo.Context) error {
 	results := make(chan BatchUploadResult, len(files))
 
 	// Start workers
+	fmt.Printf("[BulkUpload] Starting %d workers...\n", maxWorkers)
 	var wg sync.WaitGroup
 	for i := 0; i < maxWorkers; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerID int) {
 			defer wg.Done()
+			fmt.Printf("[BulkUpload] Worker %d started\n", workerID)
 			for file := range jobs {
+				fmt.Printf("[BulkUpload] Worker %d processing: %s\n", workerID, file.Filename)
 				result := processUploadedFile(file, state, userID)
+				if result.Success {
+					fmt.Printf("[BulkUpload] Worker %d SUCCESS: %s -> Dataset ID %d\n", workerID, file.Filename, result.Dataset.ID)
+				} else {
+					fmt.Printf("[BulkUpload] Worker %d FAILED: %s -> %s\n", workerID, file.Filename, result.Error)
+				}
 				results <- result
 			}
-		}()
+			fmt.Printf("[BulkUpload] Worker %d finished\n", workerID)
+		}(i)
 	}
 
 	// Send jobs to workers
@@ -164,6 +186,7 @@ func UploadMultipleHandler(c echo.Context) error {
 	}()
 
 	// Collect results
+	fmt.Println("[BulkUpload] Collecting results...")
 	uploadResults := make([]BatchUploadResult, 0, len(files))
 	successCount := 0
 	failCount := 0
@@ -181,11 +204,17 @@ func UploadMultipleHandler(c echo.Context) error {
 		}
 	}
 
+	fmt.Printf("[BulkUpload] Upload complete: %d success, %d failed out of %d total\n", successCount, failCount, len(files))
+
 	// Start concurrent processing for all successfully uploaded datasets
 	if len(datasetIDs) > 0 {
+		fmt.Printf("[BulkUpload] Starting background processing for %d datasets: %v\n", len(datasetIDs), datasetIDs)
 		go processDatasetsConcurrently(datasetIDs)
+	} else {
+		fmt.Println("[BulkUpload] No datasets to process")
 	}
 
+	fmt.Println("[BulkUpload] Returning response to client")
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"success":       failCount == 0,
 		"total_files":   len(files),
@@ -199,22 +228,27 @@ func UploadMultipleHandler(c echo.Context) error {
 // processUploadedFile handles a single file upload in the batch
 func processUploadedFile(file *multipart.FileHeader, state string, userID int) BatchUploadResult {
 	filename := file.Filename
+	fmt.Printf("[ProcessFile] Processing: %s\n", filename)
 	
 	// Extract county name from filename (e.g., "adams-addresses-county.geojson.gz" -> "Adams")
 	county := extractCountyFromFilename(filename)
 	if county == "" {
+		fmt.Printf("[ProcessFile] ERROR: could not extract county from filename: %s\n", filename)
 		return BatchUploadResult{
 			Filename: filename,
 			Success:  false,
 			Error:    "could not extract county name from filename",
 		}
 	}
+	fmt.Printf("[ProcessFile] Extracted county: %s from %s\n", county, filename)
 
 	// Generate name from filename
 	name := fmt.Sprintf("%s County Addresses", strings.Title(county))
+	fmt.Printf("[ProcessFile] Saving file as: %s\n", name)
 
 	dataset, err := saveUploadedFile(file, name, state, county, userID)
 	if err != nil {
+		fmt.Printf("[ProcessFile] ERROR saving file %s: %v\n", filename, err)
 		return BatchUploadResult{
 			Filename: filename,
 			Success:  false,
@@ -222,6 +256,7 @@ func processUploadedFile(file *multipart.FileHeader, state string, userID int) B
 		}
 	}
 
+	fmt.Printf("[ProcessFile] SUCCESS: %s saved as dataset ID %d\n", filename, dataset.ID)
 	return BatchUploadResult{
 		Filename: filename,
 		Success:  true,
@@ -258,6 +293,8 @@ func extractCountyFromFilename(filename string) string {
 
 // saveUploadedFile saves a file and creates a dataset record
 func saveUploadedFile(file *multipart.FileHeader, name, state, county string, userID int) (*models.Dataset, error) {
+	fmt.Printf("[SaveFile] Starting save for: %s (state=%s, county=%s)\\n", file.Filename, state, county)
+	
 	// Validate file type
 	allowedExtensions := []string{".geojson", ".json", ".gz"}
 	ext := strings.ToLower(filepath.Ext(file.Filename))
@@ -270,11 +307,13 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	}
 
 	if !isValid {
+		fmt.Printf("[SaveFile] ERROR: invalid file extension: %s\\n", ext)
 		return nil, fmt.Errorf("file must be .geojson, .json, or .geojson.gz")
 	}
 
 	// Ensure upload directory exists
 	if err := services.EnsureUploadDirectory(); err != nil {
+		fmt.Printf("[SaveFile] ERROR creating upload directory: %v\\n", err)
 		return nil, fmt.Errorf("failed to create upload directory: %w", err)
 	}
 
@@ -283,16 +322,19 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	sanitizedName := strings.ReplaceAll(name, " ", "_")
 	filename := fmt.Sprintf("%d_%s_%s_%s%s", timestamp, state, county, sanitizedName, filepath.Ext(file.Filename))
 	destPath := filepath.Join(services.UploadDirectory, filename)
+	fmt.Printf("[SaveFile] Destination path: %s\\n", destPath)
 
 	// Save file
 	src, err := file.Open()
 	if err != nil {
+		fmt.Printf("[SaveFile] ERROR opening uploaded file: %v\\n", err)
 		return nil, fmt.Errorf("failed to open uploaded file: %w", err)
 	}
 	defer src.Close()
 
 	dest, err := os.Create(destPath)
 	if err != nil {
+		fmt.Printf("[SaveFile] ERROR creating destination file: %v\\n", err)
 		return nil, fmt.Errorf("failed to create destination file: %w", err)
 	}
 	defer dest.Close()
@@ -300,8 +342,10 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	written, err := io.Copy(dest, src)
 	if err != nil {
 		os.Remove(destPath)
+		fmt.Printf("[SaveFile] ERROR copying file: %v\\n", err)
 		return nil, fmt.Errorf("failed to save file: %w", err)
 	}
+	fmt.Printf("[SaveFile] Written %d bytes to %s\\n", written, destPath)
 
 	// Determine file type
 	fileType := "geojson"
@@ -310,6 +354,7 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	}
 
 	// Create dataset record
+	fmt.Printf("[SaveFile] Creating dataset record in database...\\n")
 	datasetService := services.NewDatasetService(services.GetDB())
 	dataset := &models.Dataset{
 		Name:        name,
@@ -326,9 +371,11 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 
 	if err := datasetService.CreateDataset(dataset); err != nil {
 		os.Remove(destPath)
+		fmt.Printf("[SaveFile] ERROR creating dataset record: %v\\n", err)
 		return nil, fmt.Errorf("failed to create dataset record: %w", err)
 	}
 
+	fmt.Printf("[SaveFile] SUCCESS: Created dataset ID %d for %s\\n", dataset.ID, file.Filename)
 	return dataset, nil
 }
 
