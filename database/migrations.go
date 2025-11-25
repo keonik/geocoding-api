@@ -118,6 +118,12 @@ func RunMigrations() error {
 		Up:          expandStreetAbbreviations,
 		Down:        revertStreetAbbreviations,
 	},
+	{
+		Version:     17,
+		Description: "Create datasets table for tracking uploaded county data",
+		Up:          createDatasetsTable,
+		Down:        dropDatasetsTable,
+	},
 }	// Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1108,5 +1114,43 @@ func revertStreetAbbreviations() error {
 	}
 	
 	log.Println("Street abbreviation expansion reverted")
+	return nil
+}
+
+// createDatasetsTable creates the datasets table
+func createDatasetsTable() error {
+	migrationFile := "migrations/000017_create_datasets_table.up.sql"
+	
+	// Read the migration file
+	content, err := os.ReadFile(migrationFile)
+	if err != nil {
+		return fmt.Errorf("failed to read migration file: %w", err)
+	}
+	
+	// Execute the migration
+	if _, err := DB.Exec(string(content)); err != nil {
+		return fmt.Errorf("failed to execute migration: %w", err)
+	}
+	
+	log.Println("Datasets table created successfully")
+	return nil
+}
+
+// dropDatasetsTable drops the datasets table
+func dropDatasetsTable() error {
+	migrationFile := "migrations/000017_create_datasets_table.down.sql"
+	
+	// Read the migration file
+	content, err := os.ReadFile(migrationFile)
+	if err != nil {
+		return fmt.Errorf("failed to read migration file: %w", err)
+	}
+	
+	// Execute the rollback
+	if _, err := DB.Exec(string(content)); err != nil {
+		return fmt.Errorf("failed to execute rollback: %w", err)
+	}
+	
+	log.Println("Datasets table dropped successfully")
 	return nil
 }

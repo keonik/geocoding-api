@@ -31,10 +31,15 @@ build-errors.log
 # Downloaded data cache
 cache/
 
-# Uncompressed data files (keep .gz versions in git)
-oh/*.geojson
-oh/*.geojson.meta
-!oh/*.geojson.gz
+# Uploaded datasets directory (persisted via Docker volume)
+uploads/*
+!uploads/.gitkeep
+
+# Ohio county data files (now managed via Data Manager uploads)
+oh/*
+!oh/.gitkeep
+
+# Core reference data (keep compressed versions for initial setup)
 georef-united-states-of-america-zc-point.csv
 !georef-united-states-of-america-zc-point.csv.gz
 

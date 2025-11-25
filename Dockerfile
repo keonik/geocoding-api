@@ -56,15 +56,14 @@ RUN addgroup -g 1001 -S appgroup && \
 WORKDIR /app
 
 # Create directories first
-RUN mkdir -p /app/oh /app/cache /app/scripts
+# Note: Data files are no longer shipped with the container
+# Use the Data Manager UI at /data-manager to upload county data after deployment
+RUN mkdir -p /app/oh /app/cache /app/scripts /app/uploads
 
 # Copy binary from backend builder
 COPY --from=backend-builder /app/main ./main
 
-# Copy compressed data files (will decompress on-demand at runtime)
-COPY --from=backend-builder /app/*gz* ./
-COPY --from=backend-builder /app/oh/ ./oh/
-
+# Copy frontend build
 COPY --from=frontend-builder /app/static-new ./static-new
 
 # Copy other runtime files

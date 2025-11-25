@@ -80,8 +80,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # NOTE: Static files and CSV are already copied into Docker image
-    # Volume mounts removed to prevent conflicts in production
+    # NOTE: Uploaded files are processed and deleted immediately
+    # No persistent storage needed for uploads
     healthcheck:
       test:
         [

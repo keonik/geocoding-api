@@ -355,7 +355,39 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) ([]mod
 	return addresses, nil
 }
 
+// CreateAddress inserts a new address into the database
+func (s *AddressService) CreateAddress(address *models.OhioAddress) (int, error) {
+	query := `
+		INSERT INTO ohio_addresses (
+			hash, house_number, street, unit, city, district, region, postcode, county, geom
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, ST_SetSRID(ST_MakePoint($10, $11), 4326)
+		)
+		RETURNING id
+	`
 
+	// Generate hash for deduplication
+	hash := fmt.Sprintf("%s|%s|%s|%s|%s",
+		address.HouseNumber, address.Street, address.Unit, address.City, address.Postcode)
+
+	var id int
+	err := s.db.QueryRow(
+		query,
+		hash,
+		address.HouseNumber,
+		address.Street,
+		address.Unit,
+		address.City,
+		address.District,
+		address.Region,
+		address.Postcode,
+		address.County,
+		address.Longitude,
+		address.Latitude,
+	).Scan(&id)
+
+	return id, err
+}
 
 // Global address service instance
 var Address *AddressService
@@ -363,4 +395,12 @@ var Address *AddressService
 // InitAddressService initializes the global address service
 func InitAddressService(db *sql.DB) {
 	Address = NewAddressService(db)
+}
+
+// GetDB returns the database connection from the address service
+func GetDB() *sql.DB {
+	if Address != nil {
+		return Address.db
+	}
+	return nil
 }

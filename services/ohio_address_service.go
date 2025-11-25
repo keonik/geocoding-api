@@ -15,7 +15,9 @@ import (
 	"geocoding-api/utils"
 )
 
-// InitializeOhioData checks if Ohio address data exists and loads it if empty
+// InitializeOhioData checks if Ohio address data exists and logs status
+// NOTE: With the new data upload system, this function no longer auto-loads data from files
+// Admins should use the Data Manager UI at /data-manager to upload county datasets
 func InitializeOhioData() error {
 	// Check total count first
 	var totalCount int
@@ -25,13 +27,11 @@ func InitializeOhioData() error {
 	}
 
 	if totalCount == 0 {
-		log.Println("No Ohio address data found, loading all counties...")
-		return LoadOhioAddressData()
+		log.Println("No address data found in database.")
+		log.Println("Use the Data Manager UI at /data-manager to upload county address datasets.")
+		return nil
 	}
 
-	// Check which counties are missing
-	log.Printf("Database contains %d Ohio address records, checking for missing counties...", totalCount)
-	
 	// Get list of counties already loaded
 	rows, err := database.DB.Query("SELECT DISTINCT county FROM ohio_addresses")
 	if err != nil {
@@ -39,26 +39,18 @@ func InitializeOhioData() error {
 	}
 	defer rows.Close()
 	
-	loadedCounties := make(map[string]bool)
+	var loadedCounties []string
 	for rows.Next() {
 		var county string
 		if err := rows.Scan(&county); err != nil {
 			continue
 		}
-		loadedCounties[strings.ToLower(county)] = true
+		loadedCounties = append(loadedCounties, county)
 	}
 	
-	log.Printf("Found %d counties already loaded", len(loadedCounties))
+	log.Printf("Database contains %d address records across %d counties", totalCount, len(loadedCounties))
 	
-	// If we have all 88 counties, we're done
-	if len(loadedCounties) >= 88 {
-		log.Println("All Ohio counties already loaded")
-		return nil
-	}
-	
-	// Load missing counties only
-	log.Printf("Loading missing counties (have %d of 88)...", len(loadedCounties))
-	return loadMissingCounties(loadedCounties)
+	return nil
 }
 
 // LoadOhioAddressData loads address data from all Ohio county GeoJSON files

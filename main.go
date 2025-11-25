@@ -274,6 +274,14 @@ func main() {
 	admin.GET("/system-status", handlers.GetSystemStatusHandler)
 	admin.GET("/counties", handlers.GetCountyStatsHandler)
 	admin.GET("/analytics", handlers.GetAdminAnalyticsHandler)
+	
+	// Dataset management routes (admin only)
+	admin.POST("/datasets/upload", handlers.UploadDatasetHandler)
+	admin.GET("/datasets", handlers.GetDatasetsHandler)
+	admin.GET("/datasets/stats", handlers.GetDatasetStatsHandler)
+	admin.GET("/datasets/:id", handlers.GetDatasetHandler)
+	admin.POST("/datasets/:id/reprocess", handlers.ReprocessDatasetHandler)
+	admin.DELETE("/datasets/:id", handlers.DeleteDatasetHandler)
 
 	// SPA fallback - MUST be registered AFTER all API routes
 	// This serves the React app for all non-API routes
