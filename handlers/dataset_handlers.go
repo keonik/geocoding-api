@@ -100,7 +100,14 @@ func UploadDatasetHandler(c echo.Context) error {
 	}
 
 	// Get user ID from context
-	userID := c.Get("user_id").(float64)
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
+		os.Remove(destPath) // Clean up on error
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   "failed to get user ID",
+		})
+	}
 
 	// Determine file type
 	fileType := "geojson"
@@ -121,7 +128,7 @@ func UploadDatasetHandler(c echo.Context) error {
 		FileSize:    written,
 		RecordCount: 0,
 		Status:      "pending",
-		UploadedBy:  int(userID),
+		UploadedBy:  userID,
 		UploadedAt:  time.Now(),
 	}
 
