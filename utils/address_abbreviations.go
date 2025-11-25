@@ -115,3 +115,75 @@ func IsStreetType(word string) bool {
 	_, isAbbrev := reverseAbbreviations[word]
 	return isFull || isAbbrev
 }
+
+// GetAddressQueryVariants returns all possible variants of an address query
+// by expanding any street abbreviations to include both the abbreviation and full form.
+// Example: "123 main dr" -> ["123 main dr", "123 main drive"]
+// Example: "123 main drive" -> ["123 main drive", "123 main dr"]
+func GetAddressQueryVariants(query string) []string {
+	words := strings.Fields(strings.ToLower(query))
+	if len(words) == 0 {
+		return []string{query}
+	}
+
+	variants := make(map[string]bool)
+	variants[strings.ToLower(query)] = true
+
+	// Check last word for street type
+	lastWord := strings.TrimSuffix(words[len(words)-1], ".")
+	if allVariants := GetAbbreviationVariants(lastWord); len(allVariants) > 1 {
+		// Build variants with each possible form
+		for _, variant := range allVariants {
+			newWords := make([]string, len(words))
+			copy(newWords, words)
+			newWords[len(newWords)-1] = variant
+			variants[strings.Join(newWords, " ")] = true
+		}
+	}
+
+	// Check second-to-last word (in case of "123 main st unit 5")
+	if len(words) >= 2 {
+		secondLast := strings.TrimSuffix(words[len(words)-2], ".")
+		if allVariants := GetAbbreviationVariants(secondLast); len(allVariants) > 1 {
+			for _, variant := range allVariants {
+				newWords := make([]string, len(words))
+				copy(newWords, words)
+				newWords[len(newWords)-2] = variant
+				variants[strings.Join(newWords, " ")] = true
+			}
+		}
+	}
+
+	// Check for directional prefixes (N, S, E, W, etc.) - often first or second word
+	for i := 0; i < len(words) && i < 3; i++ {
+		word := strings.TrimSuffix(words[i], ".")
+		if allVariants := GetAbbreviationVariants(word); len(allVariants) > 1 {
+			// Only expand if it's a directional
+			fullForm, exists := reverseAbbreviations[word]
+			if exists && isDirectional(fullForm) {
+				for _, variant := range allVariants {
+					newWords := make([]string, len(words))
+					copy(newWords, words)
+					newWords[i] = variant
+					variants[strings.Join(newWords, " ")] = true
+				}
+			}
+		}
+	}
+
+	// Convert map to slice
+	result := make([]string, 0, len(variants))
+	for v := range variants {
+		result = append(result, v)
+	}
+	return result
+}
+
+// isDirectional checks if a word is a directional (N, S, E, W, etc.)
+func isDirectional(word string) bool {
+	directionals := map[string]bool{
+		"north": true, "south": true, "east": true, "west": true,
+		"northeast": true, "northwest": true, "southeast": true, "southwest": true,
+	}
+	return directionals[strings.ToLower(word)]
+}

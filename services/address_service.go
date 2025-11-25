@@ -294,30 +294,43 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) ([]mod
 		return []models.OhioAddress{}, nil
 	}
 
-	// Expand abbreviations in the query (e.g., "dr" -> "drive")
-	// This allows users to search with abbreviations and still match expanded full_address
-	expandedQuery := utils.ExpandAddressQuery(query)
+	// Get all variants of the query (handles both abbreviations and full forms)
+	// This allows "dr" to match "drive" and "drive" to match "dr"
+	queryVariants := utils.GetAddressQueryVariants(query)
+	
+	// Build OR conditions for all variants
+	var conditions []string
+	var args []interface{}
+	argNum := 1
+	
+	for _, variant := range queryVariants {
+		pattern := "%" + variant + "%"
+		conditions = append(conditions, fmt.Sprintf("full_address ILIKE $%d", argNum))
+		args = append(args, pattern)
+		argNum++
+	}
 
 	// Search using the full_address column with trigram index
-	searchQuery := `
+	searchQuery := fmt.Sprintf(`
 		SELECT 
 			id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at
 		FROM ohio_addresses
-		WHERE full_address ILIKE $1
+		WHERE %s
 		ORDER BY 
 			CASE 
-				WHEN full_address ILIKE $2 THEN 1  -- Exact match
+				WHEN full_address ILIKE $%d THEN 1  -- Exact match to original query
 				ELSE 2
 			END,
 			full_address
-		LIMIT $3
-	`
+		LIMIT $%d
+	`, strings.Join(conditions, " OR "), argNum, argNum+1)
 
-	pattern := "%" + expandedQuery + "%"
-	exactPattern := expandedQuery
+	// Add exact pattern and limit
+	exactPattern := "%" + query + "%"
+	args = append(args, exactPattern, limit)
 
-	rows, err := s.db.Query(searchQuery, pattern, exactPattern, limit)
+	rows, err := s.db.Query(searchQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute full-text search: %w", err)
 	}
