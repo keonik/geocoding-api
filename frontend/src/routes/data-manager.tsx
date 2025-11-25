@@ -1,7 +1,7 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState, useRef } from 'react'
 import { toast } from 'sonner'
-import { datasetAPI, type Dataset, type DatasetStats } from '@/api/datasets'
+import { datasetAPI, type Dataset, type DatasetStats, type BatchUploadResult } from '@/api/datasets'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -36,7 +36,8 @@ import {
   CheckCircle,
   XCircle,
   Clock,
-  Loader2
+  Loader2,
+  Files
 } from 'lucide-react'
 import { Toaster } from '@/components/ui/toaster'
 
@@ -57,12 +58,13 @@ function DataManager() {
   const [stats, setStats] = useState<DatasetStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
+  const [bulkUploadModalOpen, setBulkUploadModalOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [stateFilter, setStateFilter] = useState<string>('')
   
-  // Upload form state
+  // Single upload form state
   const [uploadForm, setUploadForm] = useState({
     name: '',
     state: '',
@@ -70,7 +72,15 @@ function DataManager() {
     file: null as File | null,
   })
   
+  // Bulk upload form state
+  const [bulkUploadForm, setBulkUploadForm] = useState({
+    state: '',
+    files: [] as File[],
+  })
+  const [bulkUploadResults, setBulkUploadResults] = useState<BatchUploadResult[]>([])
+  
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const bulkFileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     loadData()
@@ -110,6 +120,12 @@ function DataManager() {
     }
   }
 
+  const handleBulkFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setBulkUploadForm({ ...bulkUploadForm, files: Array.from(e.target.files) })
+    }
+  }
+
   const handleUpload = async () => {
     if (!uploadForm.name || !uploadForm.state || !uploadForm.county || !uploadForm.file) {
       toast.error('Please fill in all fields and select a file')
@@ -146,6 +162,51 @@ function DataManager() {
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to upload file'
+      setUploadStatus(`Error: ${errorMessage}`)
+      toast.error(errorMessage)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const handleBulkUpload = async () => {
+    if (!bulkUploadForm.state || bulkUploadForm.files.length === 0) {
+      toast.error('Please select a state and at least one file')
+      return
+    }
+
+    try {
+      setUploading(true)
+      setBulkUploadResults([])
+      setUploadStatus(`Uploading ${bulkUploadForm.files.length} files...`)
+
+      const formData = new FormData()
+      formData.append('state', bulkUploadForm.state)
+      bulkUploadForm.files.forEach(file => {
+        formData.append('files', file)
+      })
+
+      const response = await datasetAPI.uploadBulk(formData)
+
+      if (response.success && response.data) {
+        setBulkUploadResults(response.data.results)
+        const { success_count, fail_count, total_files } = response.data
+        setUploadStatus(`Completed: ${success_count}/${total_files} files uploaded successfully`)
+        
+        if (fail_count === 0) {
+          toast.success(`All ${total_files} files uploaded successfully! Processing started.`)
+        } else {
+          toast.warning(`${success_count} files uploaded, ${fail_count} failed`)
+        }
+        
+        // Reload data to show new datasets
+        loadData()
+      } else {
+        setUploadStatus('Upload failed')
+        toast.error(response.error || 'Bulk upload failed')
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to upload files'
       setUploadStatus(`Error: ${errorMessage}`)
       toast.error(errorMessage)
     } finally {
@@ -288,16 +349,22 @@ function DataManager() {
         {/* Upload Section */}
         <Card className="mb-8">
           <CardHeader>
-            <CardTitle>Upload New Dataset</CardTitle>
+            <CardTitle>Upload Datasets</CardTitle>
             <CardDescription>
               Upload county address data in GeoJSON format (.geojson or .geojson.gz)
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button onClick={() => setUploadModalOpen(true)}>
-              <Upload className="mr-2 h-4 w-4" />
-              Upload Dataset
-            </Button>
+            <div className="flex space-x-4">
+              <Button onClick={() => setUploadModalOpen(true)}>
+                <Upload className="mr-2 h-4 w-4" />
+                Single Upload
+              </Button>
+              <Button variant="outline" onClick={() => setBulkUploadModalOpen(true)}>
+                <Files className="mr-2 h-4 w-4" />
+                Bulk Upload
+              </Button>
+            </div>
           </CardContent>
         </Card>
 
@@ -475,6 +542,122 @@ function DataManager() {
             <Button onClick={handleUpload} disabled={uploading}>
               {uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
               Upload
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Upload Modal */}
+      <Dialog open={bulkUploadModalOpen} onOpenChange={(open) => {
+        setBulkUploadModalOpen(open)
+        if (!open) {
+          setUploadStatus('')
+          setBulkUploadResults([])
+        }
+      }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Bulk Upload Datasets</DialogTitle>
+            <DialogDescription>
+              Upload multiple county address datasets at once. County names will be extracted from filenames
+              (e.g., "adams-addresses-county.geojson.gz" → Adams County)
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="bulk-state">State Code (applies to all files)</Label>
+              <Input
+                id="bulk-state"
+                placeholder="e.g., OH"
+                value={bulkUploadForm.state}
+                onChange={(e) => setBulkUploadForm({ ...bulkUploadForm, state: e.target.value.toUpperCase() })}
+                maxLength={2}
+              />
+            </div>
+            
+            <div>
+              <Label htmlFor="bulk-files">Files (.geojson or .geojson.gz)</Label>
+              <Input
+                id="bulk-files"
+                type="file"
+                accept=".geojson,.json,.gz"
+                multiple
+                ref={bulkFileInputRef}
+                onChange={handleBulkFileChange}
+              />
+              {bulkUploadForm.files.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  <p className="text-sm font-medium">{bulkUploadForm.files.length} files selected:</p>
+                  <div className="max-h-32 overflow-y-auto bg-muted rounded-md p-2">
+                    {bulkUploadForm.files.map((file, idx) => (
+                      <div key={idx} className="text-sm text-muted-foreground flex justify-between">
+                        <span>{file.name}</span>
+                        <span>{formatBytes(file.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Total size: {formatBytes(bulkUploadForm.files.reduce((acc, f) => acc + f.size, 0))}
+                  </p>
+                </div>
+              )}
+            </div>
+            
+            {(uploading || uploadStatus) && (
+              <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
+                {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
+                {uploadStatus.includes('Completed') && <CheckCircle className="h-4 w-4 text-green-500" />}
+                {uploadStatus.includes('Error') && <XCircle className="h-4 w-4 text-red-500" />}
+                <p className="text-sm">{uploadStatus}</p>
+              </div>
+            )}
+
+            {/* Upload Results */}
+            {bulkUploadResults.length > 0 && (
+              <div className="border rounded-md p-3">
+                <p className="text-sm font-medium mb-2">Upload Results:</p>
+                <div className="max-h-48 overflow-y-auto space-y-1">
+                  {bulkUploadResults.map((result, idx) => (
+                    <div key={idx} className="flex items-center justify-between text-sm">
+                      <span className="flex items-center space-x-2">
+                        {result.success ? (
+                          <CheckCircle className="h-4 w-4 text-green-500" />
+                        ) : (
+                          <XCircle className="h-4 w-4 text-red-500" />
+                        )}
+                        <span>{result.filename}</span>
+                      </span>
+                      {result.error && (
+                        <span className="text-red-500 text-xs">{result.error}</span>
+                      )}
+                      {result.dataset && (
+                        <Badge variant="outline">{result.dataset.county}</Badge>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => { 
+                setBulkUploadModalOpen(false)
+                setUploadStatus('')
+                setBulkUploadResults([])
+                setBulkUploadForm({ state: '', files: [] })
+                if (bulkFileInputRef.current) bulkFileInputRef.current.value = ''
+              }} 
+              disabled={uploading}
+            >
+              {bulkUploadResults.length > 0 ? 'Close' : 'Cancel'}
+            </Button>
+            <Button onClick={handleBulkUpload} disabled={uploading || bulkUploadResults.length > 0}>
+              {uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Files className="mr-2 h-4 w-4" />}
+              Upload {bulkUploadForm.files.length > 0 ? `${bulkUploadForm.files.length} Files` : 'Files'}
             </Button>
           </DialogFooter>
         </DialogContent>

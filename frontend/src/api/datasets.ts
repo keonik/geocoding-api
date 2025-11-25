@@ -32,9 +32,32 @@ export interface DatasetsListResponse {
   offset: number
 }
 
+export interface BatchUploadResult {
+  filename: string
+  success: boolean
+  error?: string
+  dataset?: Dataset
+}
+
+export interface BulkUploadResponse {
+  total_files: number
+  success_count: number
+  fail_count: number
+  results: BatchUploadResult[]
+  message: string
+}
+
 export const datasetAPI = {
   upload: async (formData: FormData): Promise<APIResponse<Dataset>> => {
     return fetchAPI('/api/v1/admin/datasets/upload', {
+      method: 'POST',
+      headers: {}, // Let browser set Content-Type for multipart/form-data
+      body: formData,
+    })
+  },
+
+  uploadBulk: async (formData: FormData): Promise<APIResponse<BulkUploadResponse>> => {
+    return fetchAPI('/api/v1/admin/datasets/upload-bulk', {
       method: 'POST',
       headers: {}, // Let browser set Content-Type for multipart/form-data
       body: formData,

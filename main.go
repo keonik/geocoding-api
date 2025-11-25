@@ -277,6 +277,7 @@ func main() {
 	
 	// Dataset management routes (admin only)
 	admin.POST("/datasets/upload", handlers.UploadDatasetHandler)
+	admin.POST("/datasets/upload-bulk", handlers.UploadMultipleHandler)
 	admin.GET("/datasets", handlers.GetDatasetsHandler)
 	admin.GET("/datasets/stats", handlers.GetDatasetStatsHandler)
 	admin.GET("/datasets/:id", handlers.GetDatasetHandler)
