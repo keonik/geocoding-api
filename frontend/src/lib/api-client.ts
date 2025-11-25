@@ -46,17 +46,51 @@ export async function fetchAPI<T>(
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers,
+    })
+  } catch (fetchError) {
+    console.error('[API] Fetch error:', fetchError)
+    throw new APIError(0, 'Network error: Could not connect to server')
+  }
 
-  const data = await response.json()
+  // Check if response has content
+  const contentType = response.headers.get('content-type')
+  const contentLength = response.headers.get('content-length')
+  
+  let data: T
+  
+  // Try to parse JSON response
+  if (contentType?.includes('application/json') || contentLength !== '0') {
+    try {
+      const text = await response.text()
+      if (text.trim() === '') {
+        console.error('[API] Empty response from server')
+        throw new APIError(response.status, 'Server returned an empty response')
+      }
+      data = JSON.parse(text)
+    } catch (parseError) {
+      console.error('[API] JSON parse error:', parseError)
+      throw new APIError(
+        response.status,
+        `Failed to parse server response: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`
+      )
+    }
+  } else {
+    // No content
+    if (!response.ok) {
+      throw new APIError(response.status, `Request failed with status ${response.status}`)
+    }
+    data = {} as T
+  }
 
   if (!response.ok) {
     const apiError = new APIError(
       response.status,
-      data.error || 'An error occurred',
+      (data as { error?: string }).error || 'An error occurred',
       data
     )
     

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +85,14 @@ type BatchUploadResult struct {
 
 // UploadMultipleHandler handles multiple file uploads with concurrent processing
 func UploadMultipleHandler(c echo.Context) error {
+	// Recover from any panics
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[BulkUpload] PANIC recovered: %v\n", r)
+			fmt.Printf("[BulkUpload] Stack trace:\n%s\n", debug.Stack())
+		}
+	}()
+
 	fmt.Println("[BulkUpload] Starting bulk upload request")
 	
 	// Get form values
@@ -293,7 +302,7 @@ func extractCountyFromFilename(filename string) string {
 
 // saveUploadedFile saves a file and creates a dataset record
 func saveUploadedFile(file *multipart.FileHeader, name, state, county string, userID int) (*models.Dataset, error) {
-	fmt.Printf("[SaveFile] Starting save for: %s (state=%s, county=%s)\\n", file.Filename, state, county)
+	fmt.Printf("[SaveFile] Starting save for: %s (state=%s, county=%s)\n", file.Filename, state, county)
 	
 	// Validate file type
 	allowedExtensions := []string{".geojson", ".json", ".gz"}
@@ -307,13 +316,13 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	}
 
 	if !isValid {
-		fmt.Printf("[SaveFile] ERROR: invalid file extension: %s\\n", ext)
+		fmt.Printf("[SaveFile] ERROR: invalid file extension: %s\n", ext)
 		return nil, fmt.Errorf("file must be .geojson, .json, or .geojson.gz")
 	}
 
 	// Ensure upload directory exists
 	if err := services.EnsureUploadDirectory(); err != nil {
-		fmt.Printf("[SaveFile] ERROR creating upload directory: %v\\n", err)
+		fmt.Printf("[SaveFile] ERROR creating upload directory: %v\n", err)
 		return nil, fmt.Errorf("failed to create upload directory: %w", err)
 	}
 
@@ -322,19 +331,19 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	sanitizedName := strings.ReplaceAll(name, " ", "_")
 	filename := fmt.Sprintf("%d_%s_%s_%s%s", timestamp, state, county, sanitizedName, filepath.Ext(file.Filename))
 	destPath := filepath.Join(services.UploadDirectory, filename)
-	fmt.Printf("[SaveFile] Destination path: %s\\n", destPath)
+	fmt.Printf("[SaveFile] Destination path: %s\n", destPath)
 
 	// Save file
 	src, err := file.Open()
 	if err != nil {
-		fmt.Printf("[SaveFile] ERROR opening uploaded file: %v\\n", err)
+		fmt.Printf("[SaveFile] ERROR opening uploaded file: %v\n", err)
 		return nil, fmt.Errorf("failed to open uploaded file: %w", err)
 	}
 	defer src.Close()
 
 	dest, err := os.Create(destPath)
 	if err != nil {
-		fmt.Printf("[SaveFile] ERROR creating destination file: %v\\n", err)
+		fmt.Printf("[SaveFile] ERROR creating destination file: %v\n", err)
 		return nil, fmt.Errorf("failed to create destination file: %w", err)
 	}
 	defer dest.Close()
@@ -342,10 +351,10 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	written, err := io.Copy(dest, src)
 	if err != nil {
 		os.Remove(destPath)
-		fmt.Printf("[SaveFile] ERROR copying file: %v\\n", err)
+		fmt.Printf("[SaveFile] ERROR copying file: %v\n", err)
 		return nil, fmt.Errorf("failed to save file: %w", err)
 	}
-	fmt.Printf("[SaveFile] Written %d bytes to %s\\n", written, destPath)
+	fmt.Printf("[SaveFile] Written %d bytes to %s\n", written, destPath)
 
 	// Determine file type
 	fileType := "geojson"
@@ -354,7 +363,7 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	}
 
 	// Create dataset record
-	fmt.Printf("[SaveFile] Creating dataset record in database...\\n")
+	fmt.Printf("[SaveFile] Creating dataset record in database...\n")
 	datasetService := services.NewDatasetService(services.GetDB())
 	dataset := &models.Dataset{
 		Name:        name,
@@ -371,11 +380,11 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 
 	if err := datasetService.CreateDataset(dataset); err != nil {
 		os.Remove(destPath)
-		fmt.Printf("[SaveFile] ERROR creating dataset record: %v\\n", err)
+		fmt.Printf("[SaveFile] ERROR creating dataset record: %v\n", err)
 		return nil, fmt.Errorf("failed to create dataset record: %w", err)
 	}
 
-	fmt.Printf("[SaveFile] SUCCESS: Created dataset ID %d for %s\\n", dataset.ID, file.Filename)
+	fmt.Printf("[SaveFile] SUCCESS: Created dataset ID %d for %s\n", dataset.ID, file.Filename)
 	return dataset, nil
 }
 

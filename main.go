@@ -90,6 +90,9 @@ func main() {
 	// Create Echo instance
 	e := echo.New()
 
+	// Configure body limit for file uploads (500MB to handle large GeoJSON files)
+	e.Use(echomiddleware.BodyLimit("500M"))
+
 	// Middleware
 	e.Use(middleware.ColorizedLogger())
 	e.Use(echomiddleware.Recover())
