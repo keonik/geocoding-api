@@ -197,6 +197,10 @@ function AdminDashboard() {
             <p className="text-sm text-muted-foreground">{user.email}</p>
           </div>
           <div className="flex items-center space-x-4">
+            <Button variant="outline" onClick={() => navigate({ to: '/data-manager' })}>
+              <Database className="mr-2 h-4 w-4" />
+              Data Manager
+            </Button>
             <a
               href="/docs"
               target="_blank"

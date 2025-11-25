@@ -2,7 +2,6 @@ import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import { useEffect, useState, useRef } from 'react'
 import { toast } from 'sonner'
 import { datasetAPI, type Dataset, type DatasetStats } from '@/api/datasets'
-import { authAPI } from '@/api/auth'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -174,11 +173,6 @@ function DataManager() {
     } catch (err) {
       toast.error('Failed to reprocess dataset')
     }
-  }
-
-  const handleLogout = () => {
-    authAPI.logout()
-    navigate({ to: '/' })
   }
 
   const formatBytes = (bytes: number) => {
