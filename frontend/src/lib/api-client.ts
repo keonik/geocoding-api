@@ -26,12 +26,16 @@ export async function fetchAPI<T>(
 ): Promise<T> {
   const token = localStorage.getItem('authToken')
   
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+  const headers: Record<string, string> = {}
+
+  // Only set Content-Type for non-FormData requests
+  // FormData needs browser to set the boundary automatically
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json'
   }
 
-  // Merge existing headers
-  if (options.headers) {
+  // Merge existing headers (but skip empty header objects for FormData)
+  if (options.headers && Object.keys(options.headers).length > 0) {
     const existingHeaders = new Headers(options.headers)
     existingHeaders.forEach((value, key) => {
       headers[key] = value

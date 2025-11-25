@@ -58,7 +58,7 @@ function DataManager() {
   const [loading, setLoading] = useState(true)
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadStatus, setUploadStatus] = useState<string>('')
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [stateFilter, setStateFilter] = useState<string>('')
   
@@ -118,7 +118,7 @@ function DataManager() {
 
     try {
       setUploading(true)
-      setUploadProgress(0)
+      setUploadStatus('Uploading file...')
 
       const formData = new FormData()
       formData.append('name', uploadForm.name)
@@ -126,28 +126,30 @@ function DataManager() {
       formData.append('county', uploadForm.county)
       formData.append('file', uploadForm.file)
 
-      // Simulate progress (real progress would need xhr or fetch with progress events)
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => Math.min(prev + 10, 90))
-      }, 200)
-
       const response = await datasetAPI.upload(formData)
 
-      clearInterval(progressInterval)
-      setUploadProgress(100)
-
       if (response.success) {
+        setUploadStatus('Upload complete! Processing started in background.')
         toast.success('File uploaded successfully! Processing started.')
-        setUploadModalOpen(false)
-        setUploadForm({ name: '', state: '', county: '', file: null })
-        if (fileInputRef.current) fileInputRef.current.value = ''
-        loadData()
+        
+        // Wait a moment to show success, then close
+        setTimeout(() => {
+          setUploadModalOpen(false)
+          setUploadForm({ name: '', state: '', county: '', file: null })
+          setUploadStatus('')
+          if (fileInputRef.current) fileInputRef.current.value = ''
+          loadData()
+        }, 1500)
+      } else {
+        setUploadStatus('Upload failed')
+        toast.error(response.error || 'Upload failed')
       }
-    } catch (err) {
-      toast.error('Failed to upload file')
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to upload file'
+      setUploadStatus(`Error: ${errorMessage}`)
+      toast.error(errorMessage)
     } finally {
       setUploading(false)
-      setUploadProgress(0)
     }
   }
 
@@ -456,23 +458,18 @@ function DataManager() {
               )}
             </div>
             
-            {uploading && (
-              <div className="space-y-2">
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div
-                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${uploadProgress}%` }}
-                  />
-                </div>
-                <p className="text-sm text-center text-muted-foreground">
-                  Uploading... {uploadProgress}%
-                </p>
+            {(uploading || uploadStatus) && (
+              <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
+                {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
+                {uploadStatus.includes('complete') && <CheckCircle className="h-4 w-4 text-green-500" />}
+                {uploadStatus.includes('Error') && <XCircle className="h-4 w-4 text-red-500" />}
+                <p className="text-sm">{uploadStatus}</p>
               </div>
             )}
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUploadModalOpen(false)} disabled={uploading}>
+            <Button variant="outline" onClick={() => { setUploadModalOpen(false); setUploadStatus('') }} disabled={uploading}>
               Cancel
             </Button>
             <Button onClick={handleUpload} disabled={uploading}>
