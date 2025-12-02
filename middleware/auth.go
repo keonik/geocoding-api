@@ -279,9 +279,12 @@ func isAdminEmail(email string) bool {
 func RequireAdminAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			log.Printf("[AdminAuth] Request: %s %s", c.Request().Method, c.Request().URL.Path)
+			
 			// Use JWT authentication for admin routes
 			authHeader := c.Request().Header.Get("Authorization")
 			if authHeader == "" {
+				log.Println("[AdminAuth] No Authorization header")
 				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "Authorization header required",
@@ -291,6 +294,7 @@ func RequireAdminAuth() echo.MiddlewareFunc {
 			// Parse Bearer token
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || parts[0] != "Bearer" {
+				log.Println("[AdminAuth] Invalid authorization format")
 				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "Invalid authorization format. Use 'Bearer <token>'",
@@ -302,15 +306,19 @@ func RequireAdminAuth() echo.MiddlewareFunc {
 			// Validate JWT token
 			claims, err := services.Auth.ValidateJWT(tokenString)
 			if err != nil {
+				log.Printf("[AdminAuth] Invalid token: %v", err)
 				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "Invalid or expired token",
 				})
 			}
 
+			log.Printf("[AdminAuth] Token valid for user ID: %d", claims.UserID)
+
 			// Get user from database to check admin status
 			user, err := services.Auth.GetUserByID(claims.UserID)
 			if err != nil {
+				log.Printf("[AdminAuth] User not found: %v", err)
 				return c.JSON(http.StatusUnauthorized, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "User not found",
@@ -319,11 +327,14 @@ func RequireAdminAuth() echo.MiddlewareFunc {
 
 			// Check if user has admin privileges
 			if !user.IsAdmin && !isAdminEmail(user.Email) {
+				log.Printf("[AdminAuth] User %s is not admin", user.Email)
 				return c.JSON(http.StatusForbidden, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "Admin privileges required",
 				})
 			}
+
+			log.Printf("[AdminAuth] Admin access granted for user: %s (ID: %d)", user.Email, user.ID)
 
 			// Store user info in context
 			c.Set("user_id", user.ID)

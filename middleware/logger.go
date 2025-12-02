@@ -25,6 +25,11 @@ func ColorizedLogger() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			start := time.Now()
+			req := c.Request()
+			
+			// Log request start immediately
+			fmt.Printf("%s[REQ START]%s %s %s (Content-Length: %d)\n", 
+				Cyan, Reset, req.Method, req.URL.Path, req.ContentLength)
 			
 			// Process request
 			err := next(c)
@@ -35,8 +40,7 @@ func ColorizedLogger() echo.MiddlewareFunc {
 			// Calculate request duration
 			latency := time.Since(start)
 			
-			// Get request details
-			req := c.Request()
+			// Get response details
 			res := c.Response()
 			method := req.Method
 			path := req.URL.Path

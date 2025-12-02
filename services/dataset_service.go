@@ -336,13 +336,18 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 
 	// Process features and insert into database
 	recordCount := 0
+	skippedDuplicates := 0
+	
 	for _, feature := range geojson.Features {
 		if feature.Geometry.Type != "Point" {
 			continue
 		}
 
 		// Extract address components from properties
-		// This is flexible and will work with different property names
+		// Supports multiple property naming conventions:
+		// - Ohio LBRS format (HOUSENUM, ST_NAME, USPS_CITY, ZIPCODE)
+		// - Generic format (HOUSE_NUMB, STREET, CITY, ZIP)
+		// - Lowercase format (house_number, street, city, postcode)
 		props := feature.Properties
 		
 		address := models.OhioAddress{
@@ -350,34 +355,32 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 			Latitude:  feature.Geometry.Coordinates[1],
 		}
 
-		// Try to extract common fields (adjust based on your data format)
-		if val, ok := props["HOUSE_NUMB"].(string); ok {
-			address.HouseNumber = val
-		} else if val, ok := props["house_number"].(string); ok {
-			address.HouseNumber = val
+		// House Number - try multiple field names and types
+		address.HouseNumber = getStringProp(props, "HOUSENUM", "HOUSE_NUMB", "house_number", "LHN")
+		
+		// Street Name - Ohio LBRS uses ST_NAME or LSN (full street with number)
+		address.Street = getStringProp(props, "ST_NAME", "STREET", "street")
+		if address.Street == "" {
+			// Try LSN but remove the house number prefix
+			if lsn := getStringProp(props, "LSN"); lsn != "" && address.HouseNumber != "" {
+				// LSN format is "16551 STATE RTE 247" - remove the number prefix
+				address.Street = strings.TrimSpace(strings.TrimPrefix(lsn, address.HouseNumber))
+			}
 		}
+		
+		// City - USPS_CITY or MUNI for Ohio LBRS
+		address.City = getStringProp(props, "USPS_CITY", "CITY", "city", "MUNI", "COMM")
+		
+		// ZIP Code
+		address.Postcode = getStringProp(props, "ZIPCODE", "ZIP", "postcode", "postal_code")
+		
+		// Unit/Apartment
+		address.Unit = getStringProp(props, "UNITNUM", "UNIT", "unit", "UNITEXTRA")
+		
+		// District (county abbreviation like "ADA")
+		address.District = getStringProp(props, "COUNTY", "district")
 
-		if val, ok := props["STREET"].(string); ok {
-			address.Street = val
-		} else if val, ok := props["street"].(string); ok {
-			address.Street = val
-		}
-
-		if val, ok := props["CITY"].(string); ok {
-			address.City = val
-		} else if val, ok := props["city"].(string); ok {
-			address.City = val
-		}
-
-		if val, ok := props["ZIP"].(string); ok {
-			address.Postcode = val
-		} else if val, ok := props["postcode"].(string); ok {
-			address.Postcode = val
-		} else if val, ok := props["postal_code"].(string); ok {
-			address.Postcode = val
-		}
-
-		// Set county and state from dataset metadata
+		// Set county and state from dataset metadata (full names)
 		address.County = dataset.County
 		address.Region = dataset.State
 
@@ -386,7 +389,12 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 			// Use the existing address service to insert
 			addressService := NewAddressService(database.DB)
 			if _, err := addressService.CreateAddress(&address); err != nil {
-				log.Printf("Warning: Failed to insert address: %v", err)
+				// Check if it's a duplicate (unique constraint violation)
+				if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+					skippedDuplicates++
+				} else {
+					log.Printf("Warning: Failed to insert address: %v", err)
+				}
 				continue
 			}
 			recordCount++
@@ -404,7 +412,7 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 		// Don't fail the operation, data is already imported
 	}
 
-	log.Printf("Successfully processed dataset %d: %d records imported", datasetID, recordCount)
+	log.Printf("Successfully processed dataset %d: %d records imported, %d duplicates skipped", datasetID, recordCount, skippedDuplicates)
 	return nil
 }
 
@@ -420,4 +428,59 @@ func (s *DatasetService) cleanupUploadedFile(filePath string) error {
 	
 	log.Printf("Cleaned up uploaded file: %s", filePath)
 	return nil
+}
+
+// getStringProp extracts a string value from properties map, trying multiple field names
+// Handles both string values and numeric values (converting them to strings)
+func getStringProp(props map[string]interface{}, fieldNames ...string) string {
+	for _, name := range fieldNames {
+		if val, ok := props[name]; ok && val != nil {
+			switch v := val.(type) {
+			case string:
+				return strings.TrimSpace(v)
+			case float64:
+				// Handle numeric values (JSON numbers are float64)
+				if v == float64(int(v)) {
+					return fmt.Sprintf("%d", int(v))
+				}
+				return fmt.Sprintf("%v", v)
+			case int:
+				return fmt.Sprintf("%d", v)
+			default:
+				return fmt.Sprintf("%v", v)
+			}
+		}
+	}
+	return ""
+}
+
+// CheckDatasetExists checks if a dataset with the same state and county already exists
+func (s *DatasetService) CheckDatasetExists(state, county string) (bool, *models.Dataset, error) {
+	query := `
+		SELECT id, name, state, county, status, record_count, uploaded_at
+		FROM datasets
+		WHERE UPPER(state) = UPPER($1) AND UPPER(county) = UPPER($2)
+		ORDER BY uploaded_at DESC
+		LIMIT 1
+	`
+	
+	var dataset models.Dataset
+	err := s.db.QueryRow(query, state, county).Scan(
+		&dataset.ID,
+		&dataset.Name,
+		&dataset.State,
+		&dataset.County,
+		&dataset.Status,
+		&dataset.RecordCount,
+		&dataset.UploadedAt,
+	)
+	
+	if err == sql.ErrNoRows {
+		return false, nil, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	
+	return true, &dataset, nil
 }

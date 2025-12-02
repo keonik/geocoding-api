@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -13,14 +14,45 @@ import (
 	"sync"
 	"time"
 
+	"geocoding-api/database"
 	"geocoding-api/models"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
 )
 
+// checkDatasetsTableExists checks if the datasets table exists in the database
+func checkDatasetsTableExists() bool {
+	if database.DB == nil {
+		return false
+	}
+	var exists bool
+	err := database.DB.QueryRow(`
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables 
+			WHERE table_schema = 'public' 
+			AND table_name = 'datasets'
+		)
+	`).Scan(&exists)
+	return err == nil && exists
+}
+
+// migrationsPendingResponse returns a standard response when migrations are still running
+func migrationsPendingResponse(c echo.Context) error {
+	return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
+		"success": false,
+		"error":   "Database migrations are still in progress. Please wait a moment and try again.",
+		"migrations_running": database.MigrationRunning,
+	})
+}
+
 // UploadDatasetHandler handles single file uploads for county address data
 func UploadDatasetHandler(c echo.Context) error {
+	// Check if datasets table exists (migrations may still be running)
+	if !checkDatasetsTableExists() {
+		return migrationsPendingResponse(c)
+	}
+
 	// Get form values
 	name := c.FormValue("name")
 	state := c.FormValue("state")
@@ -30,6 +62,19 @@ func UploadDatasetHandler(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"success": false,
 			"error":   "name, state, and county are required",
+		})
+	}
+
+	// Check for duplicate dataset
+	datasetService := services.NewDatasetService(services.GetDB())
+	exists, existingDataset, err := datasetService.CheckDatasetExists(state, county)
+	if err != nil {
+		fmt.Printf("[Upload] Warning: Failed to check for existing dataset: %v\n", err)
+	} else if exists && existingDataset != nil {
+		return c.JSON(http.StatusConflict, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Dataset for %s County, %s already exists (ID: %d, status: %s, %d records)", county, state, existingDataset.ID, existingDataset.Status, existingDataset.RecordCount),
+			"existing_dataset": existingDataset,
 		})
 	}
 
@@ -62,8 +107,8 @@ func UploadDatasetHandler(c echo.Context) error {
 
 	// Process the dataset asynchronously
 	go func() {
-		datasetService := services.NewDatasetService(services.GetDB())
-		if err := datasetService.ProcessGeoJSONDataset(dataset.ID); err != nil {
+		datasetSvc := services.NewDatasetService(services.GetDB())
+		if err := datasetSvc.ProcessGeoJSONDataset(dataset.ID); err != nil {
 			fmt.Printf("Error processing dataset %d: %v\n", dataset.ID, err)
 		}
 	}()
@@ -93,7 +138,14 @@ func UploadMultipleHandler(c echo.Context) error {
 		}
 	}()
 
+	// Check if datasets table exists (migrations may still be running)
+	if !checkDatasetsTableExists() {
+		return migrationsPendingResponse(c)
+	}
+
 	fmt.Println("[BulkUpload] Starting bulk upload request")
+	fmt.Printf("[BulkUpload] Content-Length: %d\n", c.Request().ContentLength)
+	fmt.Printf("[BulkUpload] Content-Type: %s\n", c.Request().Header.Get("Content-Type"))
 	
 	// Get form values
 	state := c.FormValue("state")
@@ -225,13 +277,186 @@ func UploadMultipleHandler(c echo.Context) error {
 
 	fmt.Println("[BulkUpload] Returning response to client")
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"success":       failCount == 0,
-		"total_files":   len(files),
-		"success_count": successCount,
-		"fail_count":    failCount,
-		"results":       uploadResults,
-		"message":       fmt.Sprintf("Uploaded %d of %d files. Processing started.", successCount, len(files)),
+		"success": true,
+		"data": map[string]interface{}{
+			"total_files":   len(files),
+			"success_count": successCount,
+			"fail_count":    failCount,
+			"results":       uploadResults,
+			"message":       fmt.Sprintf("Uploaded %d of %d files. Processing started.", successCount, len(files)),
+		},
 	})
+}
+
+// UploadProgressEvent represents a progress update sent via SSE
+type UploadProgressEvent struct {
+	Type        string          `json:"type"`        // "start", "file_saved", "file_error", "processing", "complete"
+	Filename    string          `json:"filename,omitempty"`
+	FileIndex   int             `json:"file_index,omitempty"`
+	TotalFiles  int             `json:"total_files,omitempty"`
+	Success     bool            `json:"success,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	Dataset     *models.Dataset `json:"dataset,omitempty"`
+	DatasetID   int             `json:"dataset_id,omitempty"`
+	Message     string          `json:"message,omitempty"`
+	SuccessCount int            `json:"success_count,omitempty"`
+	FailCount   int             `json:"fail_count,omitempty"`
+}
+
+// UploadMultipleStreamHandler handles multiple file uploads with SSE streaming progress
+func UploadMultipleStreamHandler(c echo.Context) error {
+	// Recover from any panics
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[BulkUploadStream] PANIC recovered: %v\n", r)
+			fmt.Printf("[BulkUploadStream] Stack trace:\n%s\n", debug.Stack())
+		}
+	}()
+
+	// Check if datasets table exists
+	if !checkDatasetsTableExists() {
+		return migrationsPendingResponse(c)
+	}
+
+	fmt.Println("[BulkUploadStream] Starting streaming bulk upload request")
+
+	// Get form values
+	state := c.FormValue("state")
+	if state == "" {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "state is required",
+		})
+	}
+
+	// Get user ID from context
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   "failed to get user ID",
+		})
+	}
+
+	// Parse multipart form
+	form, err := c.MultipartForm()
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "failed to parse multipart form: " + err.Error(),
+		})
+	}
+
+	files := form.File["files"]
+	if len(files) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]interface{}{
+			"success": false,
+			"error":   "no files provided",
+		})
+	}
+
+	// Ensure upload directory exists
+	if err := services.EnsureUploadDirectory(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"error":   "failed to create upload directory",
+		})
+	}
+
+	// Set up SSE headers
+	c.Response().Header().Set("Content-Type", "text/event-stream")
+	c.Response().Header().Set("Cache-Control", "no-cache")
+	c.Response().Header().Set("Connection", "keep-alive")
+	c.Response().Header().Set("X-Accel-Buffering", "no")
+	c.Response().WriteHeader(http.StatusOK)
+
+	// Helper to send SSE event
+	sendEvent := func(event UploadProgressEvent) {
+		data, _ := json.Marshal(event)
+		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
+		c.Response().Flush()
+	}
+
+	// Send start event
+	sendEvent(UploadProgressEvent{
+		Type:       "start",
+		TotalFiles: len(files),
+		Message:    fmt.Sprintf("Starting upload of %d files", len(files)),
+	})
+
+	successCount := 0
+	failCount := 0
+	var datasetIDs []int
+
+	// Process files sequentially for streaming updates
+	for i, file := range files {
+		filename := file.Filename
+		
+		// Send progress update
+		sendEvent(UploadProgressEvent{
+			Type:       "processing",
+			Filename:   filename,
+			FileIndex:  i + 1,
+			TotalFiles: len(files),
+			Message:    fmt.Sprintf("Saving file %d of %d: %s", i+1, len(files), filename),
+		})
+
+		// Process the file
+		result := processUploadedFile(file, state, userID)
+		
+		if result.Success {
+			successCount++
+			if result.Dataset != nil {
+				datasetIDs = append(datasetIDs, result.Dataset.ID)
+			}
+			sendEvent(UploadProgressEvent{
+				Type:         "file_saved",
+				Filename:     filename,
+				FileIndex:    i + 1,
+				TotalFiles:   len(files),
+				Success:      true,
+				Dataset:      result.Dataset,
+				SuccessCount: successCount,
+				FailCount:    failCount,
+				Message:      fmt.Sprintf("Successfully saved: %s", filename),
+			})
+		} else {
+			failCount++
+			sendEvent(UploadProgressEvent{
+				Type:         "file_error",
+				Filename:     filename,
+				FileIndex:    i + 1,
+				TotalFiles:   len(files),
+				Success:      false,
+				Error:        result.Error,
+				SuccessCount: successCount,
+				FailCount:    failCount,
+				Message:      fmt.Sprintf("Failed to save: %s - %s", filename, result.Error),
+			})
+		}
+	}
+
+	// Start background processing
+	if len(datasetIDs) > 0 {
+		sendEvent(UploadProgressEvent{
+			Type:    "processing_started",
+			Message: fmt.Sprintf("Starting background processing for %d datasets", len(datasetIDs)),
+		})
+		go processDatasetsConcurrently(datasetIDs)
+	}
+
+	// Send completion event
+	sendEvent(UploadProgressEvent{
+		Type:         "complete",
+		TotalFiles:   len(files),
+		SuccessCount: successCount,
+		FailCount:    failCount,
+		Success:      failCount == 0,
+		Message:      fmt.Sprintf("Upload complete: %d success, %d failed", successCount, failCount),
+	})
+
+	fmt.Printf("[BulkUploadStream] Complete: %d success, %d failed\n", successCount, failCount)
+	return nil
 }
 
 // processUploadedFile handles a single file upload in the batch
@@ -250,6 +475,20 @@ func processUploadedFile(file *multipart.FileHeader, state string, userID int) B
 		}
 	}
 	fmt.Printf("[ProcessFile] Extracted county: %s from %s\n", county, filename)
+
+	// Check for duplicate dataset
+	datasetService := services.NewDatasetService(services.GetDB())
+	exists, existingDataset, err := datasetService.CheckDatasetExists(state, county)
+	if err != nil {
+		fmt.Printf("[ProcessFile] Warning: Failed to check for existing dataset: %v\n", err)
+	} else if exists && existingDataset != nil {
+		fmt.Printf("[ProcessFile] DUPLICATE: %s County, %s already exists (ID: %d)\n", county, state, existingDataset.ID)
+		return BatchUploadResult{
+			Filename: filename,
+			Success:  false,
+			Error:    fmt.Sprintf("Dataset already exists (ID: %d, status: %s, %d records)", existingDataset.ID, existingDataset.Status, existingDataset.RecordCount),
+		}
+	}
 
 	// Generate name from filename
 	name := fmt.Sprintf("%s County Addresses", strings.Title(county))
@@ -348,11 +587,18 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 	}
 	defer dest.Close()
 
-	written, err := io.Copy(dest, src)
+	// Use a larger buffer for faster copying (8MB buffer)
+	buf := make([]byte, 8*1024*1024)
+	written, err := io.CopyBuffer(dest, src, buf)
 	if err != nil {
 		os.Remove(destPath)
 		fmt.Printf("[SaveFile] ERROR copying file: %v\n", err)
 		return nil, fmt.Errorf("failed to save file: %w", err)
+	}
+	
+	// Sync to ensure data is written to disk
+	if err := dest.Sync(); err != nil {
+		fmt.Printf("[SaveFile] WARNING: failed to sync file: %v\n", err)
 	}
 	fmt.Printf("[SaveFile] Written %d bytes to %s\n", written, destPath)
 
@@ -430,6 +676,11 @@ func processDatasetsConcurrently(datasetIDs []int) {
 
 // GetDatasetsHandler lists all datasets with optional filtering
 func GetDatasetsHandler(c echo.Context) error {
+	// Check if datasets table exists (migrations may still be running)
+	if !checkDatasetsTableExists() {
+		return migrationsPendingResponse(c)
+	}
+
 	state := c.QueryParam("state")
 	status := c.QueryParam("status")
 	
@@ -562,6 +813,11 @@ func ReprocessDatasetHandler(c echo.Context) error {
 
 // GetDatasetStatsHandler returns statistics about datasets
 func GetDatasetStatsHandler(c echo.Context) error {
+	// Check if datasets table exists (migrations may still be running)
+	if !checkDatasetsTableExists() {
+		return migrationsPendingResponse(c)
+	}
+
 	datasetService := services.NewDatasetService(services.GetDB())
 	stats, err := datasetService.GetDatasetStats()
 	if err != nil {

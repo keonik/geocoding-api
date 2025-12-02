@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"geocoding-api/database"
 	"geocoding-api/handlers"
@@ -39,53 +40,59 @@ func main() {
 	defer database.CloseDB()
 
 	// Run database migrations
-	// Set RUN_MIGRATIONS_ASYNC=true to start server immediately while migrations run in background
-	// Useful for long-running migrations like updating millions of records
-	if os.Getenv("RUN_MIGRATIONS_ASYNC") == "true" {
-		log.Println("Running migrations asynchronously - server will start immediately")
-		database.RunMigrationsAsync()
-		// Give migrations a moment to start and check for immediate errors
-		// But don't wait for completion
-		log.Println("Server starting while migrations run in background...")
-	} else {
-		// Default: block until migrations complete
+	// By default, run migrations asynchronously so server starts immediately
+	// Set RUN_MIGRATIONS_SYNC=true to block until migrations complete
+	if os.Getenv("RUN_MIGRATIONS_SYNC") == "true" {
+		log.Println("Running migrations synchronously - server will wait for completion")
 		if err := database.RunMigrations(); err != nil {
 			log.Fatalf("Failed to run database migrations: %v", err)
 		}
+	} else {
+		// Default: run async so server starts immediately
+		log.Println("Running migrations asynchronously - server starting immediately")
+		database.RunMigrationsAsync()
 	}
 
 	// Initialize services
 	services.InitAddressService(database.DB)
 	
-	// Initialize ZIP code data if needed
-	if err := services.InitializeData(); err != nil {
-		log.Printf("Warning: Failed to initialize ZIP code data: %v", err)
-		log.Println("You can load data manually using: curl -X POST http://localhost:8080/api/v1/admin/load-data")
-	}
-	
-	// Initialize Ohio address data if needed
-	if err := services.InitializeOhioData(); err != nil {
-		log.Printf("Warning: Failed to initialize Ohio address data: %v", err)
-		log.Println("Ohio addresses can be loaded manually if needed")
-	}
+	// Run data initialization in background to avoid blocking server startup
+	// These can wait for migrations to complete before querying the database
+	go func() {
+		log.Println("Starting background data initialization...")
+		
+		// Initialize ZIP code data if needed
+		if err := services.InitializeData(); err != nil {
+			log.Printf("Warning: Failed to initialize ZIP code data: %v", err)
+			log.Println("You can load data manually using: curl -X POST http://localhost:8080/api/v1/admin/load-data")
+		}
+		
+		// Initialize Ohio address data if needed
+		if err := services.InitializeOhioData(); err != nil {
+			log.Printf("Warning: Failed to initialize Ohio address data: %v", err)
+			log.Println("Ohio addresses can be loaded manually if needed")
+		}
 
-	// Initialize US cities data if needed
-	if err := services.InitializeCityData(); err != nil {
-		log.Printf("Warning: Failed to initialize city data: %v", err)
-		log.Println("City data can be loaded manually if needed")
-	}
+		// Initialize US cities data if needed
+		if err := services.InitializeCityData(); err != nil {
+			log.Printf("Warning: Failed to initialize city data: %v", err)
+			log.Println("City data can be loaded manually if needed")
+		}
 
-	// Initialize US states data if needed
-	if err := services.InitializeStateData(); err != nil {
-		log.Printf("Warning: Failed to initialize state data: %v", err)
-		log.Println("State data can be loaded manually if needed")
-	}
+		// Initialize US states data if needed
+		if err := services.InitializeStateData(); err != nil {
+			log.Printf("Warning: Failed to initialize state data: %v", err)
+			log.Println("State data can be loaded manually if needed")
+		}
 
-	// Sync admin privileges from ADMIN_EMAILS environment variable
-	authService := &services.AuthService{}
-	if err := authService.SyncAdminUsers(); err != nil {
-		log.Printf("Warning: Failed to sync admin users: %v", err)
-	}
+		// Sync admin privileges from ADMIN_EMAILS environment variable
+		authService := &services.AuthService{}
+		if err := authService.SyncAdminUsers(); err != nil {
+			log.Printf("Warning: Failed to sync admin users: %v", err)
+		}
+		
+		log.Println("Background data initialization completed")
+	}()
 
 	// Create Echo instance
 	e := echo.New()
@@ -281,6 +288,7 @@ func main() {
 	// Dataset management routes (admin only)
 	admin.POST("/datasets/upload", handlers.UploadDatasetHandler)
 	admin.POST("/datasets/upload-bulk", handlers.UploadMultipleHandler)
+	admin.POST("/datasets/upload-bulk-stream", handlers.UploadMultipleStreamHandler)
 	admin.GET("/datasets", handlers.GetDatasetsHandler)
 	admin.GET("/datasets/stats", handlers.GetDatasetStatsHandler)
 	admin.GET("/datasets/:id", handlers.GetDatasetHandler)
@@ -313,9 +321,20 @@ func main() {
 		port = "8080"
 	}
 
-	// Start server
+	// Start server with custom timeouts for large file uploads
+	// Use 127.0.0.1 instead of :: to avoid macOS IPv6 socket issues
 	log.Printf("Starting server on port %s", port)
-	if err := e.Start(":" + port); err != nil {
+	
+	// Configure server with extended timeouts for large file uploads (2.09GB total possible)
+	server := &http.Server{
+		Addr:              "127.0.0.1:" + port,
+		ReadTimeout:       30 * time.Minute,  // Time to read entire request including body
+		WriteTimeout:      30 * time.Minute,  // Time to write response
+		IdleTimeout:       5 * time.Minute,   // Keep-alive timeout
+		ReadHeaderTimeout: 60 * time.Second,  // Time to read request headers
+	}
+	
+	if err := e.StartServer(server); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

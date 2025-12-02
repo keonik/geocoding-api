@@ -23,6 +23,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { 
   Upload, 
@@ -40,6 +41,14 @@ import {
   Files
 } from 'lucide-react'
 import { Toaster } from '@/components/ui/toaster'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 export const Route = createFileRoute('/data-manager')({
   beforeLoad: () => {
@@ -64,6 +73,10 @@ function DataManager() {
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [stateFilter, setStateFilter] = useState<string>('')
   
+  // Multi-select state for bulk delete
+  const [selectedDatasets, setSelectedDatasets] = useState<Set<number>>(new Set())
+  const [deletingMultiple, setDeletingMultiple] = useState(false)
+  
   // Single upload form state
   const [uploadForm, setUploadForm] = useState({
     name: '',
@@ -79,6 +92,24 @@ function DataManager() {
   })
   const [bulkUploadResults, setBulkUploadResults] = useState<BatchUploadResult[]>([])
   
+  // Upload progress state
+  const [uploadProgress, setUploadProgress] = useState({
+    currentFile: '',
+    currentIndex: 0,
+    totalFiles: 0,
+    completedCount: 0,
+    failedCount: 0,
+    processingMessage: '',
+    // Byte-level progress for upload phase
+    bytesLoaded: 0,
+    bytesTotal: 0,
+    percentComplete: 0,
+    phase: 'idle' as 'idle' | 'uploading' | 'processing' | 'complete',
+  })
+  
+  // Reference to abort upload
+  const uploadAbortRef = useRef<{ abort: () => void } | null>(null)
+  
   const fileInputRef = useRef<HTMLInputElement>(null)
   const bulkFileInputRef = useRef<HTMLInputElement>(null)
 
@@ -89,11 +120,16 @@ function DataManager() {
     return () => clearInterval(interval)
   }, [statusFilter, stateFilter])
 
+  // Clear selection when datasets change (e.g., after filtering)
+  useEffect(() => {
+    setSelectedDatasets(new Set())
+  }, [statusFilter, stateFilter])
+
   const loadData = async () => {
     try {
       const [datasetsResponse, statsResponse] = await Promise.all([
         datasetAPI.list({ 
-          status: statusFilter || undefined,
+          status: statusFilter && statusFilter !== 'all' ? statusFilter : undefined,
           state: stateFilter || undefined,
         }),
         datasetAPI.getStats(),
@@ -169,58 +205,133 @@ function DataManager() {
     }
   }
 
-  const handleBulkUpload = async () => {
+  const handleBulkUpload = () => {
     if (!bulkUploadForm.state || bulkUploadForm.files.length === 0) {
       toast.error('Please select a state and at least one file')
       return
     }
 
-    try {
-      setUploading(true)
-      setBulkUploadResults([])
-      setUploadStatus(`Uploading ${bulkUploadForm.files.length} files...`)
-      console.log('[BulkUpload] Starting upload of', bulkUploadForm.files.length, 'files')
-      console.log('[BulkUpload] State:', bulkUploadForm.state)
-      console.log('[BulkUpload] Files:', bulkUploadForm.files.map(f => f.name))
+    setUploading(true)
+    setBulkUploadResults([])
+    
+    // Calculate total size for better messaging
+    const totalSize = bulkUploadForm.files.reduce((acc, f) => acc + f.size, 0)
+    const sizeFormatted = formatBytes(totalSize)
+    
+    // Create abort signal object
+    const abortSignal = { aborted: false }
+    uploadAbortRef.current = { abort: () => { abortSignal.aborted = true } }
+    
+    setUploadProgress({
+      currentFile: '',
+      currentIndex: 0,
+      totalFiles: bulkUploadForm.files.length,
+      completedCount: 0,
+      failedCount: 0,
+      processingMessage: 'Starting batched upload...',
+      bytesLoaded: 0,
+      bytesTotal: totalSize,
+      percentComplete: 0,
+      phase: 'uploading',
+    })
+    setUploadStatus(`Uploading ${bulkUploadForm.files.length} files one at a time...`)
+    console.log('[BulkUpload] Starting batched upload of', bulkUploadForm.files.length, 'files,', sizeFormatted)
 
-      const formData = new FormData()
-      formData.append('state', bulkUploadForm.state)
-      bulkUploadForm.files.forEach((file, idx) => {
-        console.log(`[BulkUpload] Appending file ${idx + 1}: ${file.name} (${file.size} bytes)`)
-        formData.append('files', file)
-      })
-
-      console.log('[BulkUpload] Sending request to /api/v1/admin/datasets/upload-bulk')
-      const response = await datasetAPI.uploadBulk(formData)
-      console.log('[BulkUpload] Response received:', response)
-
-      if (response.success && response.data) {
-        console.log('[BulkUpload] Upload successful:', response.data)
-        setBulkUploadResults(response.data.results)
-        const { success_count, fail_count, total_files } = response.data
-        setUploadStatus(`Completed: ${success_count}/${total_files} files uploaded successfully`)
-        
-        if (fail_count === 0) {
-          toast.success(`All ${total_files} files uploaded successfully! Processing started.`)
-        } else {
-          toast.warning(`${success_count} files uploaded, ${fail_count} failed`)
-        }
-        
-        // Reload data to show new datasets
-        loadData()
-      } else {
-        console.error('[BulkUpload] Upload failed:', response)
-        setUploadStatus(`Upload failed: ${response.error || 'Unknown error'}`)
-        toast.error(response.error || 'Bulk upload failed')
-      }
-    } catch (err: unknown) {
-      console.error('[BulkUpload] Exception:', err)
-      const errorMessage = err instanceof Error ? err.message : 'Failed to upload files'
-      setUploadStatus(`Error: ${errorMessage}`)
-      toast.error(errorMessage)
-    } finally {
+    // Use batched upload - one file at a time
+    datasetAPI.uploadBatched(
+      bulkUploadForm.files,
+      bulkUploadForm.state,
+      {
+        onFileStart: (filename, index, total) => {
+          console.log(`[BulkUpload] Starting file ${index + 1}/${total}: ${filename}`)
+          setUploadProgress(prev => ({
+            ...prev,
+            currentFile: filename,
+            currentIndex: index,
+            bytesLoaded: 0,
+            bytesTotal: 0,
+            processingMessage: `File ${index + 1}/${total}: ${filename}`,
+          }))
+          setUploadStatus(`Uploading file ${index + 1}/${total}: ${filename}`)
+        },
+        onFileProgress: (filename, loaded, total, percent) => {
+          // Check for special "saving" marker (loaded === -1)
+          if (loaded === -1) {
+            setUploadProgress(prev => ({
+              ...prev,
+              bytesLoaded: prev.bytesTotal, // Show full size
+              percentComplete: 100,
+              processingMessage: `${filename}: Saving to server...`,
+            }))
+          } else {
+            setUploadProgress(prev => ({
+              ...prev,
+              bytesLoaded: loaded,
+              bytesTotal: total,
+              percentComplete: percent,
+              processingMessage: `${filename}: ${formatBytes(loaded)} / ${formatBytes(total)} (${percent}%)`,
+            }))
+          }
+        },
+        onFileComplete: (filename, index, success, dataset, error) => {
+          console.log(`[BulkUpload] File ${index + 1} ${success ? 'succeeded' : 'failed'}: ${filename}`, error || '')
+          
+          setBulkUploadResults(prev => [...prev, {
+            filename,
+            success,
+            dataset,
+            error,
+          }])
+          
+          setUploadProgress(prev => ({
+            ...prev,
+            completedCount: success ? prev.completedCount + 1 : prev.completedCount,
+            failedCount: success ? prev.failedCount : prev.failedCount + 1,
+          }))
+        },
+        onAllComplete: (successCount, failCount, total) => {
+          console.log(`[BulkUpload] All done: ${successCount} success, ${failCount} failed`)
+          uploadAbortRef.current = null
+          
+          setUploadProgress(prev => ({
+            ...prev,
+            phase: 'complete',
+            processingMessage: `Completed: ${successCount}/${total} files`,
+          }))
+          setUploadStatus(`Completed: ${successCount}/${total} files uploaded successfully`)
+          
+          if (failCount === 0) {
+            toast.success(`All ${total} files uploaded successfully!`)
+          } else {
+            toast.warning(`${successCount} files uploaded, ${failCount} failed`)
+          }
+          
+          setUploading(false)
+          loadData()
+        },
+        onError: (error) => {
+          console.error('[BulkUpload] Error:', error)
+          uploadAbortRef.current = null
+          setUploadProgress(prev => ({ ...prev, phase: 'complete' }))
+          setUploadStatus(`Error: ${error.message}`)
+          if (error.message !== 'Upload cancelled') {
+            toast.error(error.message)
+          }
+          setUploading(false)
+        },
+      },
+      abortSignal
+    )
+  }
+  
+  const handleCancelUpload = () => {
+    if (uploadAbortRef.current) {
+      uploadAbortRef.current.abort()
+      uploadAbortRef.current = null
       setUploading(false)
-      console.log('[BulkUpload] Upload process finished')
+      setUploadProgress(prev => ({ ...prev, phase: 'complete' }))
+      setUploadStatus('Upload cancelled')
+      toast.info('Upload cancelled')
     }
   }
 
@@ -246,6 +357,60 @@ function DataManager() {
     } catch (err) {
       toast.error('Failed to reprocess dataset')
     }
+  }
+
+  // Multi-select handlers
+  const toggleSelectDataset = (id: number) => {
+    setSelectedDatasets(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedDatasets.size === datasets.length) {
+      setSelectedDatasets(new Set())
+    } else {
+      setSelectedDatasets(new Set(datasets.map(d => d.id)))
+    }
+  }
+
+  const handleBulkDelete = async () => {
+    if (selectedDatasets.size === 0) return
+    
+    if (!confirm(`Are you sure you want to delete ${selectedDatasets.size} dataset(s)?`)) {
+      return
+    }
+
+    setDeletingMultiple(true)
+    let successCount = 0
+    let failCount = 0
+
+    for (const id of selectedDatasets) {
+      try {
+        await datasetAPI.delete(id)
+        successCount++
+      } catch (err) {
+        failCount++
+        console.error(`Failed to delete dataset ${id}:`, err)
+      }
+    }
+
+    setDeletingMultiple(false)
+    setSelectedDatasets(new Set())
+    
+    if (failCount === 0) {
+      toast.success(`Deleted ${successCount} dataset(s)`)
+    } else {
+      toast.warning(`Deleted ${successCount}, failed ${failCount}`)
+    }
+    
+    loadData()
   }
 
   const formatBytes = (bytes: number) => {
@@ -386,18 +551,36 @@ function DataManager() {
                 <CardTitle>Datasets</CardTitle>
                 <CardDescription>Manage uploaded county address datasets</CardDescription>
               </div>
-              <div className="flex space-x-2">
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="px-3 py-2 border rounded-md"
-                >
-                  <option value="">All Status</option>
-                  <option value="pending">Pending</option>
-                  <option value="processing">Processing</option>
-                  <option value="completed">Completed</option>
-                  <option value="failed">Failed</option>
-                </select>
+              <div className="flex items-center space-x-2">
+                {/* Bulk delete button */}
+                {selectedDatasets.size > 0 && (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleBulkDelete}
+                    disabled={deletingMultiple}
+                  >
+                    {deletingMultiple ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="mr-2 h-4 w-4" />
+                    )}
+                    Delete {selectedDatasets.size} Selected
+                  </Button>
+                )}
+                
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-[140px]">
+                    <SelectValue placeholder="All Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="processing">Processing</SelectItem>
+                    <SelectItem value="completed">Completed</SelectItem>
+                    <SelectItem value="failed">Failed</SelectItem>
+                  </SelectContent>
+                </Select>
                 
                 <Input
                   placeholder="Filter by state..."
@@ -412,6 +595,13 @@ function DataManager() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-12">
+                    <Checkbox
+                      checked={datasets.length > 0 && selectedDatasets.size === datasets.length}
+                      onCheckedChange={toggleSelectAll}
+                      aria-label="Select all"
+                    />
+                  </TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>State/County</TableHead>
                   <TableHead>Status</TableHead>
@@ -424,13 +614,20 @@ function DataManager() {
               <TableBody>
                 {datasets.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center text-muted-foreground">
                       No datasets uploaded yet
                     </TableCell>
                   </TableRow>
                 ) : (
                   datasets.map((dataset) => (
-                    <TableRow key={dataset.id}>
+                    <TableRow key={dataset.id} className={selectedDatasets.has(dataset.id) ? 'bg-muted/50' : ''}>
+                      <TableCell>
+                        <Checkbox
+                          checked={selectedDatasets.has(dataset.id)}
+                          onCheckedChange={() => toggleSelectDataset(dataset.id)}
+                          aria-label={`Select ${dataset.name}`}
+                        />
+                      </TableCell>
                       <TableCell className="font-medium">
                         <div className="flex items-center space-x-2">
                           {getStatusIcon(dataset.status)}
@@ -615,11 +812,81 @@ function DataManager() {
             </div>
             
             {(uploading || uploadStatus) && (
-              <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
-                {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
-                {uploadStatus.includes('Completed') && <CheckCircle className="h-4 w-4 text-green-500" />}
-                {uploadStatus.includes('Error') && <XCircle className="h-4 w-4 text-red-500" />}
-                <p className="text-sm">{uploadStatus}</p>
+              <div className="space-y-2 p-3 bg-muted rounded-md">
+                <div className="flex items-center space-x-2">
+                  {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {uploadStatus.includes('Completed') && <CheckCircle className="h-4 w-4 text-green-500" />}
+                  {uploadStatus.includes('Error') && <XCircle className="h-4 w-4 text-red-500" />}
+                  {uploadStatus.includes('cancelled') && <XCircle className="h-4 w-4 text-yellow-500" />}
+                  <p className="text-sm">{uploadStatus}</p>
+                </div>
+                
+                {/* Overall progress for batched upload */}
+                {uploading && uploadProgress.phase === 'uploading' && (
+                  <div className="space-y-2">
+                    {/* Overall file count progress */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Overall Progress</span>
+                        <span className="flex items-center space-x-2">
+                          {uploadProgress.completedCount > 0 && (
+                            <span className="text-green-600">✓ {uploadProgress.completedCount}</span>
+                          )}
+                          {uploadProgress.failedCount > 0 && (
+                            <span className="text-red-600">✗ {uploadProgress.failedCount}</span>
+                          )}
+                          <span>{uploadProgress.currentIndex + 1} / {uploadProgress.totalFiles} files</span>
+                        </span>
+                      </div>
+                      <Progress 
+                        value={((uploadProgress.completedCount + uploadProgress.failedCount) / uploadProgress.totalFiles) * 100} 
+                      />
+                    </div>
+                    
+                    {/* Current file progress */}
+                    {uploadProgress.currentFile && (
+                      <div className="space-y-1 pl-2 border-l-2 border-primary/30">
+                        <div className="flex justify-between text-xs text-muted-foreground">
+                          <span className="truncate max-w-[200px]">{uploadProgress.currentFile}</span>
+                          <span className="font-medium">{uploadProgress.percentComplete}%</span>
+                        </div>
+                        <Progress value={uploadProgress.percentComplete} className="h-1" />
+                        {uploadProgress.bytesTotal > 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            {formatBytes(uploadProgress.bytesLoaded)} / {formatBytes(uploadProgress.bytesTotal)}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {/* Show processing status after upload completes */}
+                {uploadProgress.phase === 'processing' && (
+                  <div className="space-y-1">
+                    <Progress value={100} />
+                    <p className="text-xs text-muted-foreground">
+                      Files uploaded, processing on server...
+                    </p>
+                  </div>
+                )}
+                
+                {/* Show file results after complete */}
+                {uploadProgress.phase === 'complete' && uploadProgress.completedCount + uploadProgress.failedCount > 0 && (
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>
+                      {uploadProgress.completedCount + uploadProgress.failedCount} / {uploadProgress.totalFiles} files
+                    </span>
+                    <span className="flex items-center space-x-2">
+                      {uploadProgress.completedCount > 0 && (
+                        <span className="text-green-600">✓ {uploadProgress.completedCount}</span>
+                      )}
+                      {uploadProgress.failedCount > 0 && (
+                        <span className="text-red-600">✗ {uploadProgress.failedCount}</span>
+                      )}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -653,17 +920,32 @@ function DataManager() {
 
           <DialogFooter>
             <Button 
-              variant="outline" 
+              variant={uploading ? "destructive" : "outline"}
               onClick={() => { 
-                setBulkUploadModalOpen(false)
-                setUploadStatus('')
-                setBulkUploadResults([])
-                setBulkUploadForm({ state: '', files: [] })
-                if (bulkFileInputRef.current) bulkFileInputRef.current.value = ''
+                if (uploading) {
+                  handleCancelUpload()
+                } else {
+                  setBulkUploadModalOpen(false)
+                  setUploadStatus('')
+                  setBulkUploadResults([])
+                  setBulkUploadForm({ state: '', files: [] })
+                  setUploadProgress({
+                    currentFile: '',
+                    currentIndex: 0,
+                    totalFiles: 0,
+                    completedCount: 0,
+                    failedCount: 0,
+                    processingMessage: '',
+                    bytesLoaded: 0,
+                    bytesTotal: 0,
+                    percentComplete: 0,
+                    phase: 'idle',
+                  })
+                  if (bulkFileInputRef.current) bulkFileInputRef.current.value = ''
+                }
               }} 
-              disabled={uploading}
             >
-              {bulkUploadResults.length > 0 ? 'Close' : 'Cancel'}
+              {uploading ? 'Cancel Upload' : bulkUploadResults.length > 0 ? 'Close' : 'Cancel'}
             </Button>
             <Button onClick={handleBulkUpload} disabled={uploading || bulkUploadResults.length > 0}>
               {uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Files className="mr-2 h-4 w-4" />}
