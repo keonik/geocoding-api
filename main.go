@@ -322,12 +322,17 @@ func main() {
 	}
 
 	// Start server with custom timeouts for large file uploads
-	// Use 127.0.0.1 instead of :: to avoid macOS IPv6 socket issues
-	log.Printf("Starting server on port %s", port)
+	// Use 0.0.0.0 in production/Docker to accept external connections
+	// Use 127.0.0.1 locally to avoid macOS IPv6 socket issues
+	bindAddr := "127.0.0.1"
+	if os.Getenv("GO_ENV") == "production" || os.Getenv("BIND_ALL_INTERFACES") == "true" {
+		bindAddr = "0.0.0.0"
+	}
+	log.Printf("Starting server on %s:%s", bindAddr, port)
 	
 	// Configure server with extended timeouts for large file uploads (2.09GB total possible)
 	server := &http.Server{
-		Addr:              "127.0.0.1:" + port,
+		Addr:              bindAddr + ":" + port,
 		ReadTimeout:       30 * time.Minute,  // Time to read entire request including body
 		WriteTimeout:      30 * time.Minute,  // Time to write response
 		IdleTimeout:       5 * time.Minute,   // Keep-alive timeout
