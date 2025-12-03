@@ -1,7 +1,18 @@
 import * as React from "react"
 import * as RechartsPrimitive from "recharts"
+import type { Payload as TooltipPayload } from "recharts/types/component/DefaultTooltipContent"
 
 import { cn } from "@/lib/utils"
+
+// Legend payload type for Recharts 3
+interface LegendPayload {
+  value: string
+  type?: string
+  id?: string
+  color?: string
+  dataKey?: string | number | ((obj: Record<string, unknown>) => unknown)
+  payload?: Record<string, unknown>
+}
 
 // Format: { THEME_NAME: CSS_SELECTOR }
 const THEMES = { light: "", dark: ".dark" } as const
@@ -102,13 +113,19 @@ const ChartTooltip = RechartsPrimitive.Tooltip
 
 const ChartTooltipContent = React.forwardRef<
   HTMLDivElement,
-  React.ComponentProps<typeof RechartsPrimitive.Tooltip> &
-    React.ComponentProps<"div"> & {
+  React.ComponentProps<"div"> & {
+      active?: boolean
+      payload?: TooltipPayload<string | number, string>[]
+      label?: string
       hideLabel?: boolean
       hideIndicator?: boolean
       indicator?: "line" | "dot" | "dashed"
       nameKey?: string
       labelKey?: string
+      labelFormatter?: (label: React.ReactNode, payload: TooltipPayload<string | number, string>[]) => React.ReactNode
+      formatter?: (value: string | number, name: string, item: TooltipPayload<string | number, string>, index: number, payload: Record<string, unknown>) => React.ReactNode
+      color?: string
+      labelClassName?: string
     }
 >(
   (
@@ -183,16 +200,16 @@ const ChartTooltipContent = React.forwardRef<
       >
         {!nestLabel ? tooltipLabel : null}
         <div className="grid gap-1.5">
-          {payload
-            .filter((item) => item.type !== "none")
-            .map((item, index) => {
+          {(payload ?? [])
+            .filter((item: TooltipPayload<string | number, string>) => item.type !== "none")
+            .map((item: TooltipPayload<string | number, string>, index: number) => {
               const key = `${nameKey || item.name || item.dataKey || "value"}`
               const itemConfig = getPayloadConfigFromPayload(config, item, key)
               const indicatorColor = color || item.payload.fill || item.color
 
               return (
                 <div
-                  key={item.dataKey}
+                  key={String(item.dataKey ?? item.name ?? index)}
                   className={cn(
                     "flex w-full flex-wrap items-stretch gap-2 [&>svg]:h-2.5 [&>svg]:w-2.5 [&>svg]:text-muted-foreground",
                     indicator === "dot" && "items-center"
@@ -260,8 +277,9 @@ const ChartLegend = RechartsPrimitive.Legend
 
 const ChartLegendContent = React.forwardRef<
   HTMLDivElement,
-  React.ComponentProps<"div"> &
-    Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign"> & {
+  React.ComponentProps<"div"> & {
+      payload?: LegendPayload[]
+      verticalAlign?: "top" | "bottom" | "middle"
       hideIcon?: boolean
       nameKey?: string
     }

@@ -294,7 +294,7 @@ function UsageAnalytics() {
                 <PieChart>
                   <ChartTooltip content={<ChartTooltipContent hideLabel />} />
                   <Pie
-                    data={endpointUsage}
+                    data={endpointUsage as unknown as Record<string, unknown>[]}
                     dataKey="total_calls"
                     nameKey="endpoint"
                     cx="50%"
