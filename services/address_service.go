@@ -41,6 +41,9 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 
 	// Text search with relevance scoring (Google-style search)
 	if params.Query != "" {
+		// Strip unit designators (#F, Apt 2B, Suite 100, etc.) to avoid
+		// search terms that won't match any database fields
+		params.Query = utils.StripUnitDesignator(params.Query)
 		queryWords := strings.Fields(params.Query)
 		if len(queryWords) > 0 {
 			// Build relevance score for ranking results
@@ -308,6 +311,10 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) (*Addr
 		result.Addresses = []models.OhioAddress{}
 		return result, nil
 	}
+
+	// Strip unit designators (#F, Apt 2B, Suite 100, etc.) since the database
+	// stores addresses without these, allowing fallback to the base address
+	query = utils.StripUnitDesignator(query)
 
 	// Get the street-only version of the query for fallback
 	fallbackQuery := extractStreetFromQuery(query)

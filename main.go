@@ -211,6 +211,11 @@ func main() {
 		})
 	})
 
+	// Root-level health check for container orchestration (works without /api/v1 prefix)
+	e.GET("/health", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
 	// Routes
 	api := e.Group("/api/v1")
 	
@@ -328,7 +333,11 @@ func main() {
 	if os.Getenv("GO_ENV") == "production" || os.Getenv("BIND_ALL_INTERFACES") == "true" {
 		bindAddr = "0.0.0.0"
 	}
-	log.Printf("Starting server on %s:%s", bindAddr, port)
+	
+	log.Printf("=== SERVER STARTUP ===")
+	log.Printf("Environment: GO_ENV=%s", os.Getenv("GO_ENV"))
+	log.Printf("Binding to: %s:%s", bindAddr, port)
+	log.Printf("Static directory: %s", staticDir)
 	
 	// Configure server with extended timeouts for large file uploads (2.09GB total possible)
 	server := &http.Server{
@@ -339,6 +348,7 @@ func main() {
 		ReadHeaderTimeout: 60 * time.Second,  // Time to read request headers
 	}
 	
+	log.Printf("Starting HTTP server...")
 	if err := e.StartServer(server); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}

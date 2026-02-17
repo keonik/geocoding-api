@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"regexp"
 	"strings"
 )
 
@@ -186,4 +187,27 @@ func isDirectional(word string) bool {
 		"northeast": true, "northwest": true, "southeast": true, "southwest": true,
 	}
 	return directionals[strings.ToLower(word)]
+}
+
+// Unit designator patterns for stripping from address queries.
+// Matches: #F, #1, #2B, Apt 2B, Apt. 2B, Suite 100, Ste 100, Unit 5, etc.
+// The unit value must look like an actual unit number: digits with optional letter (100, 2B),
+// a single letter before a delimiter (A, F), or anything after a # sign.
+// This avoids false positives on place names like "Ste. Genevieve".
+var (
+	unitDesignatorPattern = regexp.MustCompile(`(?i)[,\s]*#\s*[a-zA-Z0-9]+|[,\s]+(?:apt|apartment|ste|suite|unit|bldg|building|fl|floor|rm|room)\b\.?\s*(?:#\s*[a-zA-Z0-9]+|\d+[a-zA-Z]?\b|[a-zA-Z]\b)`)
+	multiSpacePattern     = regexp.MustCompile(`\s{2,}`)
+	doubleCommaPattern    = regexp.MustCompile(`\s*,\s*,\s*`)
+)
+
+// StripUnitDesignator removes unit/apartment/suite designators from an address query
+// so that searches can fall back to the base street address.
+// Example: "20 Overbrook Ct #F, Monroe, OH 45050" -> "20 Overbrook Ct, Monroe, OH 45050"
+// Example: "123 Main St Apt 2B, Columbus, OH 43215" -> "123 Main St, Columbus, OH 43215"
+func StripUnitDesignator(query string) string {
+	stripped := unitDesignatorPattern.ReplaceAllString(query, "")
+	stripped = doubleCommaPattern.ReplaceAllString(stripped, ", ")
+	stripped = multiSpacePattern.ReplaceAllString(stripped, " ")
+	stripped = strings.TrimSpace(stripped)
+	return stripped
 }
