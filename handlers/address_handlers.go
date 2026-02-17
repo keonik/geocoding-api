@@ -172,13 +172,18 @@ func FullTextSearchAddressesHandler(c echo.Context) error {
 		"count":         len(result.Addresses),
 		"exact_count":   result.ExactCount,
 		"query":         query,
+		"search_method": result.SearchMethod,
+	}
+
+	if result.ParsedQuery != nil {
+		response["parsed_as"] = result.ParsedQuery
 	}
 
 	// Add fallback information if street-level matches were included
 	if result.FallbackCount > 0 {
 		response["fallback_count"] = result.FallbackCount
 		response["fallback_query"] = result.FallbackQuery
-		response["message"] = fmt.Sprintf("Found %d exact matches and %d additional addresses on the same street.", 
+		response["message"] = fmt.Sprintf("Found %d exact matches and %d additional addresses on the same street.",
 			result.ExactCount, result.FallbackCount)
 	}
 

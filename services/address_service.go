@@ -284,10 +284,12 @@ func (s *AddressService) GetCountyStats() (map[string]int, error) {
 // AddressSearchResult contains search results along with metadata about the search
 type AddressSearchResult struct {
 	Addresses       []models.OhioAddress
-	ExactCount      int    // Number of exact matches
-	FallbackCount   int    // Number of fallback (street-only) matches
-	FallbackQuery   string // The query used for fallback (empty if no fallback)
+	ExactCount      int                  // Number of exact matches
+	FallbackCount   int                  // Number of fallback (street-only) matches
+	FallbackQuery   string               // The query used for fallback (empty if no fallback)
 	OriginalQuery   string
+	ParsedQuery     *utils.ParsedAddress // Parsed address components (nil if not parsed)
+	SearchMethod    string               // "component" or "fulltext"
 }
 
 // FullTextSearchAddresses performs a simple full-text search on the full_address column
@@ -315,6 +317,25 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) (*Addr
 	// Strip unit designators (#F, Apt 2B, Suite 100, etc.) since the database
 	// stores addresses without these, allowing fallback to the base address
 	query = utils.StripUnitDesignator(query)
+
+	// Try smart component-based search first: parse the query into parts
+	// (house number, street, city, state, zip) and match against individual fields.
+	// This handles cases where the user's formatting differs from the database.
+	parsed := utils.ParseAddressQuery(query)
+	result.ParsedQuery = parsed
+
+	if parsed.Street != "" {
+		componentResult, err := s.searchByComponents(parsed, limit)
+		if err == nil && len(componentResult) > 0 {
+			result.Addresses = componentResult
+			result.ExactCount = len(componentResult)
+			result.SearchMethod = "component"
+			return result, nil
+		}
+	}
+
+	// Fall back to full_address ILIKE search if component search found nothing
+	result.SearchMethod = "fulltext"
 
 	// Get the street-only version of the query for fallback
 	fallbackQuery := extractStreetFromQuery(query)
@@ -456,6 +477,153 @@ func (s *AddressService) searchWithFallback(exactQuery, fallbackQuery string, li
 	}
 
 	return addresses, exactCount, fallbackCount, nil
+}
+
+// searchByComponents searches using parsed address components against individual fields.
+// It builds a tiered CTE query that tries the most specific match first and progressively
+// relaxes conditions to find results.
+func (s *AddressService) searchByComponents(parsed *utils.ParsedAddress, limit int) ([]models.OhioAddress, error) {
+	var args []interface{}
+	argNum := 1
+
+	// Build street ILIKE conditions using abbreviation variants
+	streetVariants := utils.GetAddressQueryVariants(parsed.Street)
+	var streetConditions []string
+	for _, variant := range streetVariants {
+		streetConditions = append(streetConditions, fmt.Sprintf("street ILIKE $%d", argNum))
+		args = append(args, "%"+variant+"%")
+		argNum++
+	}
+	streetClause := "(" + strings.Join(streetConditions, " OR ") + ")"
+
+	// Prepare optional component placeholders
+	houseArg := 0
+	if parsed.HouseNumber != "" {
+		houseArg = argNum
+		args = append(args, parsed.HouseNumber)
+		argNum++
+	}
+
+	cityArg := 0
+	if parsed.City != "" {
+		cityArg = argNum
+		args = append(args, parsed.City)
+		argNum++
+	}
+
+	zipArg := 0
+	if parsed.Zip != "" {
+		zipArg = argNum
+		args = append(args, parsed.Zip)
+		argNum++
+	}
+
+	// Build tiers dynamically based on which components we have.
+	// Each tier is more relaxed than the previous one.
+	selectFields := `id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+		ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at`
+
+	var tierCTEs []string
+	var tierSelects []string
+	var exclusions []string
+	tierNum := 0
+
+	addTier := func(whereClause string) {
+		tierNum++
+		tierName := fmt.Sprintf("tier%d", tierNum)
+		exclusionClause := ""
+		if len(exclusions) > 0 {
+			exclusionClause = " AND " + strings.Join(exclusions, " AND ")
+		}
+		tierCTEs = append(tierCTEs, fmt.Sprintf(`%s AS (
+			SELECT %s, %d as tier FROM ohio_addresses
+			WHERE %s%s
+			LIMIT %d
+		)`, tierName, selectFields, tierNum, whereClause, exclusionClause, limit))
+		tierSelects = append(tierSelects, fmt.Sprintf("SELECT * FROM %s", tierName))
+		exclusions = append(exclusions, fmt.Sprintf("id NOT IN (SELECT id FROM %s)", tierName))
+	}
+
+	// Tier 1: house + street + city + zip (most specific)
+	if houseArg > 0 && cityArg > 0 && zipArg > 0 {
+		addTier(fmt.Sprintf("house_number = $%d AND %s AND city ILIKE $%d AND postcode = $%d",
+			houseArg, streetClause, cityArg, zipArg))
+	}
+
+	// Tier 2: house + street + city (drop zip)
+	if houseArg > 0 && cityArg > 0 {
+		addTier(fmt.Sprintf("house_number = $%d AND %s AND city ILIKE $%d",
+			houseArg, streetClause, cityArg))
+	}
+
+	// Tier 3: house + street (drop city)
+	if houseArg > 0 {
+		addTier(fmt.Sprintf("house_number = $%d AND %s",
+			houseArg, streetClause))
+	}
+
+	// Tier 4: street + city (no house number)
+	if cityArg > 0 {
+		addTier(fmt.Sprintf("%s AND city ILIKE $%d",
+			streetClause, cityArg))
+	}
+
+	// Tier 5: street only (broadest)
+	addTier(streetClause)
+
+	if len(tierCTEs) == 0 {
+		return nil, nil
+	}
+
+	// Add limit arg
+	limitArg := argNum
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+		WITH %s
+		SELECT id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+			latitude, longitude, created_at, tier
+		FROM (%s) combined
+		ORDER BY tier, full_address
+		LIMIT $%d
+	`, strings.Join(tierCTEs, ",\n"), strings.Join(tierSelects, " UNION ALL "), limitArg)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute component search: %w", err)
+	}
+	defer rows.Close()
+
+	var addresses []models.OhioAddress
+	for rows.Next() {
+		var addr models.OhioAddress
+		var unit, district sql.NullString
+		var tier int
+
+		err := rows.Scan(
+			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &unit,
+			&addr.City, &district, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &tier,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan component search result: %w", err)
+		}
+
+		if unit.Valid {
+			addr.Unit = unit.String
+		}
+		if district.Valid {
+			addr.District = district.String
+		}
+
+		addresses = append(addresses, addr)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating component search rows: %w", err)
+	}
+
+	return addresses, nil
 }
 
 // searchAddressesWithVariants performs the actual search with abbreviation variants
