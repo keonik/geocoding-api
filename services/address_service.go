@@ -80,9 +80,9 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 				argIndex++
 			}
 			
-			// At least ONE word must match (OR logic for flexibility)
+			// Every word must match at least one field (AND logic for precision)
 			if len(searchConditions) > 0 {
-				conditions = append(conditions, "("+strings.Join(searchConditions, " OR ")+")")
+				conditions = append(conditions, "("+strings.Join(searchConditions, " AND ")+")")
 			}
 			
 			// Add relevance score to select
@@ -567,45 +567,44 @@ func (s *AddressService) searchByComponents(parsed *utils.ParsedAddress, limit i
 		}
 	}
 
-	if hasStreet {
-		// Tier: house + street + city + zip (most specific)
-		if houseArg > 0 && cityArg > 0 && zipArg > 0 {
-			addTier(fmt.Sprintf("house_number = $%d AND %s AND city ILIKE $%d AND postcode = $%d",
-				houseArg, streetClause, cityArg, zipArg), true)
+	// Location anchor: always constrain to the provided city/zip/both.
+	// What relaxes is the street-level detail, not the location.
+	locationClause := ""
+	switch {
+	case cityArg > 0 && zipArg > 0:
+		locationClause = fmt.Sprintf("city ILIKE $%d AND postcode = $%d", cityArg, zipArg)
+	case zipArg > 0:
+		locationClause = fmt.Sprintf("postcode = $%d", zipArg)
+	case cityArg > 0:
+		locationClause = fmt.Sprintf("city ILIKE $%d", cityArg)
+	}
+
+	if hasStreet && locationClause != "" {
+		// Tier 1: house + street in location (exact address)
+		if houseArg > 0 {
+			addTier(fmt.Sprintf("house_number = $%d AND %s AND %s",
+				houseArg, streetClause, locationClause), true)
 		}
 
-		// Tier: house + street + city (drop zip)
-		if houseArg > 0 && cityArg > 0 {
-			addTier(fmt.Sprintf("house_number = $%d AND %s AND city ILIKE $%d",
-				houseArg, streetClause, cityArg), true)
-		}
-
-		// Tier: house + street (drop city)
+		// Tier 2: street in location (right street, any house number)
+		addTier(fmt.Sprintf("%s AND %s", streetClause, locationClause), false)
+	} else if hasStreet {
+		// No city/zip provided — match on street alone
 		if houseArg > 0 {
 			addTier(fmt.Sprintf("house_number = $%d AND %s",
 				houseArg, streetClause), true)
 		}
-
-		// Tier: street + city (nearby - same street, any house number)
-		if cityArg > 0 {
-			addTier(fmt.Sprintf("%s AND city ILIKE $%d",
-				streetClause, cityArg), false)
-		}
-
-		// Tier: street + zip (nearby - same street in same zip)
-		if zipArg > 0 {
-			addTier(fmt.Sprintf("%s AND postcode = $%d",
-				streetClause, zipArg), false)
-		}
-
-		// Tier: street only (broadest nearby)
 		addTier(streetClause, false)
 	}
 
-	// City + zip fallback (no street needed)
-	if cityArg > 0 && zipArg > 0 {
-		addTier(fmt.Sprintf("city ILIKE $%d AND postcode = $%d",
-			cityArg, zipArg), false)
+	// Tier 3: zip only (right area, any street)
+	if zipArg > 0 {
+		addTier(fmt.Sprintf("postcode = $%d", zipArg), false)
+	}
+
+	// Tier 4: city only (broadest location match)
+	if cityArg > 0 {
+		addTier(fmt.Sprintf("city ILIKE $%d", cityArg), false)
 	}
 
 	if len(tierCTEs) == 0 {
