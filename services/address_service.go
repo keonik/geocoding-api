@@ -40,19 +40,39 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 	hasRelevanceScore := false
 
 	// Text search with relevance scoring (Google-style search)
+	//
+	// The predicate is a single word-prefix full-text match against the `fts`
+	// GIN index (migration 18). It replaces an ILIKE '%x%' OR-chain across six
+	// columns: because county and postcode have only btree indexes, a leading
+	// wildcard on them was unindexable, so the planner sequential-scanned all
+	// ~6M rows on every search (~2.7s measured). This runs in <2ms.
+	//
+	// Note: prefix matching is anchored at word starts. "bare" matches
+	// "Barendt Road", but a typo ("barnedt") or a mid-word fragment ("arendt")
+	// will not. Fuzzy fallback via the existing trigram indexes is a follow-up.
 	if params.Query != "" {
 		// Strip unit designators (#F, Apt 2B, Suite 100, etc.) to avoid
 		// search terms that won't match any database fields
 		params.Query = utils.StripUnitDesignator(params.Query)
-		queryWords := strings.Fields(params.Query)
+
+		// Single-character fragments yield no usable prefix term, so drop them
+		// rather than let them widen the result set.
+		var queryWords []string
+		for _, w := range strings.Fields(params.Query) {
+			if len(sanitizeTSTerm(w)) >= 2 {
+				queryWords = append(queryWords, w)
+			}
+		}
+
 		if len(queryWords) > 0 {
-			// Build relevance score for ranking results
+			// Build relevance score for ranking results. These CASE arms are
+			// evaluated only for rows the index already matched, so the ILIKEs
+			// here cost nothing like they did in the WHERE clause.
 			var scoreComponents []string
-			var searchConditions []string
-			
+
 			for _, word := range queryWords {
 				wordPattern := "%" + word + "%"
-				
+
 				// Score: full_address match gets highest priority, then specific fields
 				scoreComponents = append(scoreComponents, fmt.Sprintf(`
 					CASE 
@@ -65,26 +85,16 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 						WHEN county ILIKE $%d THEN 30
 						ELSE 0
 					END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
-				
-				// Search condition: word must appear in SOME field (each word required via AND)
-				searchConditions = append(searchConditions, fmt.Sprintf(`(
-					full_address ILIKE $%d OR
-					house_number ILIKE $%d OR
-					street ILIKE $%d OR
-					city ILIKE $%d OR
-					county ILIKE $%d OR
-					postcode ILIKE $%d
-				)`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
-				
+
 				args = append(args, wordPattern)
 				argIndex++
 			}
-			
-			// Every word must match at least one field (AND logic for precision)
-			if len(searchConditions) > 0 {
-				conditions = append(conditions, "("+strings.Join(searchConditions, " AND ")+")")
-			}
-			
+
+			// Every word must match (AND logic for precision), as a prefix.
+			conditions = append(conditions, fmt.Sprintf("fts @@ to_tsquery('simple', $%d)", argIndex))
+			args = append(args, buildPrefixTSQuery(queryWords))
+			argIndex++
+
 			// Add relevance score to select
 			if len(scoreComponents) > 0 {
 				selectFields = append(selectFields, "("+strings.Join(scoreComponents, " + ")+") as relevance_score")
@@ -840,4 +850,28 @@ func GetDB() *sql.DB {
 		return Address.db
 	}
 	return nil
+}
+// sanitizeTSTerm strips everything that is not alphanumeric so a user-supplied
+// word can never be interpreted as tsquery syntax (&, |, !, parentheses, :*).
+func sanitizeTSTerm(word string) string {
+	var b strings.Builder
+	for _, r := range word {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// buildPrefixTSQuery turns the typed words into an AND-ed prefix query, so
+// "1410 bare" becomes "1410:* & bare:*" and matches "1410 Barendt Road".
+func buildPrefixTSQuery(words []string) string {
+	terms := make([]string, 0, len(words))
+	for _, w := range words {
+		if s := sanitizeTSTerm(w); s != "" {
+			terms = append(terms, s+":*")
+		}
+	}
+	return strings.Join(terms, " & ")
 }
