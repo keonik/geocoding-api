@@ -432,6 +432,20 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) (*Addr
 		}
 	}
 
+	// Component parsing only splits cleanly when the query is comma-delimited.
+	// ParseAddressQuery("7057 barendt toledo") yields street="barendt toledo"
+	// with no city, so every tier matches nothing; ParseAddressQuery("bare")
+	// yields city="bare", which searches city names rather than streets. Both
+	// are ordinary autocomplete input. Try an indexed word-prefix match before
+	// dropping to the substring path, which requires the words to be adjacent
+	// in full_address and so misses them too.
+	if addresses, err := s.searchAddressesByPrefix(query, limit); err == nil && len(addresses) > 0 {
+		result.Addresses = addresses
+		result.ExactCount = len(addresses)
+		result.SearchMethod = "prefix"
+		return result, nil
+	}
+
 	// Fall back to full_address ILIKE search if component search found nothing
 	result.SearchMethod = "fulltext"
 
@@ -763,6 +777,73 @@ func (s *AddressService) searchByComponents(parsed *utils.ParsedAddress, limit i
 	}
 
 	return result, nil
+}
+
+// searchAddressesByPrefix matches every word in the query as a prefix against
+// the full_address tsvector index (migration 18). Unlike the substring path it
+// does not require the words to be adjacent, so "barendt toledo" matches
+// "7057 Barendt Road, Toledo, OH 43617".
+func (s *AddressService) searchAddressesByPrefix(query string, limit int) ([]models.OhioAddress, error) {
+	var words []string
+	for _, w := range strings.Fields(query) {
+		if len(sanitizeTSTerm(w)) >= 2 {
+			words = append(words, w)
+		}
+	}
+	if len(words) == 0 {
+		return nil, nil
+	}
+
+	searchQuery := `
+		SELECT 
+			id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at
+		FROM ohio_addresses
+		WHERE fts @@ to_tsquery('simple', $1)
+		ORDER BY 
+			CASE 
+				WHEN full_address ILIKE $2 THEN 1  -- Contiguous match to original query
+				ELSE 2
+			END,
+			full_address
+		LIMIT $3
+	`
+
+	rows, err := s.db.Query(searchQuery, buildPrefixTSQuery(words), "%"+query+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute prefix search: %w", err)
+	}
+	defer rows.Close()
+
+	var addresses []models.OhioAddress
+	for rows.Next() {
+		var addr models.OhioAddress
+		var unit, district sql.NullString
+
+		err := rows.Scan(
+			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &unit,
+			&addr.City, &district, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan address: %w", err)
+		}
+
+		if unit.Valid {
+			addr.Unit = unit.String
+		}
+		if district.Valid {
+			addr.District = district.String
+		}
+
+		addresses = append(addresses, addr)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating address rows: %w", err)
+	}
+
+	return addresses, nil
 }
 
 // searchAddressesWithVariants performs the actual search with abbreviation variants
