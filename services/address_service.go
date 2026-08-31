@@ -18,8 +18,80 @@ func NewAddressService(db *sql.DB) *AddressService {
 	return &AddressService{db: db}
 }
 
-// SearchAddresses searches for addresses based on the provided parameters
+// querier is the subset of *sql.DB and *sql.Tx that the search path needs, so
+// the same builder can run against a plain connection or inside a transaction.
+type querier interface {
+	Query(query string, args ...interface{}) (*sql.Rows, error)
+	QueryRow(query string, args ...interface{}) *sql.Row
+}
+
+// fuzzyWordSimilarityThreshold is the pg_trgm word_similarity cutoff for the
+// fallback search. It is set explicitly rather than left to the server default
+// so behaviour does not drift with server configuration.
+//
+// 0.6 is the knee of the curve. Measured against 5.9M Ohio addresses, scoring
+// each typo shape of "Barendt":
+//
+//	truncation "barend"       0.857    recovered
+//	doubled    "barendtt"     0.778    recovered
+//	substitution (end)        0.750    recovered
+//	fragment   "arendt"       0.714    recovered
+//	insertion  "barrendt"     0.700    recovered
+//	deletion   "barndt"       0.500    missed
+//	substitution (mid)        0.455    missed
+//	transposition "barnedt"   0.375    missed
+//
+// Lowering the threshold to reach the bottom three does not work: "barnedt"
+// scores 0.375 against Barendt but 0.625 against the unrelated "Barnes Run",
+// so a cutoff low enough to admit the target ranks the wrong street above it.
+// Transpositions need edit distance, not trigrams - see the note on
+// SearchAddresses.
+const fuzzyWordSimilarityThreshold = 0.6
+
+// SearchAddresses searches for addresses based on the provided parameters.
+//
+// Two passes. The first is an exact word-prefix full-text match, which serves
+// every well-formed query in under 2ms. If it returns nothing and the caller
+// supplied query text, a trigram word-similarity pass runs as a fallback so
+// misspellings and mid-word fragments degrade into near matches instead of an
+// empty list. The fallback costs ~7-12ms and only ever runs on a miss.
+//
+// Known gap: character transpositions ("barnedt" for "Barendt") are not
+// recovered by either pass, for the reason documented on
+// fuzzyWordSimilarityThreshold. Closing that needs a Levenshtein pass over a
+// candidate set - worth doing only if it shows up in real query logs.
 func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]models.OhioAddress, int, error) {
+	addresses, total, err := s.searchAddresses(s.db, params, false)
+	if err != nil || total > 0 || params.Query == "" {
+		return addresses, total, err
+	}
+
+	// Fallback runs in a transaction so SET LOCAL scopes the threshold to
+	// these two statements and cannot leak onto a pooled connection.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to begin fuzzy search transaction: %w", err)
+	}
+	defer tx.Rollback() // read-only; Rollback after Commit is a no-op
+
+	if _, err := tx.Exec(fmt.Sprintf("SET LOCAL pg_trgm.word_similarity_threshold = %g", fuzzyWordSimilarityThreshold)); err != nil {
+		return nil, 0, fmt.Errorf("failed to set word similarity threshold: %w", err)
+	}
+
+	addresses, total, err = s.searchAddresses(tx, params, true)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, fmt.Errorf("failed to commit fuzzy search transaction: %w", err)
+	}
+	return addresses, total, nil
+}
+
+// searchAddresses builds and runs the search. When fuzzy is false the text
+// predicate is an indexed word-prefix tsquery; when true it is a per-word
+// trigram similarity match against the full_address trigram index.
+func (s *AddressService) searchAddresses(q querier, params models.AddressSearchParams, fuzzy bool) ([]models.OhioAddress, int, error) {
 	// Set default limit
 	if params.Limit <= 0 {
 		params.Limit = 50
@@ -40,19 +112,39 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 	hasRelevanceScore := false
 
 	// Text search with relevance scoring (Google-style search)
+	//
+	// The predicate is a single word-prefix full-text match against the `fts`
+	// GIN index (migration 18). It replaces an ILIKE '%x%' OR-chain across six
+	// columns: because county and postcode have only btree indexes, a leading
+	// wildcard on them was unindexable, so the planner sequential-scanned all
+	// ~6M rows on every search (~2.7s measured). This runs in <2ms.
+	//
+	// Note: prefix matching is anchored at word starts. "bare" matches
+	// "Barendt Road", but a typo or a mid-word fragment will not; those fall
+	// through to the trigram pass driven from SearchAddresses.
 	if params.Query != "" {
 		// Strip unit designators (#F, Apt 2B, Suite 100, etc.) to avoid
 		// search terms that won't match any database fields
 		params.Query = utils.StripUnitDesignator(params.Query)
-		queryWords := strings.Fields(params.Query)
+
+		// Single-character fragments yield no usable prefix term, so drop them
+		// rather than let them widen the result set.
+		var queryWords []string
+		for _, w := range strings.Fields(params.Query) {
+			if len(sanitizeTSTerm(w)) >= 2 {
+				queryWords = append(queryWords, w)
+			}
+		}
+
 		if len(queryWords) > 0 {
-			// Build relevance score for ranking results
+			// Build relevance score for ranking results. These CASE arms are
+			// evaluated only for rows the index already matched, so the ILIKEs
+			// here cost nothing like they did in the WHERE clause.
 			var scoreComponents []string
-			var searchConditions []string
-			
+
 			for _, word := range queryWords {
 				wordPattern := "%" + word + "%"
-				
+
 				// Score: full_address match gets highest priority, then specific fields
 				scoreComponents = append(scoreComponents, fmt.Sprintf(`
 					CASE 
@@ -65,26 +157,28 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 						WHEN county ILIKE $%d THEN 30
 						ELSE 0
 					END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
-				
-				// Search condition: word must appear in SOME field (each word required via AND)
-				searchConditions = append(searchConditions, fmt.Sprintf(`(
-					full_address ILIKE $%d OR
-					house_number ILIKE $%d OR
-					street ILIKE $%d OR
-					city ILIKE $%d OR
-					county ILIKE $%d OR
-					postcode ILIKE $%d
-				)`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
-				
+
 				args = append(args, wordPattern)
 				argIndex++
 			}
-			
-			// Every word must match at least one field (AND logic for precision)
-			if len(searchConditions) > 0 {
-				conditions = append(conditions, "("+strings.Join(searchConditions, " AND ")+")")
+
+			// Every word must match (AND logic for precision).
+			if fuzzy {
+				// One trigram condition per word. The indexable form is
+				// `pattern <% column`, which the planner rewrites to
+				// `column %> pattern` against the full_address GIN trigram
+				// index (idx_ohio_addresses_full_address_trgm, migration 15).
+				for _, word := range queryWords {
+					conditions = append(conditions, fmt.Sprintf("$%d <%% full_address", argIndex))
+					args = append(args, word)
+					argIndex++
+				}
+			} else {
+				conditions = append(conditions, fmt.Sprintf("fts @@ to_tsquery('simple', $%d)", argIndex))
+				args = append(args, buildPrefixTSQuery(queryWords))
+				argIndex++
 			}
-			
+
 			// Add relevance score to select
 			if len(scoreComponents) > 0 {
 				selectFields = append(selectFields, "("+strings.Join(scoreComponents, " + ")+") as relevance_score")
@@ -169,7 +263,7 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM ohio_addresses %s", whereClause)
 	
 	var total int
-	err := s.db.QueryRow(countQuery, args...).Scan(&total)
+	err := q.QueryRow(countQuery, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
 	}
@@ -186,7 +280,7 @@ func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]m
 	
 	fullQueryArgs = append(fullQueryArgs, params.Limit, params.Offset)
 
-	rows, err := s.db.Query(fullQuery, fullQueryArgs...)
+	rows, err := q.Query(fullQuery, fullQueryArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to execute address search query: %w", err)
 	}
@@ -336,6 +430,20 @@ func (s *AddressService) FullTextSearchAddresses(query string, limit int) (*Addr
 			}
 			return result, nil
 		}
+	}
+
+	// Component parsing only splits cleanly when the query is comma-delimited.
+	// ParseAddressQuery("7057 barendt toledo") yields street="barendt toledo"
+	// with no city, so every tier matches nothing; ParseAddressQuery("bare")
+	// yields city="bare", which searches city names rather than streets. Both
+	// are ordinary autocomplete input. Try an indexed word-prefix match before
+	// dropping to the substring path, which requires the words to be adjacent
+	// in full_address and so misses them too.
+	if addresses, err := s.searchAddressesByPrefix(query, limit); err == nil && len(addresses) > 0 {
+		result.Addresses = addresses
+		result.ExactCount = len(addresses)
+		result.SearchMethod = "prefix"
+		return result, nil
 	}
 
 	// Fall back to full_address ILIKE search if component search found nothing
@@ -671,6 +779,73 @@ func (s *AddressService) searchByComponents(parsed *utils.ParsedAddress, limit i
 	return result, nil
 }
 
+// searchAddressesByPrefix matches every word in the query as a prefix against
+// the full_address tsvector index (migration 18). Unlike the substring path it
+// does not require the words to be adjacent, so "barendt toledo" matches
+// "7057 Barendt Road, Toledo, OH 43617".
+func (s *AddressService) searchAddressesByPrefix(query string, limit int) ([]models.OhioAddress, error) {
+	var words []string
+	for _, w := range strings.Fields(query) {
+		if len(sanitizeTSTerm(w)) >= 2 {
+			words = append(words, w)
+		}
+	}
+	if len(words) == 0 {
+		return nil, nil
+	}
+
+	searchQuery := `
+		SELECT 
+			id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at
+		FROM ohio_addresses
+		WHERE fts @@ to_tsquery('simple', $1)
+		ORDER BY 
+			CASE 
+				WHEN full_address ILIKE $2 THEN 1  -- Contiguous match to original query
+				ELSE 2
+			END,
+			full_address
+		LIMIT $3
+	`
+
+	rows, err := s.db.Query(searchQuery, buildPrefixTSQuery(words), "%"+query+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute prefix search: %w", err)
+	}
+	defer rows.Close()
+
+	var addresses []models.OhioAddress
+	for rows.Next() {
+		var addr models.OhioAddress
+		var unit, district sql.NullString
+
+		err := rows.Scan(
+			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &unit,
+			&addr.City, &district, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan address: %w", err)
+		}
+
+		if unit.Valid {
+			addr.Unit = unit.String
+		}
+		if district.Valid {
+			addr.District = district.String
+		}
+
+		addresses = append(addresses, addr)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating address rows: %w", err)
+	}
+
+	return addresses, nil
+}
+
 // searchAddressesWithVariants performs the actual search with abbreviation variants
 func (s *AddressService) searchAddressesWithVariants(query string, limit int) ([]models.OhioAddress, error) {
 	// Get all variants of the query (handles both abbreviations and full forms)
@@ -840,4 +1015,28 @@ func GetDB() *sql.DB {
 		return Address.db
 	}
 	return nil
+}
+// sanitizeTSTerm strips everything that is not alphanumeric so a user-supplied
+// word can never be interpreted as tsquery syntax (&, |, !, parentheses, :*).
+func sanitizeTSTerm(word string) string {
+	var b strings.Builder
+	for _, r := range word {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// buildPrefixTSQuery turns the typed words into an AND-ed prefix query, so
+// "1410 bare" becomes "1410:* & bare:*" and matches "1410 Barendt Road".
+func buildPrefixTSQuery(words []string) string {
+	terms := make([]string, 0, len(words))
+	for _, w := range words {
+		if s := sanitizeTSTerm(w); s != "" {
+			terms = append(terms, s+":*")
+		}
+	}
+	return strings.Join(terms, " & ")
 }
