@@ -111,6 +111,11 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	argIndex := 1
 	hasRelevanceScore := false
 
+	// queryWords outlives this block. The relevance score it feeds lives in the
+	// SELECT clause, and its parameters have to be numbered after every WHERE
+	// parameter, so it is built further down rather than here.
+	var queryWords []string
+
 	// Text search with relevance scoring (Google-style search)
 	//
 	// The predicate is a single word-prefix full-text match against the `fts`
@@ -129,7 +134,6 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 
 		// Single-character fragments yield no usable prefix term, so drop them
 		// rather than let them widen the result set.
-		var queryWords []string
 		for _, w := range strings.Fields(params.Query) {
 			if len(sanitizeTSTerm(w)) >= 2 {
 				queryWords = append(queryWords, w)
@@ -137,31 +141,6 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		}
 
 		if len(queryWords) > 0 {
-			// Build relevance score for ranking results. These CASE arms are
-			// evaluated only for rows the index already matched, so the ILIKEs
-			// here cost nothing like they did in the WHERE clause.
-			var scoreComponents []string
-
-			for _, word := range queryWords {
-				wordPattern := "%" + word + "%"
-
-				// Score: full_address match gets highest priority, then specific fields
-				scoreComponents = append(scoreComponents, fmt.Sprintf(`
-					CASE 
-						WHEN full_address ILIKE $%d THEN 150
-						WHEN street ILIKE $%d THEN 100
-						WHEN (house_number || ' ' || street) ILIKE $%d THEN 90
-						WHEN house_number ILIKE $%d THEN 80
-						WHEN city ILIKE $%d THEN 60
-						WHEN postcode ILIKE $%d THEN 50
-						WHEN county ILIKE $%d THEN 30
-						ELSE 0
-					END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
-
-				args = append(args, wordPattern)
-				argIndex++
-			}
-
 			// Every word must match (AND logic for precision).
 			if fuzzy {
 				// One trigram condition per word. The indexable form is
@@ -177,12 +156,6 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 				conditions = append(conditions, fmt.Sprintf("fts @@ to_tsquery('simple', $%d)", argIndex))
 				args = append(args, buildPrefixTSQuery(queryWords))
 				argIndex++
-			}
-
-			// Add relevance score to select
-			if len(scoreComponents) > 0 {
-				selectFields = append(selectFields, "("+strings.Join(scoreComponents, " + ")+") as relevance_score")
-				hasRelevanceScore = true
 			}
 		}
 	}
@@ -215,21 +188,63 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		argIndex++
 	}
 
-	// Proximity search
+	// Proximity filter. This is the last thing to contribute a WHERE parameter.
+	if params.Lat != 0 && params.Lng != 0 && params.Radius > 0 {
+		// Add distance filter (radius in kilometers)
+		conditions = append(conditions, fmt.Sprintf(`
+			ST_DWithin(
+				geom, 
+				ST_SetSRID(ST_MakePoint($%d, $%d), 4326)::geography,
+				$%d
+			)`, argIndex, argIndex+1, argIndex+2))
+		args = append(args, params.Lng, params.Lat, params.Radius*1000) // Convert km to meters
+		argIndex += 3
+	}
+
+	// Every WHERE parameter has now been assigned, so $1..$whereArgCount are
+	// exactly the ones the count query below references. Anything numbered past
+	// this point belongs to SELECT or ORDER BY, and handing those to the count
+	// query is what broke it in production: Postgres infers a parameter's type
+	// from where it is used, so an argument the statement never mentions fails
+	// to parse with "could not determine data type of parameter $1".
+	whereArgCount := len(args)
+
+	// Build relevance score for ranking results. These CASE arms are evaluated
+	// only for rows the index already matched, so the ILIKEs here cost nothing
+	// like they did in the WHERE clause.
+	if len(queryWords) > 0 {
+		var scoreComponents []string
+
+		for _, word := range queryWords {
+			wordPattern := "%" + word + "%"
+
+			// Score: full_address match gets highest priority, then specific fields
+			scoreComponents = append(scoreComponents, fmt.Sprintf(`
+				CASE 
+					WHEN full_address ILIKE $%d THEN 150
+					WHEN street ILIKE $%d THEN 100
+					WHEN (house_number || ' ' || street) ILIKE $%d THEN 90
+					WHEN house_number ILIKE $%d THEN 80
+					WHEN city ILIKE $%d THEN 60
+					WHEN postcode ILIKE $%d THEN 50
+					WHEN county ILIKE $%d THEN 30
+					ELSE 0
+				END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
+
+			args = append(args, wordPattern)
+			argIndex++
+		}
+
+		selectFields = append(selectFields, "("+strings.Join(scoreComponents, " + ")+") as relevance_score")
+		hasRelevanceScore = true
+	}
+
+	// Ordering. Distance ordering takes lat/lng as fresh parameters, numbered
+	// after the SELECT ones so placeholder numbers keep matching positions in
+	// fullQueryArgs.
 	var orderBy string
 	var orderByArgs []interface{}
 	if params.Lat != 0 && params.Lng != 0 {
-		if params.Radius > 0 {
-			// Add distance filter (radius in kilometers)
-			conditions = append(conditions, fmt.Sprintf(`
-				ST_DWithin(
-					geom, 
-					ST_SetSRID(ST_MakePoint($%d, $%d), 4326)::geography,
-					$%d
-				)`, argIndex, argIndex+1, argIndex+2))
-			args = append(args, params.Lng, params.Lat, params.Radius*1000) // Convert km to meters
-			argIndex += 3
-		}
 		// Order by distance - store args separately for count query
 		orderBy = fmt.Sprintf(`
 			ORDER BY ST_Distance(
@@ -263,7 +278,7 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM ohio_addresses %s", whereClause)
 	
 	var total int
-	err := q.QueryRow(countQuery, args...).Scan(&total)
+	err := q.QueryRow(countQuery, args[:whereArgCount]...).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
 	}
