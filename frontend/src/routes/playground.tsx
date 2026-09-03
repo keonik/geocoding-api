@@ -102,21 +102,18 @@ function PlaygroundPage() {
   }, [endpoint, input])
 
   const curl = useMemo(() => {
-    const auth = apiKey
-      ? `  -H "X-API-Key: ${apiKey.slice(0, 8)}…"`
-      : '  -H "Authorization: Bearer $TOKEN"'
-    return `curl "${API_BASE_URL || window.location.origin}${url}" \\\n${auth}`
+    const shown = apiKey ? `${apiKey.slice(0, 8)}…` : '$GEOCODE_API_KEY'
+    return `curl "${API_BASE_URL || window.location.origin}${url}" \\\n  -H "X-API-Key: ${shown}"`
   }, [url, apiKey])
 
   const send = async () => {
+    if (!apiKey.trim()) return
     setRunning(true)
-    const headers: Record<string, string> = {}
-    if (apiKey.trim()) {
-      headers['X-API-Key'] = apiKey.trim()
-    } else {
-      const token = localStorage.getItem('authToken')
-      if (token) headers['Authorization'] = `Bearer ${token}`
-    }
+    // The protected group runs middleware.APIKeyAuth, which reads an
+    // "Authorization: Bearer …" value as an API key rather than as a session
+    // token. Your login JWT is therefore not usable here -- it fails
+    // ValidateAPIKey with a 401 -- so a real key is required.
+    const headers: Record<string, string> = { 'X-API-Key': apiKey.trim() }
 
     const started = performance.now()
     try {
@@ -194,17 +191,18 @@ function PlaygroundPage() {
           </div>
 
           <div className="field mb-5">
-            <label htmlFor="gc-key">API key (optional)</label>
+            <label htmlFor="gc-key">API key (required)</label>
             <input
               className="input font-mono"
               id="gc-key"
               value={apiKey}
-              placeholder="leave blank to use your signed-in session"
+              placeholder="gc_live_…"
               onChange={(e) => setApiKey(e.target.value)}
             />
             <div className="mt-1.5 text-[11px] opacity-60">
-              The keys list only stores a truncated preview, so a key cannot be selected here —
-              paste one to test it, or leave this blank to send as your logged-in user.
+              These endpoints take an API key, not your login session. Keys are shown once at
+              creation and stored only as a truncated preview, so paste one here — create a new
+              one on the keys page if you no longer have it.
             </div>
           </div>
 
@@ -212,7 +210,7 @@ function PlaygroundPage() {
             type="button"
             className="btn btn-primary px-[18px] py-[11px]"
             onClick={send}
-            disabled={running}
+            disabled={running || !apiKey.trim()}
           >
             {running ? 'Sending…' : 'Send request'}
           </button>

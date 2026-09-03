@@ -47,7 +47,7 @@ function SignIn() {
         </h2>
         <div className="font-mono text-xs leading-loose opacity-70">
           <div>us zip + zcta · ohio parcel addresses</div>
-          <div>rest · api key or bearer token · no sdk</div>
+          <div>rest · api key auth · no sdk</div>
           <div>metered per call</div>
         </div>
       </div>
