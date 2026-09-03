@@ -11,10 +11,17 @@ export const Route = createFileRoute('/usage')({
 const RANGES = [7, 30, 90] as const
 const num = (n: number) => n.toLocaleString('en-US')
 
-/** 'YYYY-MM-DD' -> 'M/D', without dragging in a date library. */
-function shortDay(iso: string) {
-  const [, m, d] = iso.split('-')
-  return m && d ? `${Number(m)}/${Number(d)}` : iso
+/**
+ * DailyUsage.Date is a Go string scanned from a Postgres DATE, so lib/pq hands
+ * database/sql a time.Time and it arrives as RFC3339 ("2026-09-02T00:00:00Z"),
+ * not "YYYY-MM-DD". Parse it rather than splitting on '-', which yielded a day
+ * of "02T00:00:00Z" and rendered every label as "9/NaN".
+ */
+function shortDay(value: string) {
+  const d = new Date(value)
+  return Number.isNaN(d.getTime())
+    ? value
+    : d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' })
 }
 
 function UsagePage() {
@@ -41,7 +48,9 @@ function UsagePage() {
       .then(([s, d, e]) => {
         if (cancelled) return
         setStats(s.data ?? null)
-        setDaily(d.data ?? [])
+        // GetDailyUsage orders by date DESC (newest first). The chart and its
+        // axis labels read oldest -> newest, so flip it here.
+        setDaily([...(d.data ?? [])].reverse())
         setEndpoints(e.data ?? [])
         setError('')
       })
@@ -157,7 +166,8 @@ function UsagePage() {
             />
           </div>
           <div className="mt-2 text-xs opacity-65">
-            {num(used)} of {num(limit)} this month
+            {num(used)} of {num(limit)} in {stats?.usage_summary.month ?? 'this month'} —
+            calendar month, not the range above
           </div>
         </div>
         <div className="px-7 py-6">
