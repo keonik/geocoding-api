@@ -109,8 +109,20 @@
   --gc-chrome-bg: #0f0e0e;
   --gc-code-bg: #0f0e0e;
 }
-/* On dark the accent is not light enough to carry --color-bg as its label. */
-.dark .btn-primary { color: #f8f4f4; }
+/* On dark the accent is not light enough to carry --color-bg as its label.
+   Upstream patched .btn-primary only; .seg-opt uses the same
+   `color: var(--color-bg)` on an accent ground and needs the same treatment. */
+.dark .btn-primary,
+.dark .seg-opt:has(input:checked) { color: #f8f4f4; }
+
+/* A brand that is a link: `.nav a` (0,1,1) beats `.nav-brand` (0,1,0) on
+   font-size, shrinking it to nav-link size. */
+.nav a.nav-brand { font-size: 18px; }
+
+/* An accent focus ring is invisible on an accent ground. Anything sitting on
+   one gets a ring in the page colour instead. */
+.seg-opt:has(input:checked):has(input:focus-visible),
+.on-accent:focus-visible { outline-color: var(--color-bg); }
 
 /* Element styling goes in Tailwind's `base` layer and the component
  * classes in `components`, so utility classes still win. Unlayered rules
@@ -246,8 +258,15 @@
     border-bottom: 2px solid var(--color-divider);
   }
   .nav-brand { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 18px; margin-right: auto; }
-  .nav a { color: inherit; text-decoration: none; font-size: 14px; }
-  .nav a:hover, .nav a[aria-current='page'] { color: var(--color-accent); }
+  /* :not(.btn) here too — `color: inherit` (0,1,1) also outranks .btn-primary
+     (0,1,0), so a nav button took the nav's ink in every state, not just on
+     hover. .btn already sets its own text-decoration and font-size. */
+  .nav a:not(.btn) { color: inherit; text-decoration: none; font-size: 14px; }
+  /* :not(.btn) — a button inside a nav keeps its own colours. Without it
+     `.nav a:hover` (0,2,1) outranks `.btn-primary` (0,1,0) and repaints the
+     label accent-on-accent. Upstream's nav CTA was a <button>; ours is a
+     routed <Link>, so it is an <a> and was in range of this rule. */
+  .nav a:hover:not(.btn), .nav a[aria-current='page']:not(.btn) { color: var(--color-accent); }
 
   /* — tables — */
   .table { width: 100%; border-collapse: collapse; font-size: 14px; }

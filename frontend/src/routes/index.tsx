@@ -197,7 +197,7 @@ function LandingPage() {
           </h2>
           <Link
             to="/auth/signup"
-            className="inline-block border-0 bg-[#f3f2f2] px-[22px] py-[14px] font-display text-[15px] font-extrabold text-[#201e1d]"
+            className="on-accent inline-block border-0 bg-[#f3f2f2] px-[22px] py-[14px] font-display text-[15px] font-extrabold text-[#201e1d]"
           >
             Create an account
           </Link>

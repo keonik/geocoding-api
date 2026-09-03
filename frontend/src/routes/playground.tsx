@@ -107,7 +107,22 @@ function PlaygroundPage() {
   }, [url, apiKey])
 
   const send = async () => {
-    if (!apiKey.trim()) return
+    if (!apiKey.trim()) {
+      // Explain in the response pane rather than leaving a dead, faded button
+      // with no feedback: the reason is not obvious from the control itself.
+      setResult({
+        status: 0,
+        ms: 0,
+        ok: false,
+        body:
+          '// An API key is required.\n' +
+          '//\n' +
+          '// These endpoints authenticate with X-API-Key. Your signed-in\n' +
+          '// session is not accepted here. Create a key on the keys page\n' +
+          '// and paste it above -- the full value is shown only once.',
+      })
+      return
+    }
     setRunning(true)
     // The protected group runs middleware.APIKeyAuth, which reads an
     // "Authorization: Bearer …" value as an API key rather than as a session
@@ -168,7 +183,9 @@ function PlaygroundPage() {
                   setInput(e.initial)
                   setResult(null)
                 }}
-                className="cursor-pointer border-0 px-3 py-2.5 text-left font-mono text-[13px]"
+                className={`cursor-pointer border-0 px-3 py-2.5 text-left font-mono text-[13px] ${
+                  sel === i ? 'on-accent' : ''
+                }`}
                 style={{
                   background: sel === i ? 'var(--color-accent)' : 'var(--color-surface)',
                   color: sel === i ? '#f8f4f4' : 'var(--color-text)',
@@ -210,7 +227,7 @@ function PlaygroundPage() {
             type="button"
             className="btn btn-primary px-[18px] py-[11px]"
             onClick={send}
-            disabled={running || !apiKey.trim()}
+            disabled={running}
           >
             {running ? 'Sending…' : 'Send request'}
           </button>
