@@ -1,11 +1,6 @@
 import { createFileRoute, useNavigate, Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { authAPI } from '@/api/auth'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
-import { ThemeToggle } from '@/components/theme-toggle'
 
 export const Route = createFileRoute('/auth/signin')({
   component: SignIn,
@@ -25,13 +20,11 @@ function SignIn() {
 
     try {
       const response = await authAPI.login({ email, password })
-      
+
       if (response.success && response.data) {
         localStorage.setItem('authToken', response.data.token)
         localStorage.setItem('user', JSON.stringify(response.data.user))
-        
-        // TODO: Add admin route
-        navigate({ to: '/dashboard' })
+        navigate({ to: '/usage' })
       } else {
         setError(response.error || 'Login failed')
       }
@@ -43,78 +36,79 @@ function SignIn() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Navigation */}
-      <nav className="bg-card shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <Link to="/" className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-                🌍 GeoCode API
-              </Link>
-            </div>
-            <div className="flex items-center space-x-4">
-              <a href="/docs" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-primary px-3 py-2 rounded-md text-sm font-medium">
-                Documentation
-              </a>
-              <ThemeToggle />
-            </div>
-          </div>
+    <div className="flex min-h-screen flex-wrap gap-[2px] bg-[var(--color-divider)]">
+      {/* Inverted panel — the only place the system uses chrome ink on chrome ground */}
+      <div className="flex min-w-0 flex-[1_1_360px] flex-col gap-7 bg-[var(--gc-chrome-bg)] px-[clamp(20px,4vw,40px)] py-[clamp(32px,5vw,56px)] text-[var(--gc-chrome-ink)]">
+        <Link to="/" className="mb-auto font-display text-lg font-extrabold text-[var(--gc-chrome-ink)] no-underline">
+          GeoCode API
+        </Link>
+        <h2 className="m-0 max-w-[18ch] text-[clamp(28px,5vw,40px)] leading-[1.02] tracking-[-0.025em]">
+          Coordinates for the addresses you already have.
+        </h2>
+        <div className="font-mono text-xs leading-loose opacity-70">
+          <div>us zip + zcta · ohio parcel addresses</div>
+          <div>rest · api key or bearer token · no sdk</div>
+          <div>metered per call</div>
         </div>
-      </nav>
-      <div className="flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
-      <Card className="w-full max-w-md">
-        <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl font-bold">Sign in</CardTitle>
-          <CardDescription>
-            Enter your email and password to access your account
-          </CardDescription>
-        </CardHeader>
-        <form onSubmit={handleSubmit}>
-          <CardContent className="space-y-4">
-            {error && (
-              <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-md">
-                {error}
-              </div>
-            )}
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                disabled={loading}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                disabled={loading}
-              />
-            </div>
-          </CardContent>
-          <CardFooter className="flex flex-col space-y-4">
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Signing in...' : 'Sign in'}
-            </Button>
-            <div className="text-sm text-center text-muted-foreground">
-              Don't have an account?{' '}
-              <Link to="/auth/signup" className="text-primary hover:underline">
-                Sign up
-              </Link>
-            </div>
-          </CardFooter>
-        </form>
-      </Card>
       </div>
+
+      <form
+        onSubmit={handleSubmit}
+        className="flex min-w-0 flex-[1_1_320px] flex-col justify-center bg-[var(--color-bg)] px-[clamp(20px,4vw,40px)] py-[clamp(32px,5vw,56px)]"
+      >
+        <h3 className="m-0 mb-1.5 text-[28px]">Sign in</h3>
+        <p className="m-0 mb-7 text-sm opacity-70">
+          New here? <Link to="/auth/signup">Create an account</Link> — first key issued
+          instantly.
+        </p>
+
+        {error && (
+          <div
+            role="alert"
+            className="mb-4 border-l-2 border-[var(--color-accent)] bg-[var(--color-accent-100)] p-3 text-sm text-[var(--color-accent-800)]"
+          >
+            {error}
+          </div>
+        )}
+
+        <div className="field mb-4">
+          <label htmlFor="gc-email">Work email</label>
+          <input
+            className="input"
+            id="gc-email"
+            type="email"
+            autoComplete="email"
+            placeholder="you@company.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            disabled={loading}
+          />
+        </div>
+        <div className="field mb-5">
+          <label htmlFor="gc-pass">Password</label>
+          <input
+            className="input"
+            id="gc-pass"
+            type="password"
+            autoComplete="current-password"
+            placeholder="••••••••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            disabled={loading}
+          />
+        </div>
+
+        <button type="submit" className="btn btn-primary btn-block px-4 py-3" disabled={loading}>
+          {loading ? 'Signing in…' : 'Sign in'}
+        </button>
+
+        <div className="hr" />
+        <div className="text-xs opacity-65">
+          Keys are scoped per endpoint group and revocable at any time.
+        </div>
+      </form>
     </div>
   )
 }

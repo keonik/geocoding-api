@@ -1,13 +1,29 @@
+/* Google Fonts must be the first @import in the bundle. */
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&display=swap');
 @import "tailwindcss";
+@import "./styles/modernist.css";
 
 /* Custom variant for dark mode */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Theme configuration */
+/* Theme configuration
+ *
+ * The shadcn token names below are kept so the routes that still use shadcn
+ * primitives (admin, data-manager, signup) keep working — but every value now
+ * resolves to the Modernist palette in styles/modernist.css. Two consequences
+ * worth knowing:
+ *   - radius is 0 across the board, because Modernist is a square system.
+ *   - `primary` is the Modernist accent (#ec3013), not near-black as shadcn
+ *     ships it, so any bare <Button> is now a red action button.
+ */
 @theme {
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --radius-lg: 0px;
+  --radius-md: 0px;
+  --radius-sm: 0px;
+
+  --font-sans: "Archivo", system-ui, sans-serif;
+  --font-display: "Archivo", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -45,81 +61,73 @@
 
   /* Animation keyframes */
   @keyframes accordion-down {
-    from {
-      height: 0;
-    }
-    to {
-      height: var(--radix-accordion-content-height);
-    }
+    from { height: 0; }
+    to { height: var(--radix-accordion-content-height); }
   }
-
   @keyframes accordion-up {
-    from {
-      height: var(--radix-accordion-content-height);
-    }
-    to {
-      height: 0;
-    }
+    from { height: var(--radix-accordion-content-height); }
+    to { height: 0; }
   }
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
 }
 
-/* CSS Variables for light/dark themes */
+/* Modernist palette expressed as the HSL triplets shadcn's tokens expect.
+   Hex source of each value is in the trailing comment. */
 :root {
-  --background: 0 0% 100%;
-  --foreground: 0 0% 3.9%;
-  --card: 0 0% 100%;
-  --card-foreground: 0 0% 3.9%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 0 0% 3.9%;
-  --primary: 0 0% 9%;
-  --primary-foreground: 0 0% 98%;
-  --secondary: 0 0% 96.1%;
-  --secondary-foreground: 0 0% 9%;
-  --muted: 0 0% 96.1%;
-  --muted-foreground: 0 0% 45.1%;
-  --accent: 0 0% 96.1%;
-  --accent-foreground: 0 0% 9%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 0 0% 89.8%;
-  --input: 0 0% 89.8%;
-  --ring: 0 0% 3.9%;
-  --radius: 0.5rem;
-  --chart-1: 12 76% 61%;
-  --chart-2: 173 58% 39%;
-  --chart-3: 197 37% 24%;
-  --chart-4: 43 74% 66%;
-  --chart-5: 27 87% 67%;
+  --background: 0 4% 95.1%;           /* #f3f2f2 bg */
+  --foreground: 20 4.9% 12%;          /* #201e1d text */
+  --card: 0 2.3% 91.6%;               /* #eae9e9 surface */
+  --card-foreground: 20 4.9% 12%;     /* #201e1d */
+  --popover: 0 2.3% 91.6%;            /* #eae9e9 */
+  --popover-foreground: 20 4.9% 12%;  /* #201e1d */
+  --primary: 8 85.1% 50%;             /* #ec3013 accent */
+  --primary-foreground: 0 4% 95.1%;   /* #f3f2f2 */
+  --secondary: 0 6.7% 91.2%;          /* #eae7e7 neutral-200 */
+  --secondary-foreground: 20 4.9% 12%;
+  --muted: 0 6.7% 91.2%;              /* #eae7e7 neutral-200 */
+  --muted-foreground: 0 1.6% 48.2%;   /* #7d7979 neutral-600 */
+  --accent: 0 6.7% 91.2%;             /* #eae7e7 — shadcn's hover ground */
+  --accent-foreground: 20 4.9% 12%;
+  --destructive: 8.3 100% 34.1%;      /* #ae1800 accent-700 */
+  --destructive-foreground: 0 22.2% 96.5%;
+  --border: 0 4.8% 83.5%;             /* #d7d3d3 neutral-300 */
+  --input: 0 4.8% 83.5%;              /* #d7d3d3 */
+  --ring: 8 85.1% 50%;                /* #ec3013 */
+  --radius: 0px;
+  --chart-1: 8 85.1% 50%;             /* #ec3013 accent */
+  --chart-2: 0 2.8% 72.2%;            /* #bab6b6 neutral-400 */
+  --chart-3: 7.8 72% 58%;             /* #e15b47 accent-2 */
+  --chart-4: 0 1.6% 48.2%;            /* #7d7979 neutral-600 */
+  --chart-5: 8.3 100% 34.1%;          /* #ae1800 accent-700 */
 }
 
 .dark {
-  --background: 0 0% 3.9%;
-  --foreground: 0 0% 98%;
-  --card: 0 0% 3.9%;
-  --card-foreground: 0 0% 98%;
-  --popover: 0 0% 3.9%;
-  --popover-foreground: 0 0% 98%;
-  --primary: 0 0% 98%;
-  --primary-foreground: 0 0% 9%;
-  --secondary: 0 0% 14.9%;
-  --secondary-foreground: 0 0% 98%;
-  --muted: 0 0% 14.9%;
-  --muted-foreground: 0 0% 63.9%;
-  --accent: 0 0% 14.9%;
-  --accent-foreground: 0 0% 98%;
-  --destructive: 0 62.8% 30.6%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 0 0% 14.9%;
-  --input: 0 0% 14.9%;
-  --ring: 0 0% 83.1%;
-  --chart-1: 220 70% 50%;
-  --chart-2: 160 60% 45%;
-  --chart-3: 30 80% 55%;
-  --chart-4: 280 65% 60%;
-  --chart-5: 340 75% 55%;
+  --background: 30 4% 9.8%;           /* #1a1918 */
+  --foreground: 0 4% 95.1%;           /* #f3f2f2 */
+  --card: 20 4.3% 13.5%;              /* #242221 */
+  --card-foreground: 0 4% 95.1%;
+  --popover: 20 4.3% 13.5%;           /* #242221 */
+  --popover-foreground: 0 4% 95.1%;
+  --primary: 8 85.1% 50%;             /* #ec3013 — accent holds on both grounds */
+  --primary-foreground: 0 22.2% 96.5%;
+  --secondary: 0 2.3% 26.1%;          /* #444141 neutral-200 (dark ramp) */
+  --secondary-foreground: 0 4% 95.1%;
+  --muted: 0 2.3% 26.1%;              /* #444141 */
+  --muted-foreground: 0 2.8% 72.2%;   /* #bab6b6 */
+  --accent: 0 2.3% 26.1%;             /* #444141 */
+  --accent-foreground: 0 4% 95.1%;
+  --destructive: 9.7 100% 75.7%;      /* #ff9783 accent-400 */
+  --destructive-foreground: 20 4.9% 12%;
+  --border: 0 1.6% 37.1%;             /* #605d5d */
+  --input: 0 1.6% 37.1%;              /* #605d5d */
+  --ring: 8 100% 61.8%;               /* #ff563c */
+  --chart-1: 8 100% 61.8%;            /* #ff563c */
+  --chart-2: 0 1.6% 48.2%;            /* #7d7979 */
+  --chart-3: 9.7 100% 75.7%;          /* #ff9783 */
+  --chart-4: 0 2.8% 72.2%;            /* #bab6b6 */
+  --chart-5: 8.2 87.3% 46.3%;         /* #dd2b0f */
 }
 
 /* Base styles */

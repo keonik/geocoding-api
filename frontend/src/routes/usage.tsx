@@ -1,368 +1,302 @@
-import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { useEffect, useMemo, useState } from 'react'
+import { AppNav } from '@/components/app-nav'
 import { usageAPI, type DailyUsage, type EndpointUsage } from '@/api/usage'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Toaster } from '@/components/ui/toaster'
-import { ArrowLeft, TrendingUp, Activity, Clock } from 'lucide-react'
-import { ThemeToggle } from '@/components/theme-toggle'
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  PieChart,
-  Pie,
-  Cell,
-} from 'recharts'
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  ChartLegend,
-  ChartLegendContent,
-  type ChartConfig,
-} from '@/components/ui/chart'
+import type { UsageStats } from '@/types/api'
 
 export const Route = createFileRoute('/usage')({
-  beforeLoad: () => {
-    const token = localStorage.getItem('authToken')
-    if (!token) {
-      throw redirect({ to: '/auth/signin' })
-    }
-  },
-  component: UsageAnalytics,
+  component: UsagePage,
 })
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899']
+const RANGES = [7, 30, 90] as const
+const num = (n: number) => n.toLocaleString('en-US')
 
-// Chart configurations
-const dailyChartConfig = {
-  total_calls: {
-    label: 'Total Calls',
-    color: 'hsl(var(--chart-1))',
-  },
-  billable_calls: {
-    label: 'Billable Calls',
-    color: 'hsl(var(--chart-2))',
-  },
-} satisfies ChartConfig
+/** 'YYYY-MM-DD' -> 'M/D', without dragging in a date library. */
+function shortDay(iso: string) {
+  const [, m, d] = iso.split('-')
+  return m && d ? `${Number(m)}/${Number(d)}` : iso
+}
 
-const endpointChartConfig = {
-  total_calls: {
-    label: 'Total Calls',
-    color: 'hsl(var(--chart-1))',
-  },
-  billable_calls: {
-    label: 'Billable',
-    color: 'hsl(var(--chart-2))',
-  },
-} satisfies ChartConfig
-
-const responseTimeConfig = {
-  avg_response_time: {
-    label: 'Avg Response (ms)',
-    color: 'hsl(var(--chart-3))',
-  },
-} satisfies ChartConfig
-
-const successErrorConfig = {
-  success_count: {
-    label: 'Success',
-    color: 'hsl(var(--chart-2))',
-  },
-  error_count: {
-    label: 'Errors',
-    color: 'hsl(var(--chart-5))',
-  },
-} satisfies ChartConfig
-
-function UsageAnalytics() {
+function UsagePage() {
   const navigate = useNavigate()
-  const [dailyUsage, setDailyUsage] = useState<DailyUsage[]>([])
-  const [endpointUsage, setEndpointUsage] = useState<EndpointUsage[]>([])
+  const [range, setRange] = useState<number>(30)
+  const [stats, setStats] = useState<UsageStats | null>(null)
+  const [daily, setDaily] = useState<DailyUsage[]>([])
+  const [endpoints, setEndpoints] = useState<EndpointUsage[]>([])
   const [loading, setLoading] = useState(true)
-  const [days, setDays] = useState(30)
-
-  const user = JSON.parse(localStorage.getItem('user') || '{}')
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    loadUsageData()
-  }, [days])
-
-  const loadUsageData = async () => {
-    try {
-      setLoading(true)
-      const [dailyResponse, endpointResponse] = await Promise.all([
-        usageAPI.getDailyUsage(days),
-        usageAPI.getEndpointUsage(days),
-      ])
-
-      if (dailyResponse.success && dailyResponse.data) {
-        // Reverse to show oldest to newest for charts
-        setDailyUsage([...dailyResponse.data].reverse())
-      }
-
-      if (endpointResponse.success && endpointResponse.data) {
-        setEndpointUsage(endpointResponse.data)
-      }
-    } catch (err) {
-      console.error('Error loading usage data:', err)
-    } finally {
-      setLoading(false)
+    if (!localStorage.getItem('authToken')) {
+      navigate({ to: '/auth/signin' })
+      return
     }
-  }
+    let cancelled = false
+    setLoading(true)
+    Promise.all([
+      usageAPI.getStats(),
+      usageAPI.getDailyUsage(range),
+      usageAPI.getEndpointUsage(range),
+    ])
+      .then(([s, d, e]) => {
+        if (cancelled) return
+        setStats(s.data ?? null)
+        setDaily(d.data ?? [])
+        setEndpoints(e.data ?? [])
+        setError('')
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load usage')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [range, navigate])
 
-  const totalCalls = dailyUsage.reduce((sum, day) => sum + day.total_calls, 0)
-  const totalBillable = dailyUsage.reduce((sum, day) => sum + day.billable_calls, 0)
-  const avgCallsPerDay = dailyUsage.length > 0 ? Math.round(totalCalls / dailyUsage.length) : 0
-  
-  const avgResponseTime = endpointUsage.length > 0
-    ? Math.round(
-        endpointUsage.reduce((sum, ep) => sum + ep.avg_response_time, 0) / endpointUsage.length
-      )
-    : 0
+  const totals = useMemo(() => {
+    const total = daily.reduce((a, d) => a + d.total_calls, 0)
+    const billable = daily.reduce((a, d) => a + d.billable_calls, 0)
+    const success = endpoints.reduce((a, e) => a + e.success_count, 0)
+    const errors = endpoints.reduce((a, e) => a + e.error_count, 0)
+    const peak = daily.reduce((a, d) => Math.max(a, d.total_calls), 0)
+    return { total, billable, success, errors, peak }
+  }, [daily, endpoints])
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-lg">Loading analytics...</div>
-      </div>
-    )
-  }
+  const limit = stats?.rate_limit.monthly_limit ?? 0
+  const used = stats?.rate_limit.current_usage ?? 0
+  const quotaPct = limit > 0 ? (used / limit) * 100 : 0
+  const billablePct = totals.total > 0 ? Math.round((totals.billable / totals.total) * 100) : 0
+  const decided = totals.success + totals.errors
+  const successPct = decided > 0 ? ((totals.success / decided) * 100).toFixed(1) : '—'
+
+  const endpointMix = useMemo(() => {
+    const sum = endpoints.reduce((a, e) => a + e.total_calls, 0)
+    return [...endpoints]
+      .sort((a, b) => b.total_calls - a.total_calls)
+      .map((e) => ({
+        name: e.endpoint,
+        pct: sum > 0 ? (e.total_calls / sum) * 100 : 0,
+      }))
+  }, [endpoints])
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="bg-card border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" onClick={() => navigate({ to: '/dashboard' })}>
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-            <div>
-              <h1 className="text-2xl font-bold">Usage Analytics</h1>
-              <p className="text-sm text-muted-foreground">{user.email}</p>
+    <div className="min-h-screen bg-background text-foreground">
+      <AppNav />
+
+      <div className="flex flex-wrap items-end justify-between gap-6 px-[clamp(20px,4vw,40px)] pt-8 pb-5">
+        <div>
+          <h2 className="m-0 mb-1 text-[clamp(26px,4vw,32px)]">Usage</h2>
+          <div className="text-[13px] opacity-70">
+            {loading
+              ? 'Loading…'
+              : stats
+                ? `${stats.usage_summary.month} · ${num(limit)} calls included`
+                : 'Usage summary unavailable'}
+          </div>
+        </div>
+        <div className="seg">
+          {RANGES.map((r) => (
+            <label key={r} className="seg-opt">
+              <input
+                type="radio"
+                name="gc-range"
+                checked={range === r}
+                onChange={() => setRange(r)}
+              />
+              Last {r} days
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="mx-[clamp(20px,4vw,40px)] mb-4 border-l-2 border-[var(--color-accent)] bg-[var(--color-accent-100)] p-3 text-sm text-[var(--color-accent-800)]"
+        >
+          {error}
+        </div>
+      )}
+
+      {/* KPI strip */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(215px,1fr))] border-y-2 border-[var(--color-divider)]">
+        <div className="border-r border-[var(--color-divider)] px-7 py-6">
+          <div className="mb-2.5 text-[11px] uppercase tracking-[0.09em] opacity-60">
+            Total calls
+          </div>
+          <div className="font-display text-[38px] font-extrabold leading-none">
+            {num(totals.total)}
+          </div>
+          <div className="mt-1.5 text-xs opacity-65">last {range} days</div>
+        </div>
+        <div className="border-r border-[var(--color-divider)] px-7 py-6">
+          <div className="mb-2.5 text-[11px] uppercase tracking-[0.09em] opacity-60">
+            Billable calls
+          </div>
+          <div className="font-display text-[38px] font-extrabold leading-none">
+            {num(totals.billable)}
+          </div>
+          <div className="mt-1.5 text-xs opacity-65">
+            {billablePct}% of calls · over-limit not billed
+          </div>
+        </div>
+        <div className="border-r border-[var(--color-divider)] px-7 py-6">
+          <div className="mb-2.5 text-[11px] uppercase tracking-[0.09em] opacity-60">
+            Quota burn
+          </div>
+          <div className="font-display text-[38px] font-extrabold leading-none">
+            {limit > 0 ? `${quotaPct.toFixed(0)}%` : '—'}
+          </div>
+          <div className="mt-3 h-2.5 bg-[var(--color-neutral-300)]">
+            <div
+              className="h-full bg-[var(--color-accent)]"
+              style={{ width: `${Math.min(100, quotaPct)}%` }}
+            />
+          </div>
+          <div className="mt-2 text-xs opacity-65">
+            {num(used)} of {num(limit)} this month
+          </div>
+        </div>
+        <div className="px-7 py-6">
+          <div className="mb-2.5 text-[11px] uppercase tracking-[0.09em] opacity-60">
+            Success rate
+          </div>
+          <div className="font-display text-[38px] font-extrabold leading-none">
+            {successPct === '—' ? '—' : `${successPct}%`}
+          </div>
+          <div className="mt-1.5 text-xs opacity-65">
+            {num(totals.errors)} errors in {num(decided)} recorded
+          </div>
+        </div>
+      </div>
+
+      {/* Chart + endpoint mix */}
+      <div className="flex flex-wrap gap-[2px] bg-[var(--color-divider)]">
+        <div className="min-w-0 flex-[1_1_440px] bg-[var(--color-bg)] px-[clamp(20px,4vw,40px)] pt-7 pb-8">
+          <div className="mb-5 flex items-baseline justify-between">
+            <h4 className="m-0 text-[19px]">Calls per day</h4>
+            <div className="flex gap-4 text-[11px] uppercase tracking-[0.06em] opacity-70">
+              <span className="flex items-center gap-1.5">
+                <span className="block h-2.5 w-2.5 bg-[var(--color-accent)]" />
+                billable
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="block h-2.5 w-2.5 bg-[var(--color-neutral-400)]" />
+                total
+              </span>
             </div>
           </div>
-          <div className="flex items-center space-x-4">
-            <select
-              value={days}
-              onChange={(e) => setDays(Number(e.target.value))}
-              className="px-3 py-2 border rounded-md text-sm bg-background"
-            >
-              <option value={7}>Last 7 days</option>
-              <option value={30}>Last 30 days</option>
-              <option value={60}>Last 60 days</option>
-              <option value={90}>Last 90 days</option>
-            </select>
-            <ThemeToggle />
+          <div className="flex h-[220px] items-end gap-[3px] border-b-2 border-[var(--color-divider)]">
+            {daily.map((d) => (
+              <div
+                key={d.date}
+                className="flex h-full min-w-[2px] flex-1 items-end"
+                title={`${shortDay(d.date)} · ${num(d.total_calls)} calls, ${num(d.billable_calls)} billable`}
+              >
+                <div
+                  className="flex w-full items-end bg-[var(--color-neutral-400)]"
+                  style={{
+                    height: totals.peak > 0 ? `${(d.total_calls / totals.peak) * 100}%` : '0%',
+                  }}
+                >
+                  <div
+                    className="w-full bg-[var(--color-accent)]"
+                    style={{
+                      height:
+                        d.total_calls > 0 ? `${(d.billable_calls / d.total_calls) * 100}%` : '0%',
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex justify-between font-mono text-[11px] opacity-60">
+            <span>{daily.length ? shortDay(daily[0].date) : ''}</span>
+            <span>{daily.length ? shortDay(daily[daily.length - 1].date) : ''}</span>
+          </div>
+          {!loading && daily.length === 0 && (
+            <div className="mt-4 text-sm opacity-65">No calls recorded in this range.</div>
+          )}
+        </div>
+
+        <div className="min-w-0 flex-[1_1_300px] bg-[var(--color-surface)] px-[clamp(20px,4vw,32px)] pt-7 pb-8">
+          <h4 className="m-0 mb-1.5 text-[19px]">Endpoint mix</h4>
+          <div className="mb-6 text-xs opacity-70">
+            Share of the {num(totals.total)} calls in this period, by endpoint group.
+          </div>
+          <div className="flex flex-col gap-[18px]">
+            {endpointMix.map((e) => (
+              <div key={e.name}>
+                <div className="mb-1.5 flex justify-between text-[13px]">
+                  <span className="font-mono">{e.name}</span>
+                  <span className="opacity-70">{e.pct.toFixed(1)}%</span>
+                </div>
+                <div className="h-3 bg-[var(--color-neutral-300)]">
+                  <div
+                    className="h-full bg-[var(--color-accent)]"
+                    style={{ width: `${e.pct}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          {!loading && endpointMix.length === 0 && (
+            <div className="text-sm opacity-65">No endpoint activity yet.</div>
+          )}
+          <div className="hr" />
+          <div className="text-xs leading-relaxed opacity-75">
+            Calls past your monthly limit return{' '}
+            <span className="font-mono">429</span> and are recorded non-billable. Everything
+            else that reaches an endpoint counts, including responses that error.
           </div>
         </div>
-      </header>
+      </div>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Summary Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Calls</CardTitle>
-              <Activity className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{totalCalls.toLocaleString()}</div>
-              <p className="text-xs text-muted-foreground">Last {days} days</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Billable Calls</CardTitle>
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{totalBillable.toLocaleString()}</div>
-              <p className="text-xs text-muted-foreground">
-                {totalCalls > 0 ? Math.round((totalBillable / totalCalls) * 100) : 0}% of total
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Avg Daily Calls</CardTitle>
-              <Activity className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{avgCallsPerDay.toLocaleString()}</div>
-              <p className="text-xs text-muted-foreground">Per day average</p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Avg Response Time</CardTitle>
-              <Clock className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{avgResponseTime}ms</div>
-              <p className="text-xs text-muted-foreground">Average across all endpoints</p>
-            </CardContent>
-          </Card>
+      {/* By endpoint */}
+      <div className="border-t-2 border-[var(--color-divider)] px-[clamp(20px,4vw,40px)] pt-7 pb-12">
+        <h4 className="m-0 mb-4 text-[19px]">By endpoint</h4>
+        <div className="overflow-x-auto">
+          <table className="table min-w-[720px]">
+            <thead>
+              <tr>
+                <th>Endpoint</th>
+                <th className="text-right">Calls</th>
+                <th className="text-right">Billable</th>
+                <th className="text-right">Avg response</th>
+                <th className="text-right">Success</th>
+                <th className="text-right">Errors</th>
+              </tr>
+            </thead>
+            <tbody>
+              {endpoints.map((e) => {
+                const seen = e.success_count + e.error_count
+                return (
+                  <tr key={e.endpoint}>
+                    <td className="font-mono text-[13px]">{e.endpoint}</td>
+                    <td className="text-right">{num(e.total_calls)}</td>
+                    <td className="text-right">{num(e.billable_calls)}</td>
+                    <td className="text-right">{Math.round(e.avg_response_time)} ms</td>
+                    <td className="text-right">
+                      {seen > 0 ? `${((e.success_count / seen) * 100).toFixed(1)}%` : '—'}
+                    </td>
+                    <td className="text-right">{num(e.error_count)}</td>
+                  </tr>
+                )
+              })}
+              {!loading && endpoints.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="opacity-65">
+                    Nothing recorded yet — make a call from the Playground.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-
-        {/* Daily Usage Chart */}
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle>Daily API Calls</CardTitle>
-            <CardDescription>API usage over time</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ChartContainer config={dailyChartConfig} className="min-h-[300px] w-full">
-              <LineChart data={dailyUsage} accessibilityLayer>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis
-                  dataKey="date"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                />
-                <YAxis tickLine={false} axisLine={false} tickMargin={8} />
-                <ChartTooltip
-                  content={<ChartTooltipContent />}
-                  labelFormatter={(value) => new Date(value).toLocaleDateString()}
-                />
-                <ChartLegend content={<ChartLegendContent />} />
-                <Line
-                  type="monotone"
-                  dataKey="total_calls"
-                  stroke="var(--color-total_calls)"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="billable_calls"
-                  stroke="var(--color-billable_calls)"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ChartContainer>
-          </CardContent>
-        </Card>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Endpoint Usage Bar Chart */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Calls by Endpoint</CardTitle>
-              <CardDescription>Total calls per endpoint</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={endpointChartConfig} className="min-h-[300px] w-full">
-                <BarChart data={endpointUsage} accessibilityLayer>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis 
-                    dataKey="endpoint" 
-                    tickLine={false}
-                    axisLine={false}
-                    tickMargin={8}
-                  />
-                  <YAxis tickLine={false} axisLine={false} tickMargin={8} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <ChartLegend content={<ChartLegendContent />} />
-                  <Bar dataKey="total_calls" fill="var(--color-total_calls)" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="billable_calls" fill="var(--color-billable_calls)" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-
-          {/* Endpoint Distribution Pie Chart */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Endpoint Distribution</CardTitle>
-              <CardDescription>Percentage of calls by endpoint</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={endpointChartConfig} className="min-h-[300px] w-full">
-                <PieChart>
-                  <ChartTooltip content={<ChartTooltipContent hideLabel />} />
-                  <Pie
-                    data={endpointUsage as unknown as Record<string, unknown>[]}
-                    dataKey="total_calls"
-                    nameKey="endpoint"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={100}
-                    label
-                  >
-                    {endpointUsage.map((_, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                </PieChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-
-          {/* Response Time Chart */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Average Response Time</CardTitle>
-              <CardDescription>Performance by endpoint (ms)</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={responseTimeConfig} className="min-h-[300px] w-full">
-                <BarChart data={endpointUsage} accessibilityLayer>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis 
-                    dataKey="endpoint" 
-                    tickLine={false}
-                    axisLine={false}
-                    tickMargin={8}
-                  />
-                  <YAxis tickLine={false} axisLine={false} tickMargin={8} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="avg_response_time" fill="var(--color-avg_response_time)" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-
-          {/* Success/Error Rates */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Success vs Error Rates</CardTitle>
-              <CardDescription>Call outcomes by endpoint</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={successErrorConfig} className="min-h-[300px] w-full">
-                <BarChart data={endpointUsage} accessibilityLayer>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis 
-                    dataKey="endpoint" 
-                    tickLine={false}
-                    axisLine={false}
-                    tickMargin={8}
-                  />
-                  <YAxis tickLine={false} axisLine={false} tickMargin={8} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <ChartLegend content={<ChartLegendContent />} />
-                  <Bar dataKey="success_count" fill="var(--color-success_count)" stackId="a" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="error_count" fill="var(--color-error_count)" stackId="a" radius={[0, 0, 0, 0]} />
-                </BarChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-        </div>
-      </main>
-      <Toaster />
+      </div>
     </div>
   )
 }
