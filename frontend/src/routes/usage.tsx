@@ -40,22 +40,33 @@ function UsagePage() {
     }
     let cancelled = false
     setLoading(true)
-    Promise.all([
+    // allSettled, not all: these three endpoints back three independent panels,
+    // and Promise.all would let one failure blank the entire page without
+    // saying which request died.
+    Promise.allSettled([
       usageAPI.getStats(),
       usageAPI.getDailyUsage(range),
       usageAPI.getEndpointUsage(range),
     ])
       .then(([s, d, e]) => {
         if (cancelled) return
-        setStats(s.data ?? null)
-        // GetDailyUsage orders by date DESC (newest first). The chart and its
-        // axis labels read oldest -> newest, so flip it here.
-        setDaily([...(d.data ?? [])].reverse())
-        setEndpoints(e.data ?? [])
-        setError('')
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load usage')
+        const failures: string[] = []
+        const reason = (r: PromiseRejectedResult) =>
+          r.reason instanceof Error ? r.reason.message : String(r.reason)
+
+        if (s.status === 'fulfilled') setStats(s.value.data ?? null)
+        else failures.push(`/user/usage: ${reason(s)}`)
+
+        if (d.status === 'fulfilled') {
+          // GetDailyUsage orders by date DESC (newest first). The chart and its
+          // axis labels read oldest -> newest, so flip it here.
+          setDaily([...(d.value.data ?? [])].reverse())
+        } else failures.push(`/user/usage/daily: ${reason(d)}`)
+
+        if (e.status === 'fulfilled') setEndpoints(e.value.data ?? [])
+        else failures.push(`/user/usage/endpoints: ${reason(e)}`)
+
+        setError(failures.join(' · '))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)

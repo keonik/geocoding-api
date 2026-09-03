@@ -47,10 +47,17 @@ function APIKeysPage() {
 
   const load = useCallback(async () => {
     try {
-      const [k, s] = await Promise.all([apiKeysAPI.list(), usageAPI.getStats()])
-      setKeys(k.data?.api_keys ?? [])
-      setStats(s.data ?? null)
-      setError('')
+      // The limits panel is a nicety; a failure there must not hide the keys.
+      const [k, s] = await Promise.allSettled([apiKeysAPI.list(), usageAPI.getStats()])
+      if (k.status === 'fulfilled') setKeys(k.value.data?.api_keys ?? [])
+      if (s.status === 'fulfilled') setStats(s.value.data ?? null)
+      setError(
+        k.status === 'rejected'
+          ? k.reason instanceof Error
+            ? k.reason.message
+            : String(k.reason)
+          : ''
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load API keys')
     } finally {
