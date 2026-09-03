@@ -26,7 +26,11 @@ export default defineConfig({
     // /auth/signup routes, 404ing them on direct load or refresh.
     proxy: {
       // Regex, not the bare '/api' prefix: a prefix key also swallows sibling
-      // paths like /api-keys (an SPA route) and /api-docs.yaml.
+      // paths such as /api-docs.yaml, which has its own rule below. Note the
+      // Go server has the same hazard for a different reason -- Echo's router
+      // builds a static '/api' node from the /api/v1 group, so any unmatched
+      // /api* path 404s instead of reaching the SPA fallback. Do not name a
+      // frontend route with an /api prefix.
       '^/api/': {
         target: 'http://localhost:8080',
         changeOrigin: true,

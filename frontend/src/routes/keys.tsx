@@ -5,7 +5,7 @@ import { apiKeysAPI } from '@/api/apiKeys'
 import { usageAPI } from '@/api/usage'
 import type { APIKey, UsageStats } from '@/types/api'
 
-export const Route = createFileRoute('/api-keys')({
+export const Route = createFileRoute('/keys')({
   component: APIKeysPage,
 })
 

@@ -34,7 +34,7 @@ export function AppNav() {
       <Link to="/usage" activeProps={{ 'aria-current': 'page' }}>
         Usage
       </Link>
-      <Link to="/api-keys" activeProps={{ 'aria-current': 'page' }}>
+      <Link to="/keys" activeProps={{ 'aria-current': 'page' }}>
         API keys
       </Link>
       <Link to="/playground" activeProps={{ 'aria-current': 'page' }}>
