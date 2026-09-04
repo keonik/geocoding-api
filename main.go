@@ -11,6 +11,7 @@ import (
 	"geocoding-api/handlers"
 	"geocoding-api/middleware"
 	"geocoding-api/services"
+	"geocoding-api/version"
 
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
@@ -22,7 +23,7 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using system environment variables")
 	}
-	
+
 	// Warn about insecure defaults in production
 	if os.Getenv("GO_ENV") == "production" {
 		if os.Getenv("JWT_SECRET") == "change_this_in_production" || os.Getenv("JWT_SECRET") == "" {
@@ -32,7 +33,7 @@ func main() {
 			log.Println("WARNING: Using default API_SECRET_KEY in production! Set a secure value.")
 		}
 	}
-	
+
 	// Initialize database connection
 	if err := database.InitDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
@@ -55,18 +56,18 @@ func main() {
 
 	// Initialize services
 	services.InitAddressService(database.DB)
-	
+
 	// Run data initialization in background to avoid blocking server startup
 	// These can wait for migrations to complete before querying the database
 	go func() {
 		log.Println("Starting background data initialization...")
-		
+
 		// Initialize ZIP code data if needed
 		if err := services.InitializeData(); err != nil {
 			log.Printf("Warning: Failed to initialize ZIP code data: %v", err)
 			log.Println("You can load data manually using: curl -X POST http://localhost:8080/api/v1/admin/load-data")
 		}
-		
+
 		// Initialize Ohio address data if needed
 		if err := services.InitializeOhioData(); err != nil {
 			log.Printf("Warning: Failed to initialize Ohio address data: %v", err)
@@ -90,7 +91,7 @@ func main() {
 		if err := authService.SyncAdminUsers(); err != nil {
 			log.Printf("Warning: Failed to sync admin users: %v", err)
 		}
-		
+
 		log.Println("Background data initialization completed")
 	}()
 
@@ -103,10 +104,10 @@ func main() {
 	// Middleware
 	e.Use(middleware.ColorizedLogger())
 	e.Use(echomiddleware.Recover())
-	
+
 	// Configure CORS based on environment
 	var corsOrigins []string
-	
+
 	// Check for custom CORS origins from environment
 	if customOrigins := os.Getenv("CORS_ORIGINS"); customOrigins != "" {
 		corsOrigins = strings.Split(customOrigins, ",")
@@ -131,7 +132,7 @@ func main() {
 		}
 		log.Printf("Using development CORS origins: %v", corsOrigins)
 	}
-	
+
 	e.Use(echomiddleware.CORSWithConfig(echomiddleware.CORSConfig{
 		AllowOrigins: corsOrigins,
 		AllowMethods: []string{echo.GET, echo.POST, echo.PUT, echo.DELETE, echo.OPTIONS},
@@ -144,7 +145,7 @@ func main() {
 			"X-User-ID",
 		},
 		AllowCredentials: true,
-		MaxAge:          300, // 5 minutes
+		MaxAge:           300, // 5 minutes
 	}))
 
 	// Add request ID middleware for tracing
@@ -161,10 +162,10 @@ func main() {
 
 	// Static files for web interface
 	e.Static("/assets", staticDir+"/assets")
-	
+
 	// Documentation routes
 	e.Static("/docs", "docs")
-	
+
 	// Serve OpenAPI spec in multiple formats
 	e.File("/api-docs.yaml", "api-docs.yaml")
 	e.GET("/openapi.yaml", func(c echo.Context) error {
@@ -176,20 +177,20 @@ func main() {
 	e.GET("/spec", func(c echo.Context) error {
 		return c.File("api-docs.yaml")
 	})
-	
+
 	// Serve spec as JSON (note: most tools accept YAML)
 	e.GET("/api-docs.json", func(c echo.Context) error {
 		c.Response().Header().Set("Content-Type", "application/json")
 		return c.JSON(http.StatusOK, map[string]interface{}{
-			"message": "OpenAPI spec is available in YAML format at /api-docs.yaml",
+			"message":  "OpenAPI spec is available in YAML format at /api-docs.yaml",
 			"yaml_url": "/api-docs.yaml",
-			"note": "Most tools (including Scalar) work perfectly with YAML specs",
+			"note":     "Most tools (including Scalar) work perfectly with YAML specs",
 		})
 	})
 	e.GET("/openapi.json", func(c echo.Context) error {
 		return c.Redirect(http.StatusPermanentRedirect, "/api-docs.json")
 	})
-	
+
 	// Discovery endpoint for API information
 	e.GET("/api-docs-test", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]interface{}{
@@ -200,11 +201,11 @@ func main() {
 				"fallback_docs":    "/docs/fallback.html",
 			},
 			"specifications": map[string]string{
-				"yaml":        "/api-docs.yaml",
-				"openapi":     "/openapi.yaml", 
-				"swagger":     "/swagger.yaml",
-				"spec":        "/spec",
-				"json":        "/api-docs.json",
+				"yaml":         "/api-docs.yaml",
+				"openapi":      "/openapi.yaml",
+				"swagger":      "/swagger.yaml",
+				"spec":         "/spec",
+				"json":         "/api-docs.json",
 				"openapi_json": "/openapi.json",
 			},
 			"server": c.Request().Host,
@@ -212,22 +213,50 @@ func main() {
 	})
 
 	// Root-level health check for container orchestration (works without /api/v1 prefix)
+	// Deploy verification without credentials. This repo has no CI and
+	// auto-deploys on push, so "did my change actually ship" needs an answer
+	// that does not require an API key -- previously there was none: this
+	// returned a string literal and /api/v1/health a hardcoded version.
+	//
+	// Always 200, whatever the database says. This endpoint is the container
+	// HEALTHCHECK, and failing it on a transient database blip would restart a
+	// server that is otherwise serving fine.
 	e.GET("/health", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+		response := map[string]interface{}{
+			"status":         "ok",
+			"commit":         version.Commit,
+			"started_at":     version.Started.Format(time.RFC3339),
+			"uptime_seconds": int(time.Since(version.Started).Seconds()),
+		}
+
+		if database.MigrationRunning {
+			response["migrations_running"] = true
+		} else if database.MigrationError != nil {
+			response["migration_error"] = database.MigrationError.Error()
+		}
+
+		if v, err := database.AppliedMigrationVersion(); err == nil {
+			response["schema_version"] = v
+			response["database"] = "reachable"
+		} else {
+			response["database"] = "unreachable"
+		}
+
+		return c.JSON(http.StatusOK, response)
 	})
 
 	// Routes
 	api := e.Group("/api/v1")
-	
+
 	// Health check endpoint (no auth required)
 	api.GET("/health", handlers.HealthCheckHandler)
-	
+
 	// Authentication routes (no auth required)
 	auth := api.Group("/auth")
 	auth.POST("/register", handlers.RegisterHandler)
 	auth.POST("/login", handlers.LoginHandler)
 	auth.GET("/plans", handlers.GetPlansHandler)
-	
+
 	// User management routes (require user auth)
 	user := api.Group("/user")
 	user.Use(middleware.RequireUserAuth())
@@ -240,43 +269,43 @@ func main() {
 	user.GET("/usage/daily", handlers.GetDailyUsageHandler)
 	user.GET("/usage/endpoints", handlers.GetEndpointUsageHandler)
 	user.GET("/usage/keys", handlers.GetKeyUsageHandler)
-	
+
 	// Protected API endpoints (require API key)
 	protected := api.Group("")
 	protected.Use(middleware.APIKeyAuth())
 	protected.Use(middleware.UsageHeader())
-	
+
 	// Geocoding endpoints
 	protected.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
 	protected.GET("/search", handlers.SearchZipCodesHandler)
-	
+
 	// Distance and proximity endpoints
 	protected.GET("/distance/:from/:to", handlers.CalculateDistanceHandler)
 	protected.GET("/nearby/:zipcode", handlers.FindNearbyZipCodesHandler)
 	protected.GET("/proximity/:center/:target", handlers.CheckZipCodeProximityHandler)
-	
+
 	// Ohio address endpoints
 	protected.GET("/addresses", handlers.SearchOhioAddressesHandler)
 	protected.GET("/addresses/search", handlers.FullTextSearchAddressesHandler)
 	protected.GET("/addresses/:id", handlers.GetOhioAddressHandler)
-	
+
 	// Ohio county boundary endpoints
 	protected.GET("/counties", handlers.GetCountiesHandler)
 	protected.GET("/counties/:name", handlers.GetCountyDetailHandler)
 	protected.GET("/counties/:name/boundary", handlers.GetCountyBoundaryHandler, middleware.CacheStatic(24*time.Hour))
 	protected.GET("/counties/bounds/search", handlers.GetCountiesInBoundsHandler)
-	
+
 	// City endpoints
 	protected.GET("/cities", handlers.SearchCitiesHandler)
 	protected.GET("/cities/:id", handlers.GetCityHandler)
 	protected.GET("/cities/zips", handlers.GetCityZIPCodesHandler)
-	
+
 	// State endpoints
 	protected.GET("/states", handlers.SearchStatesHandler)
 	protected.GET("/states/lookup", handlers.GetStateByLocationHandler)
 	protected.GET("/states/:identifier", handlers.GetStateHandler)
 	protected.GET("/states/:identifier/boundary", handlers.GetStateBoundaryHandler, middleware.CacheStatic(24*time.Hour))
-	
+
 	// Admin routes (require admin auth)
 	admin := api.Group("/admin")
 	admin.Use(middleware.RequireAdminAuth())
@@ -291,7 +320,7 @@ func main() {
 	admin.GET("/system-status", handlers.GetSystemStatusHandler)
 	admin.GET("/counties", handlers.GetCountyStatsHandler)
 	admin.GET("/analytics", handlers.GetAdminAnalyticsHandler)
-	
+
 	// Dataset management routes (admin only)
 	admin.POST("/datasets/upload", handlers.UploadDatasetHandler)
 	admin.POST("/datasets/upload-bulk", handlers.UploadMultipleHandler)
@@ -306,18 +335,18 @@ func main() {
 	// This serves the React app for all non-API routes
 	e.GET("/*", func(c echo.Context) error {
 		path := c.Request().URL.Path
-		
+
 		// Don't handle API routes here - they're already registered above
 		if len(path) >= 4 && path[:4] == "/api" {
 			return echo.ErrNotFound
 		}
-		
+
 		// Serve static files if they exist
 		filePath := staticDir + path
 		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
 			return c.File(filePath)
 		}
-		
+
 		// Otherwise serve index.html for SPA routing
 		return c.File(staticDir + "/index.html")
 	})
@@ -335,21 +364,21 @@ func main() {
 	if os.Getenv("GO_ENV") == "production" || os.Getenv("BIND_ALL_INTERFACES") == "true" {
 		bindAddr = "0.0.0.0"
 	}
-	
+
 	log.Printf("=== SERVER STARTUP ===")
 	log.Printf("Environment: GO_ENV=%s", os.Getenv("GO_ENV"))
 	log.Printf("Binding to: %s:%s", bindAddr, port)
 	log.Printf("Static directory: %s", staticDir)
-	
+
 	// Configure server with extended timeouts for large file uploads (2.09GB total possible)
 	server := &http.Server{
 		Addr:              bindAddr + ":" + port,
-		ReadTimeout:       30 * time.Minute,  // Time to read entire request including body
-		WriteTimeout:      30 * time.Minute,  // Time to write response
-		IdleTimeout:       5 * time.Minute,   // Keep-alive timeout
-		ReadHeaderTimeout: 60 * time.Second,  // Time to read request headers
+		ReadTimeout:       30 * time.Minute, // Time to read entire request including body
+		WriteTimeout:      30 * time.Minute, // Time to write response
+		IdleTimeout:       5 * time.Minute,  // Keep-alive timeout
+		ReadHeaderTimeout: 60 * time.Second, // Time to read request headers
 	}
-	
+
 	log.Printf("Starting HTTP server...")
 	if err := e.StartServer(server); err != nil {
 		log.Fatalf("Failed to start server: %v", err)

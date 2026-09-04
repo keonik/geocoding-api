@@ -3,11 +3,13 @@ package handlers
 import (
 	"compress/gzip"
 	"fmt"
+	"geocoding-api/version"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"geocoding-api/database"
 	"geocoding-api/services"
@@ -76,7 +78,7 @@ func SearchZipCodesHandler(c echo.Context) error {
 
 	stateCode := c.QueryParam("state")
 	limitStr := c.QueryParam("limit")
-	
+
 	// Default limit is 50, max is 100
 	limit := 50
 	if limitStr != "" {
@@ -107,11 +109,17 @@ func HealthCheckHandler(c echo.Context) error {
 	response := map[string]interface{}{
 		"status":        "healthy",
 		"service":       "geocoding-api",
-		"version":       "1.0.0",
+		"version":       "1.0.0", // kept for compatibility; "commit" is the real one
+		"commit":        version.Commit,
+		"started_at":    version.Started.Format(time.RFC3339),
 		"documentation": "http://localhost:8080/docs",
 		"openapi_spec":  "http://localhost:8080/api-docs.yaml",
 	}
-	
+
+	if v, err := database.AppliedMigrationVersion(); err == nil {
+		response["schema_version"] = v
+	}
+
 	// Include migration status if migrations are running in background
 	if database.MigrationRunning {
 		response["migrations_running"] = true
@@ -120,7 +128,7 @@ func HealthCheckHandler(c echo.Context) error {
 		response["migration_error"] = database.MigrationError.Error()
 		response["note"] = "Migration error occurred - check logs"
 	}
-	
+
 	return c.JSON(http.StatusOK, response)
 }
 
@@ -128,8 +136,6 @@ func HealthCheckHandler(c echo.Context) error {
 func DocsRedirectHandler(c echo.Context) error {
 	return c.Redirect(http.StatusPermanentRedirect, "/docs")
 }
-
-
 
 // LoadDataHandler handles POST requests to load CSV data (admin endpoint)
 func LoadDataHandler(c echo.Context) error {
@@ -143,7 +149,7 @@ func LoadDataHandler(c echo.Context) error {
 	if _, err := os.Stat(gzPath); err == nil && !os.IsNotExist(err) {
 		// Decompress the file
 		decompressedPath := filepath.Join(os.TempDir(), filepath.Base(filePath))
-		
+
 		if err := decompressFile(gzPath, decompressedPath); err != nil {
 			return c.JSON(http.StatusInternalServerError, GeocodeResponse{
 				Success: false,
@@ -331,10 +337,10 @@ func CheckZipCodeProximityHandler(c echo.Context) error {
 	}
 
 	result := map[string]interface{}{
-		"center_zip_code":    centerZip,
-		"target_zip_code":    targetZip,
-		"radius_miles":       radius,
-		"is_within_radius":   isWithin,
+		"center_zip_code":       centerZip,
+		"target_zip_code":       targetZip,
+		"radius_miles":          radius,
+		"is_within_radius":      isWithin,
 		"actual_distance_miles": actualDistance,
 		"actual_distance_km":    actualDistance * 1.60934,
 	}

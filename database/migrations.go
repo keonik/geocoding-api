@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -82,61 +83,61 @@ func RunMigrations() error {
 			Up:          addSubscriptionsUniqueConstraint,
 			Down:        removeSubscriptionsUniqueConstraint,
 		},
-	{
-		Version:     11,
-		Description: "Add trigram indexes for faster text search",
-		Up:          addTrigramIndexes,
-		Down:        removeTrigramIndexes,
-	},
-	{
-		Version:     12,
-		Description: "Add composite index for rate limit queries",
-		Up:          addRateLimitIndex,
-		Down:        removeRateLimitIndex,
-	},
-	{
-		Version:     13,
-		Description: "Create cities table for US city data",
-		Up:          createCitiesTable,
-		Down:        dropCitiesTable,
-	},
-	{
-		Version:     14,
-		Description: "Create US states table with boundary data",
-		Up:          createStatesTable,
-		Down:        dropStatesTable,
-	},
-	{
-		Version:     15,
-		Description: "Add full_address column to ohio_addresses table",
-		Up:          addFullAddressColumn,
-		Down:        removeFullAddressColumn,
-	},
-	{
-		Version:     16,
-		Description: "Expand street abbreviations in full_address column",
-		Up:          expandStreetAbbreviations,
-		Down:        revertStreetAbbreviations,
-	},
-	{
-		Version:     17,
-		Description: "Create datasets table for tracking uploaded county data",
-		Up:          createDatasetsTable,
-		Down:        dropDatasetsTable,
-	},
-	{
-		Version:     18,
-		Description: "Add full-text search column and GIN index to ohio_addresses",
-		Up:          addAddressFullTextSearch,
-		Down:        removeAddressFullTextSearch,
-	},
-	{
-		Version:     19,
-		Description: "Precompute simplified boundary geometry for states and counties",
-		Up:          addSimplifiedBoundaryGeometry,
-		Down:        removeSimplifiedBoundaryGeometry,
-	},
-}	// Create migrations table if it doesn't exist
+		{
+			Version:     11,
+			Description: "Add trigram indexes for faster text search",
+			Up:          addTrigramIndexes,
+			Down:        removeTrigramIndexes,
+		},
+		{
+			Version:     12,
+			Description: "Add composite index for rate limit queries",
+			Up:          addRateLimitIndex,
+			Down:        removeRateLimitIndex,
+		},
+		{
+			Version:     13,
+			Description: "Create cities table for US city data",
+			Up:          createCitiesTable,
+			Down:        dropCitiesTable,
+		},
+		{
+			Version:     14,
+			Description: "Create US states table with boundary data",
+			Up:          createStatesTable,
+			Down:        dropStatesTable,
+		},
+		{
+			Version:     15,
+			Description: "Add full_address column to ohio_addresses table",
+			Up:          addFullAddressColumn,
+			Down:        removeFullAddressColumn,
+		},
+		{
+			Version:     16,
+			Description: "Expand street abbreviations in full_address column",
+			Up:          expandStreetAbbreviations,
+			Down:        revertStreetAbbreviations,
+		},
+		{
+			Version:     17,
+			Description: "Create datasets table for tracking uploaded county data",
+			Up:          createDatasetsTable,
+			Down:        dropDatasetsTable,
+		},
+		{
+			Version:     18,
+			Description: "Add full-text search column and GIN index to ohio_addresses",
+			Up:          addAddressFullTextSearch,
+			Down:        removeAddressFullTextSearch,
+		},
+		{
+			Version:     19,
+			Description: "Precompute simplified boundary geometry for states and counties",
+			Up:          addSimplifiedBoundaryGeometry,
+			Down:        removeSimplifiedBoundaryGeometry,
+		},
+	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
 	}
@@ -174,7 +175,7 @@ func RunMigrationsAsync() {
 		defer func() {
 			MigrationRunning = false
 		}()
-		
+
 		log.Println("Starting migrations in background...")
 		if err := RunMigrations(); err != nil {
 			MigrationError = err
@@ -193,6 +194,22 @@ type Migration struct {
 	Down        func() error
 }
 
+// AppliedMigrationVersion returns the highest migration version recorded in
+// schema_migrations, or 0 if none have run yet.
+//
+// Exposed on /health so a deploy can be verified without credentials: if the
+// number has not moved, the new binary's migrations have not run.
+func AppliedMigrationVersion() (int, error) {
+	var version sql.NullInt64
+	if err := DB.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		return 0, err
+	}
+	if !version.Valid {
+		return 0, nil
+	}
+	return int(version.Int64), nil
+}
+
 // createMigrationsTable creates the schema_migrations table
 func createMigrationsTable() error {
 	query := `
@@ -201,7 +218,7 @@ func createMigrationsTable() error {
 		applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		description TEXT NOT NULL
 	)`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -245,7 +262,7 @@ func createZipCodesTable() error {
 	CREATE INDEX IF NOT EXISTS idx_zip_codes_county_name ON zip_codes(primary_county_name);
 	CREATE INDEX IF NOT EXISTS idx_zip_codes_location ON zip_codes(latitude, longitude);
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -366,7 +383,7 @@ func createAuthTables() error {
 		BEFORE UPDATE ON subscriptions 
 		FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -383,7 +400,7 @@ func dropAuthTables() error {
 	DROP TABLE IF EXISTS api_keys;
 	DROP TABLE IF EXISTS users;
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -395,7 +412,7 @@ func addUserFields() error {
 	ADD COLUMN IF NOT EXISTS name VARCHAR(255),
 	ADD COLUMN IF NOT EXISTS company VARCHAR(255);
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -407,7 +424,7 @@ func removeUserFields() error {
 	DROP COLUMN IF EXISTS name,
 	DROP COLUMN IF EXISTS company;
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -419,7 +436,7 @@ func addAPIKeyFields() error {
 	ADD COLUMN IF NOT EXISTS key_preview VARCHAR(50),
 	ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP;
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -431,7 +448,7 @@ func removeAPIKeyFields() error {
 	DROP COLUMN IF EXISTS key_preview,
 	DROP COLUMN IF EXISTS expires_at;
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -467,7 +484,7 @@ func updateSubscriptionsTable() error {
 		current_period_end = COALESCE(current_period_end, created_at + INTERVAL '1 month')
 	WHERE current_period_start IS NULL OR current_period_end IS NULL;
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -496,7 +513,7 @@ func revertSubscriptionsTable() error {
 	DROP COLUMN IF EXISTS current_period_start,
 	DROP COLUMN IF EXISTS status;
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -516,7 +533,7 @@ func addAdminRole() error {
 	WHERE id = (SELECT MIN(id) FROM users) 
 	AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = TRUE);
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -527,7 +544,7 @@ func removeAdminRole() error {
 	DROP INDEX IF EXISTS idx_users_is_admin;
 	ALTER TABLE users DROP COLUMN IF EXISTS is_admin;
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -568,7 +585,7 @@ func createOhioAddressesTable() error {
 	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_postcode ON ohio_addresses(postcode);
 	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_street ON ohio_addresses(street);
 	`
-	
+
 	if _, err := DB.Exec(createTableQuery); err != nil {
 		return fmt.Errorf("failed to create ohio_addresses table: %w", err)
 	}
@@ -606,8 +623,8 @@ func createOhioCountiesTable() error {
 	-- Create indexes for common queries
 	CREATE INDEX IF NOT EXISTS idx_ohio_counties_name ON ohio_counties(county_name);
 	CREATE INDEX IF NOT EXISTS idx_ohio_counties_address_count ON ohio_counties(address_count);
-	`;
-	
+	`
+
 	if _, err := DB.Exec(createTableQuery); err != nil {
 		return fmt.Errorf("failed to create ohio_counties table: %w", err)
 	}
@@ -625,14 +642,14 @@ func dropOhioCountiesTable() error {
 // loadOhioCountyBoundaries loads county boundary data from all Ohio county GeoJSON meta files
 func loadOhioCountyBoundaries() error {
 	log.Println("Loading Ohio county boundary data from GeoJSON meta files...")
-	
+
 	// Download Ohio data if not present
 	downloader := utils.NewFileDownloader("./cache")
 	if err := downloader.DownloadOhioData("."); err != nil {
 		log.Printf("Warning: Failed to download Ohio data: %v", err)
 		log.Println("Continuing with existing files if available...")
 	}
-	
+
 	// Get all meta files in the oh directory (only address county files, not buildings/parcels)
 	files, err := filepath.Glob("oh/*-addresses-county.geojson.meta")
 	if err != nil {
@@ -649,7 +666,7 @@ func loadOhioCountyBoundaries() error {
 		countyName = strings.Title(strings.ToLower(strings.TrimSpace(countyName)))
 
 		log.Printf("Processing county boundary: %s (%s)", filename, countyName)
-		
+
 		// Read and parse the meta file
 		data, err := os.ReadFile(filePath)
 		if err != nil {
@@ -658,12 +675,12 @@ func loadOhioCountyBoundaries() error {
 		}
 
 		var metaData struct {
-			SourceName string `json:"source_name"`
-			Layer      string `json:"layer"`
-			Count      int    `json:"count"`
+			SourceName string                 `json:"source_name"`
+			Layer      string                 `json:"layer"`
+			Count      int                    `json:"count"`
 			Stats      map[string]interface{} `json:"stats"`
 			Bounds     struct {
-				Type        string    `json:"type"`
+				Type        string        `json:"type"`
 				Coordinates [][][]float64 `json:"coordinates"`
 			} `json:"bounds"`
 		}
@@ -687,7 +704,7 @@ func loadOhioCountyBoundaries() error {
 				wktCoords = append(wktCoords, fmt.Sprintf("%f %f", coord[0], coord[1]))
 			}
 		}
-		
+
 		if len(wktCoords) < 4 {
 			log.Printf("Warning: Invalid polygon coordinates in %s", filePath)
 			continue
@@ -725,69 +742,69 @@ func loadOhioCountyBoundaries() error {
 	}
 
 	log.Printf("Successfully loaded %d county boundary records", totalRecords)
-	
+
 	// Clean up GeoJSON files after successful loading to save disk space
 	if err := cleanupGeoJSONFiles(); err != nil {
 		log.Printf("Warning: Failed to cleanup GeoJSON files: %v", err)
 		// Don't return error as the migration was successful
 	}
-	
+
 	return nil
 }
 
 // cleanupGeoJSONFiles removes GeoJSON and meta files after data has been loaded into database
 func cleanupGeoJSONFiles() error {
 	log.Println("Cleaning up GeoJSON files to save disk space...")
-	
+
 	// Check if we're in production environment
 	isProd := os.Getenv("ENV") == "production" || os.Getenv("GO_ENV") == "production"
-	
+
 	// Also check if CLEANUP_GEOJSON is explicitly set
 	cleanupEnabled := os.Getenv("CLEANUP_GEOJSON") == "true"
-	
+
 	if !isProd && !cleanupEnabled {
 		log.Println("Skipping GeoJSON cleanup in development environment. Set CLEANUP_GEOJSON=true to force cleanup.")
 		return nil
 	}
-	
+
 	// Get all GeoJSON files (both .geojson and .geojson.meta files)
 	patterns := []string{
 		"oh/*.geojson",
 		"oh/*.geojson.meta",
 	}
-	
+
 	totalFilesDeleted := 0
 	var totalSizeFreed int64
-	
+
 	for _, pattern := range patterns {
 		files, err := filepath.Glob(pattern)
 		if err != nil {
 			log.Printf("Warning: Failed to find files with pattern %s: %v", pattern, err)
 			continue
 		}
-		
+
 		for _, filePath := range files {
 			// Get file size before deletion
 			if info, err := os.Stat(filePath); err == nil {
 				totalSizeFreed += info.Size()
 			}
-			
+
 			// Delete the file
 			if err := os.Remove(filePath); err != nil {
 				log.Printf("Warning: Failed to delete %s: %v", filePath, err)
 				continue
 			}
-			
+
 			totalFilesDeleted++
 		}
 	}
-	
+
 	// Convert bytes to human readable format
 	sizeFreedMB := float64(totalSizeFreed) / (1024 * 1024)
-	
-	log.Printf("Successfully cleaned up %d GeoJSON files, freed %.2f MB of disk space", 
+
+	log.Printf("Successfully cleaned up %d GeoJSON files, freed %.2f MB of disk space",
 		totalFilesDeleted, sizeFreedMB)
-	
+
 	// Remove the oh directory if it's empty
 	if entries, err := os.ReadDir("oh"); err == nil && len(entries) == 0 {
 		if err := os.Remove("oh"); err != nil {
@@ -796,9 +813,10 @@ func cleanupGeoJSONFiles() error {
 			log.Println("Removed empty oh directory")
 		}
 	}
-	
+
 	return nil
 }
+
 // addSubscriptionsUniqueConstraint adds a unique constraint on user_id in subscriptions table
 func addSubscriptionsUniqueConstraint() error {
 	_, err := DB.Exec(`
@@ -867,7 +885,7 @@ func removeTrigramIndexes() error {
 
 func addRateLimitIndex() error {
 	log.Println("Creating composite index for rate limit queries...")
-	
+
 	// Composite index for the rate limit query: user_id + billable + created_at
 	_, err := DB.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_usage_records_rate_limit 
@@ -876,7 +894,7 @@ func addRateLimitIndex() error {
 	if err != nil {
 		return fmt.Errorf("failed to create rate limit index: %w", err)
 	}
-	
+
 	log.Println("Created composite index for rate limit queries")
 	return nil
 }
@@ -1005,7 +1023,7 @@ func dropStatesTable() error {
 // addFullAddressColumn adds full_address column to ohio_addresses table
 func addFullAddressColumn() error {
 	log.Println("Adding full_address column to ohio_addresses table...")
-	
+
 	query := `
 	-- Add full_address column
 	ALTER TABLE ohio_addresses ADD COLUMN IF NOT EXISTS full_address TEXT;
@@ -1028,7 +1046,7 @@ func addFullAddressColumn() error {
 	-- Create regular index for sorting/filtering
 	CREATE INDEX IF NOT EXISTS idx_ohio_addresses_full_address ON ohio_addresses(full_address);
 	`
-	
+
 	if _, err := DB.Exec(query); err != nil {
 		return fmt.Errorf("failed to add full_address column: %w", err)
 	}
@@ -1051,7 +1069,7 @@ func addFullAddressColumn() error {
 	END;
 	$$ LANGUAGE plpgsql;
 	`
-	
+
 	if _, err := DB.Exec(triggerFunc); err != nil {
 		return fmt.Errorf("failed to create trigger function: %w", err)
 	}
@@ -1063,7 +1081,7 @@ func addFullAddressColumn() error {
 	  FOR EACH ROW
 	  EXECUTE FUNCTION update_full_address();
 	`
-	
+
 	if _, err := DB.Exec(trigger); err != nil {
 		return fmt.Errorf("failed to create trigger: %w", err)
 	}
@@ -1086,7 +1104,7 @@ func removeFullAddressColumn() error {
 	-- Drop column
 	ALTER TABLE ohio_addresses DROP COLUMN IF EXISTS full_address;
 	`
-	
+
 	_, err := DB.Exec(query)
 	return err
 }
@@ -1094,18 +1112,18 @@ func removeFullAddressColumn() error {
 // expandStreetAbbreviations adds function to expand street abbreviations and updates trigger
 func expandStreetAbbreviations() error {
 	migrationFile := "migrations/000016_expand_street_abbreviations.up.sql"
-	
+
 	// Read the migration file
 	content, err := os.ReadFile(migrationFile)
 	if err != nil {
 		return fmt.Errorf("failed to read migration file: %w", err)
 	}
-	
+
 	// Execute the migration
 	if _, err := DB.Exec(string(content)); err != nil {
 		return fmt.Errorf("failed to execute migration: %w", err)
 	}
-	
+
 	log.Println("Street abbreviations expanded in full_address column")
 	return nil
 }
@@ -1113,18 +1131,18 @@ func expandStreetAbbreviations() error {
 // revertStreetAbbreviations reverts the street abbreviation expansion
 func revertStreetAbbreviations() error {
 	migrationFile := "migrations/000016_expand_street_abbreviations.down.sql"
-	
+
 	// Read the migration file
 	content, err := os.ReadFile(migrationFile)
 	if err != nil {
 		return fmt.Errorf("failed to read migration file: %w", err)
 	}
-	
+
 	// Execute the rollback
 	if _, err := DB.Exec(string(content)); err != nil {
 		return fmt.Errorf("failed to execute rollback: %w", err)
 	}
-	
+
 	log.Println("Street abbreviation expansion reverted")
 	return nil
 }
@@ -1132,18 +1150,18 @@ func revertStreetAbbreviations() error {
 // createDatasetsTable creates the datasets table
 func createDatasetsTable() error {
 	migrationFile := "migrations/000017_create_datasets_table.up.sql"
-	
+
 	// Read the migration file
 	content, err := os.ReadFile(migrationFile)
 	if err != nil {
 		return fmt.Errorf("failed to read migration file: %w", err)
 	}
-	
+
 	// Execute the migration
 	if _, err := DB.Exec(string(content)); err != nil {
 		return fmt.Errorf("failed to execute migration: %w", err)
 	}
-	
+
 	log.Println("Datasets table created successfully")
 	return nil
 }
@@ -1151,18 +1169,18 @@ func createDatasetsTable() error {
 // dropDatasetsTable drops the datasets table
 func dropDatasetsTable() error {
 	migrationFile := "migrations/000017_create_datasets_table.down.sql"
-	
+
 	// Read the migration file
 	content, err := os.ReadFile(migrationFile)
 	if err != nil {
 		return fmt.Errorf("failed to read migration file: %w", err)
 	}
-	
+
 	// Execute the rollback
 	if _, err := DB.Exec(string(content)); err != nil {
 		return fmt.Errorf("failed to execute rollback: %w", err)
 	}
-	
+
 	log.Println("Datasets table dropped successfully")
 	return nil
 }

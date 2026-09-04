@@ -32,9 +32,17 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Optional: the commit being deployed, surfaced by /health.
+#   docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
+# Left empty, /health reports commit "unknown" and you fall back to started_at
+# and schema_version, which need no build configuration to be useful.
+# Go's own VCS stamping cannot fill this in here: .dockerignore excludes the
+# 186 MB .git directory, and including it would be paid on every build.
+ARG GIT_SHA=""
+
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags='-w -s -extldflags "-static"' \
+    -ldflags="-w -s -extldflags '-static' -X geocoding-api/version.Commit=${GIT_SHA}" \
     -o main .
 
 # Production stage
