@@ -351,6 +351,52 @@ func GetKeyUsageHandler(c echo.Context) error {
 	})
 }
 
+// RollAPIKeyHandler replaces the secret behind an existing key, keeping the
+// key itself -- its name, scopes and usage history all survive.
+func RollAPIKeyHandler(c echo.Context) error {
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
+			Success: false,
+			Error:   "User not authenticated",
+		})
+	}
+
+	keyID := c.Param("id")
+	keyIDInt, err := strconv.Atoi(keyID)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+			Success: false,
+			Error:   "Invalid API key ID",
+		})
+	}
+
+	apiKey, keyString, err := services.Auth.RollAPIKey(userID, keyIDInt)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return c.JSON(http.StatusNotFound, GeocodeResponse{
+				Success: false,
+				Error:   "API key not found",
+			})
+		}
+		c.Logger().Errorf("Failed to roll API key: %v", err)
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to roll API key",
+		})
+	}
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"api_key":    apiKey,
+			"key_string": keyString,
+			"message":    "API key rolled. The previous secret stopped working immediately.",
+			"warning":    "This is the only time you'll see the full API key. Store it securely!",
+		},
+	})
+}
+
 // GetAPIKeysHandler returns all API keys for a user
 func GetAPIKeysHandler(c echo.Context) error {
 	userID, ok := c.Get("user_id").(int)

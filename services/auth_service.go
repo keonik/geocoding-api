@@ -182,25 +182,35 @@ func (as *AuthService) GetUserByID(userID int) (*models.User, error) {
 	return &user, nil
 }
 
-// GenerateAPIKey creates a new API key for a user
-func (as *AuthService) GenerateAPIKey(userID int, name string, permissions []string) (*models.APIKey, string, error) {
-	// Generate random API key
+// newAPIKeySecret mints a key string plus the hash and preview that get
+// stored for it. Shared by GenerateAPIKey and RollAPIKey so the two cannot
+// drift apart on format or hashing.
+func newAPIKeySecret() (apiKey, keyHash, keyPreview string, err error) {
 	keyBytes := make([]byte, 32)
-	_, err := rand.Read(keyBytes)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate API key: %w", err)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return "", "", "", fmt.Errorf("failed to generate API key: %w", err)
 	}
 
-	// Create key with prefix for easy identification
-	apiKey := fmt.Sprintf("gk_%s", hex.EncodeToString(keyBytes))
-	
-	// Hash the key for storage
+	// Prefix for easy identification
+	apiKey = fmt.Sprintf("gk_%s", hex.EncodeToString(keyBytes))
+
+	// Only the hash is stored; the plaintext is shown once and never again
 	hasher := sha256.New()
 	hasher.Write([]byte(apiKey))
-	keyHash := hex.EncodeToString(hasher.Sum(nil))
+	keyHash = hex.EncodeToString(hasher.Sum(nil))
 
-	// Create preview (first 8 + last 4 characters)
-	keyPreview := fmt.Sprintf("%s...%s", apiKey[:11], apiKey[len(apiKey)-4:])
+	// Preview (first 11 + last 4 characters)
+	keyPreview = fmt.Sprintf("%s...%s", apiKey[:11], apiKey[len(apiKey)-4:])
+
+	return apiKey, keyHash, keyPreview, nil
+}
+
+// GenerateAPIKey creates a new API key for a user
+func (as *AuthService) GenerateAPIKey(userID int, name string, permissions []string) (*models.APIKey, string, error) {
+	apiKey, keyHash, keyPreview, err := newAPIKeySecret()
+	if err != nil {
+		return nil, "", err
+	}
 
 	// Insert API key
 	var key models.APIKey
@@ -398,6 +408,48 @@ func (a *AuthService) GetUserAPIKeys(userID int) ([]models.APIKey, error) {
 	}
 	
 	return apiKeys, nil
+}
+
+// RollAPIKey replaces the secret behind an existing key without creating a
+// new one.
+//
+// The row survives, so the key keeps its id, name, scopes and created_at --
+// and, because usage_records.api_key_id references that id, its entire usage
+// history. That is the difference from revoke-and-recreate, which starts the
+// history over and orphans the old rows behind an inactive key.
+//
+// The old secret stops validating the moment this returns: ValidateAPIKey
+// matches on key_hash, and there is only ever one.
+func (a *AuthService) RollAPIKey(userID, keyID int) (*models.APIKey, string, error) {
+	apiKey, keyHash, keyPreview, err := newAPIKeySecret()
+	if err != nil {
+		return nil, "", err
+	}
+
+	var key models.APIKey
+	var permissionsArray pq.StringArray
+
+	// Scoped by user_id so one account cannot roll another's key, and by
+	// is_active so a revoked key cannot be silently brought back to life.
+	err = database.DB.QueryRow(`
+		UPDATE api_keys
+		SET key_hash = $1, key_preview = $2, updated_at = NOW()
+		WHERE id = $3 AND user_id = $4 AND is_active = true
+		RETURNING id, user_id, name, key_preview, is_active, permissions, created_at
+	`, keyHash, keyPreview, keyID, userID).Scan(
+		&key.ID, &key.UserID, &key.Name, &key.KeyPreview,
+		&key.IsActive, &permissionsArray, &key.CreatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, "", fmt.Errorf("API key not found or access denied")
+		}
+		return nil, "", fmt.Errorf("failed to roll API key: %w", err)
+	}
+
+	key.Permissions = models.JSONArray(permissionsArray)
+
+	return &key, apiKey, nil
 }
 
 // DeleteAPIKey soft deletes an API key (marks as inactive)

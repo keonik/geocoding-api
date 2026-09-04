@@ -39,7 +39,11 @@ function APIKeysPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
-  const [dialog, setDialog] = useState<'create' | 'created' | null>(null)
+  const [dialog, setDialog] = useState<'create' | 'created' | 'roll' | null>(null)
+  const [rollTarget, setRollTarget] = useState<APIKey | null>(null)
+  // Set when the shown secret came from a roll rather than a creation, so the
+  // 'shown once' dialog can say which happened.
+  const [rolledName, setRolledName] = useState('')
   const [newKeyName, setNewKeyName] = useState('')
   const [scopes, setScopes] = useState<string[]>(['geocode', 'search'])
   const [createdKey, setCreatedKey] = useState('')
@@ -121,6 +125,23 @@ function APIKeysPage() {
     }
   }
 
+  const roll = async (key: APIKey) => {
+    setSaving(true)
+    try {
+      const res = await apiKeysAPI.roll(key.id)
+      setCreatedKey(res.data?.key_string ?? '')
+      setRolledName(key.name)
+      setCopied(false)
+      setDialog('created')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to roll key')
+      setDialog(null)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const revoke = async (id: string) => {
     try {
       await apiKeysAPI.delete(id)
@@ -157,6 +178,7 @@ function APIKeysPage() {
           onClick={() => {
             setNewKeyName('')
             setScopes(['geocode', 'search'])
+            setRolledName('')
             setDialog('create')
           }}
         >
@@ -208,7 +230,17 @@ function APIKeysPage() {
                   </td>
                   <td className="opacity-75">{fmtDate(k.last_used_at)}</td>
                   <td className="opacity-75">{fmtDate(k.created_at)}</td>
-                  <td className="text-right">
+                  <td className="text-right whitespace-nowrap">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => {
+                        setRollTarget(k)
+                        setDialog('roll')
+                      }}
+                    >
+                      Roll
+                    </button>
                     <button type="button" className="btn btn-ghost" onClick={() => revoke(k.id)}>
                       Revoke
                     </button>
@@ -231,17 +263,25 @@ function APIKeysPage() {
             Limits
           </div>
           <div className="text-sm leading-relaxed">
-            {stats ? (
+            {stats && stats.rate_limit.monthly_limit < 0 ? (
+              <>
+                Your plan has no monthly call limit. Usage is still recorded per key, and{' '}
+                {num(stats.rate_limit.current_usage)} calls have been made across this account in{' '}
+                {stats.usage_summary.month}.
+              </>
+            ) : stats ? (
               <>
                 Your {stats.usage_summary.month} allowance is {num(stats.rate_limit.monthly_limit)}{' '}
                 calls, {num(stats.rate_limit.remaining)} remaining. The limit is enforced across
-                all keys on the account, not per key.
+                all keys on the account, not per key. Requests past it return{' '}
+                <span className="font-mono">429</span> and are recorded non-billable.
               </>
             ) : (
-              'Limits are enforced across all keys on the account, not per key.'
-            )}{' '}
-            Requests past it return <span className="font-mono">429</span> and are recorded
-            non-billable.
+              <>
+                Limits are enforced across all keys on the account, not per key. Requests past a
+                limit return <span className="font-mono">429</span> and are recorded non-billable.
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -315,13 +355,53 @@ function APIKeysPage() {
         </div>
       )}
 
+      {/* Roll confirmation — destructive, so it states the consequence plainly */}
+      {dialog === 'roll' && rollTarget && (
+        <div className="dialog-backdrop" onClick={() => setDialog(null)}>
+          <div
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Roll API key"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="dialog-title">Roll “{rollTarget.name}”?</div>
+            <div className="dialog-body">
+              A new secret is issued and{' '}
+              <strong>the current one stops working immediately</strong> — anything using it
+              will start getting 401s until you update it.
+              <br />
+              <br />
+              The key keeps its name, scopes and usage history, so this is the way to rotate a
+              secret without losing what the key has done.
+            </div>
+            <div className="dialog-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => setDialog(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => roll(rollTarget)}
+                disabled={saving}
+              >
+                {saving ? 'Rolling…' : 'Roll key'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Key created */}
       {dialog === 'created' && (
         <div className="dialog-backdrop">
           <div className="dialog" role="dialog" aria-modal="true" aria-label="Key created">
-            <div className="dialog-title">Key created</div>
+            <div className="dialog-title">
+              {rolledName ? `New secret for “${rolledName}”` : 'Key created'}
+            </div>
             <div className="dialog-body">
               Copy it now — this is the only time the full key is shown.
+              {rolledName && ' The previous secret has already stopped working.'}
             </div>
             <div className="break-all bg-[var(--gc-code-bg)] p-3.5 font-mono text-[13px] text-[var(--gc-code-ink)]">
               {createdKey || '(the server did not return a key string)'}

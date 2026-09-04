@@ -20,6 +20,14 @@ export const apiKeysAPI = {
     })
   },
 
+  /** Replaces the secret behind an existing key; the key keeps its id, name,
+   *  scopes and usage history. The old secret stops working immediately. */
+  roll: async (keyId: string): Promise<APIResponse<CreateAPIKeyResponse>> => {
+    return fetchAPI(`/api/v1/user/api-keys/${keyId}/roll`, {
+      method: 'POST',
+    })
+  },
+
   delete: async (keyId: string): Promise<APIResponse<null>> => {
     return fetchAPI(`/api/v1/user/api-keys/${keyId}`, {
       method: 'DELETE',
