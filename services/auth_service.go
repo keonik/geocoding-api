@@ -965,6 +965,70 @@ func (as *AuthService) GetEndpointUsage(userID int, days int) ([]models.Endpoint
 	return endpointUsage, nil
 }
 
+// GetKeyUsage returns per-API-key usage for a user over a date range.
+//
+// LEFT JOIN, with the date filter in the JOIN rather than the WHERE, so a key
+// that made no calls in the window still comes back with zeros instead of
+// vanishing. Inactive keys are included on purpose: DeleteAPIKey only flips
+// is_active, so a revoked key keeps its usage history, and omitting it here
+// would make that history unreachable from the UI.
+func (as *AuthService) GetKeyUsage(userID int, days int) ([]models.KeyUsage, error) {
+	if days <= 0 {
+		days = 30
+	}
+
+	query := `
+		SELECT
+			k.id,
+			k.name,
+			COALESCE(k.key_preview, '') AS key_preview,
+			k.is_active,
+			COUNT(u.id) AS total_calls,
+			COUNT(u.id) FILTER (WHERE u.billable = true) AS billable_calls,
+			COALESCE(AVG(u.response_time_ms), 0) AS avg_response_time,
+			COUNT(u.id) FILTER (WHERE u.status_code >= 400) AS error_count,
+			MAX(u.created_at) AS last_call
+		FROM api_keys k
+		LEFT JOIN usage_records u
+			ON u.api_key_id = k.id
+			AND u.created_at >= CURRENT_DATE - INTERVAL '1 day' * $2
+		WHERE k.user_id = $1
+		GROUP BY k.id, k.name, k.key_preview, k.is_active
+		ORDER BY total_calls DESC, k.created_at DESC
+	`
+
+	rows, err := database.DB.Query(query, userID, days)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get key usage: %w", err)
+	}
+	defer rows.Close()
+
+	var keyUsage []models.KeyUsage
+	for rows.Next() {
+		var ku models.KeyUsage
+		if err := rows.Scan(
+			&ku.KeyID,
+			&ku.Name,
+			&ku.KeyPreview,
+			&ku.IsActive,
+			&ku.TotalCalls,
+			&ku.BillableCalls,
+			&ku.AvgResponseTime,
+			&ku.ErrorCount,
+			&ku.LastCall,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan key usage: %w", err)
+		}
+		keyUsage = append(keyUsage, ku)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating key usage: %w", err)
+	}
+
+	return keyUsage, nil
+}
+
 // SyncAdminUsers updates admin status for users listed in ADMIN_EMAILS environment variable
 func (as *AuthService) SyncAdminUsers() error {
 	adminEmails := os.Getenv("ADMIN_EMAILS")

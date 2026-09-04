@@ -95,6 +95,19 @@ type EndpointUsage struct {
 	ErrorCount      int     `json:"error_count"`
 }
 
+// KeyUsage represents usage statistics for a single API key
+type KeyUsage struct {
+	KeyID           int        `json:"key_id"`
+	Name            string     `json:"name"`
+	KeyPreview      string     `json:"key_preview"`
+	IsActive        bool       `json:"is_active"`
+	TotalCalls      int        `json:"total_calls"`
+	BillableCalls   int        `json:"billable_calls"`
+	AvgResponseTime float64    `json:"avg_response_time"` // in milliseconds
+	ErrorCount      int        `json:"error_count"`
+	LastCall        *time.Time `json:"last_call"` // null when the key made no calls in range
+}
+
 // JSONArray for storing array data in database
 type JSONArray []string
 

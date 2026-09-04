@@ -238,6 +238,7 @@ func main() {
 	user.GET("/usage", handlers.GetUsageHandler)
 	user.GET("/usage/daily", handlers.GetDailyUsageHandler)
 	user.GET("/usage/endpoints", handlers.GetEndpointUsageHandler)
+	user.GET("/usage/keys", handlers.GetKeyUsageHandler)
 	
 	// Protected API endpoints (require API key)
 	protected := api.Group("")

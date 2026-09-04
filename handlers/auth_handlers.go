@@ -319,6 +319,38 @@ func GetEndpointUsageHandler(c echo.Context) error {
 	})
 }
 
+// GetKeyUsageHandler returns per-API-key usage statistics for a user
+func GetKeyUsageHandler(c echo.Context) error {
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
+			Success: false,
+			Error:   "User not authenticated",
+		})
+	}
+
+	// Get days parameter, default to 30
+	days := 30
+	if daysParam := c.QueryParam("days"); daysParam != "" {
+		if parsedDays, err := strconv.Atoi(daysParam); err == nil && parsedDays > 0 {
+			days = parsedDays
+		}
+	}
+
+	keyUsage, err := services.Auth.GetKeyUsage(userID, days)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to get key usage statistics",
+		})
+	}
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data:    keyUsage,
+	})
+}
+
 // GetAPIKeysHandler returns all API keys for a user
 func GetAPIKeysHandler(c echo.Context) error {
 	userID, ok := c.Get("user_id").(int)

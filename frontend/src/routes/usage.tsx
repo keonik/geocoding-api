@@ -1,14 +1,15 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
 import { AppNav } from '@/components/app-nav'
-import { usageAPI, type DailyUsage, type EndpointUsage } from '@/api/usage'
+import { usageAPI, type DailyUsage, type EndpointUsage, type KeyUsage } from '@/api/usage'
 import type { UsageStats } from '@/types/api'
 
 export const Route = createFileRoute('/usage')({
   component: UsagePage,
 })
 
-const RANGES = [7, 30, 90] as const
+const RANGES = [7, 30, 90, 365] as const
+const rangeLabel = (r: number) => (r === 365 ? 'Last 12 months' : `Last ${r} days`)
 const num = (n: number) => n.toLocaleString('en-US')
 
 /**
@@ -30,6 +31,7 @@ function UsagePage() {
   const [stats, setStats] = useState<UsageStats | null>(null)
   const [daily, setDaily] = useState<DailyUsage[]>([])
   const [endpoints, setEndpoints] = useState<EndpointUsage[]>([])
+  const [keyUsage, setKeyUsage] = useState<KeyUsage[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -47,8 +49,9 @@ function UsagePage() {
       usageAPI.getStats(),
       usageAPI.getDailyUsage(range),
       usageAPI.getEndpointUsage(range),
+      usageAPI.getKeyUsage(range),
     ])
-      .then(([s, d, e]) => {
+      .then(([s, d, e, k]) => {
         if (cancelled) return
         const failures: string[] = []
         const reason = (r: PromiseRejectedResult) =>
@@ -65,6 +68,9 @@ function UsagePage() {
 
         if (e.status === 'fulfilled') setEndpoints(e.value.data ?? [])
         else failures.push(`/user/usage/endpoints: ${reason(e)}`)
+
+        if (k.status === 'fulfilled') setKeyUsage(k.value.data ?? [])
+        else failures.push(`/user/usage/keys: ${reason(k)}`)
 
         setError(failures.join(' · '))
       })
@@ -85,7 +91,9 @@ function UsagePage() {
     return { total, billable, success, errors, peak }
   }, [daily, endpoints])
 
+  // CheckRateLimit returns -1 for monthly_limit on plans with no cap.
   const limit = stats?.rate_limit.monthly_limit ?? 0
+  const unlimited = limit < 0
   const used = stats?.rate_limit.current_usage ?? 0
   const quotaPct = limit > 0 ? (used / limit) * 100 : 0
   const billablePct = totals.total > 0 ? Math.round((totals.billable / totals.total) * 100) : 0
@@ -113,7 +121,9 @@ function UsagePage() {
             {loading
               ? 'Loading…'
               : stats
-                ? `${stats.usage_summary.month} · ${num(limit)} calls included`
+                ? `${stats.usage_summary.month} · ${
+                    unlimited ? 'no monthly limit' : `${num(limit)} calls included`
+                  }`
                 : 'Usage summary unavailable'}
           </div>
         </div>
@@ -126,7 +136,7 @@ function UsagePage() {
                 checked={range === r}
                 onChange={() => setRange(r)}
               />
-              Last {r} days
+              {rangeLabel(r)}
             </label>
           ))}
         </div>
@@ -165,20 +175,25 @@ function UsagePage() {
         </div>
         <div className="border-r border-[var(--color-divider)] px-7 py-6">
           <div className="mb-2.5 text-[11px] uppercase tracking-[0.09em] opacity-60">
-            Quota burn
+            {unlimited ? 'This month' : 'Quota burn'}
           </div>
           <div className="font-display text-[38px] font-extrabold leading-none">
-            {limit > 0 ? `${quotaPct.toFixed(0)}%` : '—'}
+            {unlimited ? num(used) : limit > 0 ? `${quotaPct.toFixed(0)}%` : '—'}
           </div>
-          <div className="mt-3 h-2.5 bg-[var(--color-neutral-300)]">
-            <div
-              className="h-full bg-[var(--color-accent)]"
-              style={{ width: `${Math.min(100, quotaPct)}%` }}
-            />
-          </div>
+          {!unlimited && (
+            <div className="mt-3 h-2.5 bg-[var(--color-neutral-300)]">
+              <div
+                className="h-full bg-[var(--color-accent)]"
+                style={{ width: `${Math.min(100, quotaPct)}%` }}
+              />
+            </div>
+          )}
           <div className="mt-2 text-xs opacity-65">
-            {num(used)} of {num(limit)} in {stats?.usage_summary.month ?? 'this month'} —
-            calendar month, not the range above
+            {unlimited
+              ? `calls in ${stats?.usage_summary.month ?? 'this month'} — no limit on this plan`
+              : `${num(used)} of ${num(limit)} in ${
+                  stats?.usage_summary.month ?? 'this month'
+                } — calendar month, not the range above`}
           </div>
         </div>
         <div className="px-7 py-6">
@@ -273,6 +288,66 @@ function UsagePage() {
             <span className="font-mono">429</span> and are recorded non-billable. Everything
             else that reaches an endpoint counts, including responses that error.
           </div>
+        </div>
+      </div>
+
+      {/* By key */}
+      <div className="border-t-2 border-[var(--color-divider)] px-[clamp(20px,4vw,40px)] pt-7 pb-10">
+        <div className="mb-4 flex flex-wrap items-baseline justify-between gap-3">
+          <h4 className="m-0 text-[19px]">By key</h4>
+          <div className="text-xs opacity-65">
+            Usage is attributed to the key that made the call, not to the signed-in user.
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="table min-w-[720px]">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th className="text-right">Calls</th>
+                <th className="text-right">Billable</th>
+                <th className="text-right">Avg response</th>
+                <th className="text-right">Errors</th>
+                <th>Last call</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keyUsage.map((k) => (
+                <tr key={k.key_id}>
+                  <td>
+                    <span className="font-semibold">{k.name}</span>{' '}
+                    <span className="font-mono text-xs opacity-60">{k.key_preview}</span>
+                    {!k.is_active && (
+                      <span className="tag tag-neutral ml-2">revoked</span>
+                    )}
+                  </td>
+                  <td className="text-right">{num(k.total_calls)}</td>
+                  <td className="text-right">{num(k.billable_calls)}</td>
+                  <td className="text-right">
+                    {k.total_calls > 0 ? `${Math.round(k.avg_response_time)} ms` : '—'}
+                  </td>
+                  <td className="text-right">{num(k.error_count)}</td>
+                  <td className="opacity-75">
+                    {k.last_call
+                      ? new Date(k.last_call).toLocaleString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: 'numeric',
+                          minute: '2-digit',
+                        })
+                      : 'no calls in range'}
+                  </td>
+                </tr>
+              ))}
+              {!loading && keyUsage.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="opacity-65">
+                    No API keys on this account yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

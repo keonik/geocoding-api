@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
 import { AppNav } from '@/components/app-nav'
 import { apiKeysAPI } from '@/api/apiKeys'
-import { usageAPI } from '@/api/usage'
+import { usageAPI, type KeyUsage } from '@/api/usage'
 import type { APIKey, UsageStats } from '@/types/api'
 
 export const Route = createFileRoute('/keys')({
@@ -35,6 +35,7 @@ function APIKeysPage() {
   const navigate = useNavigate()
   const [keys, setKeys] = useState<APIKey[]>([])
   const [stats, setStats] = useState<UsageStats | null>(null)
+  const [usageByKey, setUsageByKey] = useState<Record<number, KeyUsage>>({})
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -48,9 +49,18 @@ function APIKeysPage() {
   const load = useCallback(async () => {
     try {
       // The limits panel is a nicety; a failure there must not hide the keys.
-      const [k, s] = await Promise.allSettled([apiKeysAPI.list(), usageAPI.getStats()])
+      const [k, s, u] = await Promise.allSettled([
+        apiKeysAPI.list(),
+        usageAPI.getStats(),
+        usageAPI.getKeyUsage(30),
+      ])
       if (k.status === 'fulfilled') setKeys(k.value.data?.api_keys ?? [])
       if (s.status === 'fulfilled') setStats(s.value.data ?? null)
+      if (u.status === 'fulfilled') {
+        setUsageByKey(
+          Object.fromEntries((u.value.data ?? []).map((row) => [row.key_id, row]))
+        )
+      }
       setError(
         k.status === 'rejected'
           ? k.reason instanceof Error
@@ -171,6 +181,7 @@ function APIKeysPage() {
                 <th>Name</th>
                 <th>Key</th>
                 <th>Scope</th>
+                <th className="text-right">Calls (30d)</th>
                 <th>Last used</th>
                 <th>Created</th>
                 <th />
@@ -190,6 +201,11 @@ function APIKeysPage() {
                       ))}
                     </span>
                   </td>
+                  <td className="text-right">
+                    {usageByKey[Number(k.id)]
+                      ? num(usageByKey[Number(k.id)].total_calls)
+                      : '—'}
+                  </td>
                   <td className="opacity-75">{fmtDate(k.last_used_at)}</td>
                   <td className="opacity-75">{fmtDate(k.created_at)}</td>
                   <td className="text-right">
@@ -201,7 +217,7 @@ function APIKeysPage() {
               ))}
               {!loading && keys.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="opacity-65">
+                  <td colSpan={7} className="opacity-65">
                     No keys yet. Create one to start making calls.
                   </td>
                 </tr>
