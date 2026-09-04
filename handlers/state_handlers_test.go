@@ -219,12 +219,12 @@ func TestGetStateBoundaryHandler(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			validateFunc: func(t *testing.T, response map[string]interface{}) {
 				assert.Equal(t, "Feature", response["type"].(string))
-				
+
 				properties := response["properties"].(map[string]interface{})
 				assert.Equal(t, "CA", properties["state_abbr"].(string))
 				assert.Equal(t, "California", properties["state_name"].(string))
 				assert.Greater(t, properties["area_land"].(float64), float64(0))
-				
+
 				geometry := response["geometry"].(map[string]interface{})
 				assert.Equal(t, "MultiPolygon", geometry["type"].(string))
 				assert.NotNil(t, geometry["coordinates"])
@@ -288,7 +288,7 @@ func TestGetStateByLocationHandler(t *testing.T) {
 			validateFunc: func(t *testing.T, response map[string]interface{}) {
 				state := response["state"].(map[string]interface{})
 				assert.Equal(t, "CA", state["state_abbr"].(string))
-				
+
 				coords := response["coordinates"].(map[string]interface{})
 				assert.Equal(t, 37.7749, coords["lat"].(float64))
 				assert.Equal(t, -122.4194, coords["lng"].(float64))
@@ -377,7 +377,7 @@ func TestStateServiceDirectly(t *testing.T) {
 			Name:  "California",
 			Limit: 10,
 		}
-		
+
 		response, err := services.State.SearchStates(params)
 		assert.NoError(t, err)
 		assert.NotNil(t, response)
@@ -390,12 +390,12 @@ func TestStateServiceDirectly(t *testing.T) {
 		state, err := services.State.GetStateByIdentifier("CA")
 		assert.NoError(t, err)
 		assert.Equal(t, "CA", state.StateAbbr)
-		
+
 		// By FIPS
 		state, err = services.State.GetStateByIdentifier("06")
 		assert.NoError(t, err)
 		assert.Equal(t, "CA", state.StateAbbr)
-		
+
 		// By name
 		state, err = services.State.GetStateByIdentifier("California")
 		assert.NoError(t, err)
@@ -407,7 +407,7 @@ func TestStateServiceDirectly(t *testing.T) {
 		state, err := services.State.GetStateByCoordinates(34.0522, -118.2437)
 		assert.NoError(t, err)
 		assert.Equal(t, "CA", state.StateAbbr)
-		
+
 		// Miami coordinates
 		state, err = services.State.GetStateByCoordinates(25.7617, -80.1918)
 		assert.NoError(t, err)
@@ -415,15 +415,20 @@ func TestStateServiceDirectly(t *testing.T) {
 	})
 
 	t.Run("Get boundary GeoJSON", func(t *testing.T) {
-		geoJSON, err := services.State.GetStateBoundaryGeoJSON("CA")
+		geoJSON, err := services.State.GetStateBoundaryGeoJSON("CA", services.DefaultBoundaryTolerance, 6)
 		assert.NoError(t, err)
 		assert.NotNil(t, geoJSON)
 		assert.Equal(t, "Feature", geoJSON["type"])
-		
+
 		properties := geoJSON["properties"].(map[string]interface{})
 		assert.Equal(t, "CA", properties["state_abbr"])
-		
-		geometry := geoJSON["geometry"].(map[string]interface{})
+
+		// The geometry is passed through as raw PostGIS output rather than
+		// decoded into Go maps, so decode it here to inspect it.
+		raw, ok := geoJSON["geometry"].(json.RawMessage)
+		assert.True(t, ok, "geometry should be json.RawMessage")
+		var geometry map[string]interface{}
+		assert.NoError(t, json.Unmarshal(raw, &geometry))
 		assert.Equal(t, "MultiPolygon", geometry["type"])
 	})
 }

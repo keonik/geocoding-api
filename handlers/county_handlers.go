@@ -100,7 +100,8 @@ func GetCountyBoundaryHandler(c echo.Context) error {
 		})
 	}
 
-	boundary, err := services.County.GetCountyBoundaryGeoJSON(countyName)
+	tolerance, precision := geometryParams(c)
+	boundary, err := services.County.GetCountyBoundaryGeoJSON(countyName, tolerance, precision)
 	if err != nil {
 		if err.Error() == "county not found: "+countyName {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{

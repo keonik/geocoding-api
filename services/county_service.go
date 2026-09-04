@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -125,19 +126,32 @@ func (cs *CountyService) GetCountyByName(name string) (*models.OhioCounty, error
 }
 
 // GetCountyBoundaryGeoJSON returns the county boundary in GeoJSON format
-func (cs *CountyService) GetCountyBoundaryGeoJSON(name string) (*models.CountyBoundaryGeoJSON, error) {
-	query := `
+// GetCountyBoundaryGeoJSON returns the county boundary as GeoJSON.
+//
+// tolerance is a Douglas-Peucker distance in SRID 4326 degrees (0 disables
+// simplification); precision is ST_AsGeoJSON's max decimal digits. Both exist
+// because full-resolution TIGER geometry at 15 digits is far more than any
+// map needs and is the dominant cost of this endpoint.
+func (cs *CountyService) GetCountyBoundaryGeoJSON(name string, tolerance float64, precision int) (*models.CountyBoundaryGeoJSON, error) {
+	geomExpr, needsTolerance := boundaryGeometrySQL("bounds_geometry", "bounds_geometry_simplified", tolerance, 3)
+	args := []interface{}{name, precision}
+	if needsTolerance {
+		args = append(args, tolerance)
+	}
+
+	query := fmt.Sprintf(`
 		SELECT county_name, source_name, layer, address_count, stats,
-			   ST_AsGeoJSON(bounds_geometry) as bounds_geojson
+			   ST_AsGeoJSON(%s, $2)::json
 		FROM ohio_counties 
 		WHERE LOWER(county_name) = LOWER($1)
-	`
+	`, geomExpr)
 
-	var countyName, sourceName, layer, boundsGeoJSON string
+	var countyName, sourceName, layer string
+	var boundsGeoJSON json.RawMessage
 	var addressCount int
 	var statsJSON sql.NullString
 
-	err := cs.db.QueryRow(query, name).Scan(
+	err := cs.db.QueryRow(query, args...).Scan(
 		&countyName, &sourceName, &layer, &addressCount, &statsJSON, &boundsGeoJSON,
 	)
 
@@ -148,8 +162,7 @@ func (cs *CountyService) GetCountyBoundaryGeoJSON(name string) (*models.CountyBo
 		return nil, fmt.Errorf("failed to query county boundary: %w", err)
 	}
 
-	// Parse the geometry from PostGIS GeoJSON output
-	// PostGIS ST_AsGeoJSON returns just the geometry part, we need to wrap it in a Feature
+	// ST_AsGeoJSON returns the geometry member only; wrap it in a Feature.
 	geoJSON := &models.CountyBoundaryGeoJSON{
 		Type: "FeatureCollection",
 		Features: []models.CountyFeatureGeoJSON{
@@ -162,12 +175,7 @@ func (cs *CountyService) GetCountyBoundaryGeoJSON(name string) (*models.CountyBo
 					AddressCount: addressCount,
 					Stats:        make(map[string]interface{}),
 				},
-				Geometry: models.CountyGeometryGeoJSON{
-					Type: "Polygon",
-					// Note: In a real implementation, you'd parse the boundsGeoJSON properly
-					// For now, we'll return an empty coordinates array
-					Coordinates: [][][]float64{},
-				},
+				Geometry: boundsGeoJSON,
 			},
 		},
 	}

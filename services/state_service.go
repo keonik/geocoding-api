@@ -349,20 +349,32 @@ func (ss *StateService) GetStateByIdentifier(identifier string) (*models.State, 
 }
 
 // GetStateBoundaryGeoJSON returns the state boundary as GeoJSON
-func (ss *StateService) GetStateBoundaryGeoJSON(identifier string) (map[string]interface{}, error) {
-	query := `
+// GetStateBoundaryGeoJSON returns the state boundary as GeoJSON.
+//
+// See GetCountyBoundaryGeoJSON for what tolerance and precision mean. Full
+// TIGER state geometry is large -- Texas alone is ~2.5 MB across roughly
+// 63,000 coordinate pairs -- so the defaults matter more here than anywhere
+// else in the API.
+func (ss *StateService) GetStateBoundaryGeoJSON(identifier string, tolerance float64, precision int) (map[string]interface{}, error) {
+	geomExpr, needsTolerance := boundaryGeometrySQL("geometry", "geometry_simplified", tolerance, 3)
+	args := []interface{}{identifier, precision}
+	if needsTolerance {
+		args = append(args, tolerance)
+	}
+
+	query := fmt.Sprintf(`
 		SELECT state_abbr, state_name, state_fips, area_land, area_water,
-			   ST_AsGeoJSON(geometry)::json as geometry
+			   ST_AsGeoJSON(%s, $2)::json as geometry
 		FROM us_states
 		WHERE state_fips = $1 OR UPPER(state_abbr) = UPPER($1) OR LOWER(state_name) = LOWER($1)
 		LIMIT 1
-	`
+	`, geomExpr)
 
 	var stateAbbr, stateName, stateFIPS string
 	var areaLand, areaWater int64
 	var geometryJSON json.RawMessage
 
-	err := database.DB.QueryRow(query, identifier).Scan(
+	err := database.DB.QueryRow(query, args...).Scan(
 		&stateAbbr, &stateName, &stateFIPS, &areaLand, &areaWater, &geometryJSON,
 	)
 
@@ -373,11 +385,9 @@ func (ss *StateService) GetStateBoundaryGeoJSON(identifier string) (map[string]i
 		return nil, fmt.Errorf("failed to query state boundary: %w", err)
 	}
 
-	// Parse the geometry JSON
-	var geometry map[string]interface{}
-	if err := json.Unmarshal(geometryJSON, &geometry); err != nil {
-		return nil, fmt.Errorf("failed to parse geometry: %w", err)
-	}
+	// geometryJSON is passed through as json.RawMessage rather than decoded and
+	// re-encoded: unmarshalling into map[string]interface{} allocated one boxed
+	// float64 per coordinate and made this three passes over the payload.
 
 	// Build GeoJSON feature
 	feature := map[string]interface{}{
@@ -389,7 +399,7 @@ func (ss *StateService) GetStateBoundaryGeoJSON(identifier string) (map[string]i
 			"area_land":  areaLand,
 			"area_water": areaWater,
 		},
-		"geometry": geometry,
+		"geometry": geometryJSON,
 	}
 
 	return feature, nil

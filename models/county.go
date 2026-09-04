@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -25,9 +26,12 @@ type CountyBoundaryGeoJSON struct {
 
 // CountyFeatureGeoJSON represents a single county feature in GeoJSON
 type CountyFeatureGeoJSON struct {
-	Type       string                 `json:"type"`
+	Type       string                  `json:"type"`
 	Properties CountyPropertiesGeoJSON `json:"properties"`
-	Geometry   CountyGeometryGeoJSON  `json:"geometry"`
+	// Raw PostGIS ST_AsGeoJSON output, passed through untouched. Decoding it
+	// into a Go structure only to re-encode it costs three passes over the
+	// payload and one boxed float64 per coordinate, for no gain.
+	Geometry json.RawMessage `json:"geometry"`
 }
 
 // CountyPropertiesGeoJSON represents the properties of a county feature
@@ -37,12 +41,6 @@ type CountyPropertiesGeoJSON struct {
 	Layer         string                 `json:"layer"`
 	AddressCount  int                    `json:"address_count"`
 	Stats         map[string]interface{} `json:"stats,omitempty"`
-}
-
-// CountyGeometryGeoJSON represents the geometry of a county boundary
-type CountyGeometryGeoJSON struct {
-	Type        string        `json:"type"`
-	Coordinates [][][]float64 `json:"coordinates"`
 }
 
 // CountyListResponse represents a simplified list of counties

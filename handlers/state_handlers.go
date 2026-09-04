@@ -99,7 +99,8 @@ func GetStateBoundaryHandler(c echo.Context) error {
 		})
 	}
 
-	geoJSON, err := services.State.GetStateBoundaryGeoJSON(identifier)
+	tolerance, precision := geometryParams(c)
+	geoJSON, err := services.State.GetStateBoundaryGeoJSON(identifier, tolerance, precision)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]interface{}{
 			"error": "State boundary not found",

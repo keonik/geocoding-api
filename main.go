@@ -262,7 +262,7 @@ func main() {
 	// Ohio county boundary endpoints
 	protected.GET("/counties", handlers.GetCountiesHandler)
 	protected.GET("/counties/:name", handlers.GetCountyDetailHandler)
-	protected.GET("/counties/:name/boundary", handlers.GetCountyBoundaryHandler)
+	protected.GET("/counties/:name/boundary", handlers.GetCountyBoundaryHandler, middleware.CacheStatic(24*time.Hour))
 	protected.GET("/counties/bounds/search", handlers.GetCountiesInBoundsHandler)
 	
 	// City endpoints
@@ -274,7 +274,7 @@ func main() {
 	protected.GET("/states", handlers.SearchStatesHandler)
 	protected.GET("/states/lookup", handlers.GetStateByLocationHandler)
 	protected.GET("/states/:identifier", handlers.GetStateHandler)
-	protected.GET("/states/:identifier/boundary", handlers.GetStateBoundaryHandler)
+	protected.GET("/states/:identifier/boundary", handlers.GetStateBoundaryHandler, middleware.CacheStatic(24*time.Hour))
 	
 	// Admin routes (require admin auth)
 	admin := api.Group("/admin")
