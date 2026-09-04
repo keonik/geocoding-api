@@ -14,8 +14,14 @@ export function AppNav() {
   const navigate = useNavigate()
 
   let email = ''
+  let isAdmin = false
   try {
-    email = (JSON.parse(localStorage.getItem('user') || '{}') as { email?: string }).email || ''
+    const user = JSON.parse(localStorage.getItem('user') || '{}') as {
+      email?: string
+      is_admin?: boolean
+    }
+    email = user.email || ''
+    isAdmin = user.is_admin === true
   } catch {
     // A corrupt `user` blob should not take the nav down with it.
   }
@@ -43,6 +49,20 @@ export function AppNav() {
       <a href="/docs" target="_blank" rel="noopener noreferrer">
         Docs
       </a>
+
+      {/* Admin areas. Both routes already redirect non-admins in beforeLoad and
+          the API enforces RequireAdminAuth, so this is discoverability only --
+          previously nothing linked to either one. */}
+      {isAdmin && (
+        <>
+          <Link to="/admin" activeProps={{ 'aria-current': 'page' }}>
+            Admin
+          </Link>
+          <Link to="/data-manager" activeProps={{ 'aria-current': 'page' }}>
+            Data
+          </Link>
+        </>
+      )}
 
       {email && (
         <span className="font-mono text-xs opacity-65">{email}</span>
