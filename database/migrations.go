@@ -643,11 +643,20 @@ func dropOhioCountiesTable() error {
 func loadOhioCountyBoundaries() error {
 	log.Println("Loading Ohio county boundary data from GeoJSON meta files...")
 
-	// Download Ohio data if not present
-	downloader := utils.NewFileDownloader("./cache")
-	if err := downloader.DownloadOhioData("."); err != nil {
-		log.Printf("Warning: Failed to download Ohio data: %v", err)
+	// Fetch the county boundary sidecars this loader reads.
+	//
+	// Not DownloadOhioData any more: that path asks OpenAddresses for one
+	// config per county, but only 21 Ohio sources exist (none named franklin),
+	// the gis1.oit.ohio.gov/LBRS host it requires is retired, and every
+	// surviving source is an ArcGIS FeatureServer, which it explicitly
+	// refuses. It therefore always fell through to placeholder files that
+	// carry no bounds and are skipped below -- which is why ohio_counties has
+	// been empty since it was created.
+	if n, err := utils.FetchOhioCountyBoundaries("."); err != nil {
+		log.Printf("Warning: Failed to fetch Ohio county boundaries: %v", err)
 		log.Println("Continuing with existing files if available...")
+	} else {
+		log.Printf("Fetched %d county boundary meta files", n)
 	}
 
 	// Get all meta files in the oh directory (only address county files, not buildings/parcels)
