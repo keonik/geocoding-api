@@ -31,6 +31,8 @@ func TestRollAPIKeyProbe(t *testing.T) {
 	database.DB = db
 	defer func() { database.DB = prev }()
 
+	requireTables(t, db, "api_keys", "users", "usage_records")
+
 	as := &AuthService{}
 
 	type row struct {

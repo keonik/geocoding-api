@@ -31,6 +31,10 @@ func TestBoundaryGeometryProbe(t *testing.T) {
 	database.DB = db
 	defer func() { database.DB = prev }()
 
+	requireTables(t, db, "us_states", "ohio_counties")
+	requireColumns(t, db, "us_states", "geometry", "geometry_simplified")
+	requireColumns(t, db, "ohio_counties", "bounds_geometry_simplified")
+
 	ss := &StateService{}
 	cs := &CountyService{db: db}
 
@@ -105,13 +109,15 @@ func TestBoundaryGeometryProbe(t *testing.T) {
 		// Regression guard: this used to return an empty coordinates array
 		// while still paying to serialise the polygon.
 		var probe struct {
-			Coordinates json.RawMessage `json:"coordinates"`
+			Coordinates [][][]float64 `json:"coordinates"`
 		}
 		if err := json.Unmarshal(b.Features[0].Geometry, &probe); err != nil {
 			t.Fatalf("county geometry invalid: %v", err)
 		}
-		if len(probe.Coordinates) < 100 {
-			t.Fatalf("county geometry looks empty: %s", truncate(b.Features[0].Geometry))
+		// The bug returned "coordinates": [] while still paying to serialise
+		// the polygon, so assert a closed ring rather than a size.
+		if len(probe.Coordinates) == 0 || len(probe.Coordinates[0]) < 4 {
+			t.Fatalf("county geometry is not a ring: %s", truncate(b.Features[0].Geometry))
 		}
 	})
 }

@@ -1,8 +1,8 @@
 package services
 
 import (
-	"encoding/json"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -20,6 +20,20 @@ func NewCountyService() *CountyService {
 	}
 }
 
+// conn resolves the database handle at call time.
+//
+// County is assigned from a package-level init(), which runs before main()
+// opens the connection -- so the handle captured in NewCountyService was nil
+// for the life of the process and every county endpoint died on a nil
+// dereference. Tests inject a db explicitly and keep using it; production
+// falls through to the global once it is actually connected.
+func (cs *CountyService) conn() *sql.DB {
+	if cs.db != nil {
+		return cs.db
+	}
+	return database.DB
+}
+
 // GetAllCounties returns a list of all Ohio counties with basic information
 func (cs *CountyService) GetAllCounties(params models.CountySearchParams) ([]models.CountyListResponse, error) {
 	query := `
@@ -27,7 +41,7 @@ func (cs *CountyService) GetAllCounties(params models.CountySearchParams) ([]mod
 		FROM ohio_counties 
 		WHERE 1=1
 	`
-	
+
 	var conditions []string
 	var args []interface{}
 	argIndex := 1
@@ -71,7 +85,7 @@ func (cs *CountyService) GetAllCounties(params models.CountySearchParams) ([]mod
 		args = append(args, params.Offset)
 	}
 
-	rows, err := cs.db.Query(query, args...)
+	rows, err := cs.conn().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query counties: %w", err)
 	}
@@ -102,7 +116,7 @@ func (cs *CountyService) GetCountyByName(name string) (*models.OhioCounty, error
 	var county models.OhioCounty
 	var statsJSON sql.NullString
 
-	err := cs.db.QueryRow(query, name).Scan(
+	err := cs.conn().QueryRow(query, name).Scan(
 		&county.ID, &county.CountyName, &county.SourceName, &county.Layer,
 		&county.AddressCount, &statsJSON, &county.BoundsGeometry,
 		&county.CreatedAt, &county.UpdatedAt,
@@ -151,7 +165,7 @@ func (cs *CountyService) GetCountyBoundaryGeoJSON(name string, tolerance float64
 	var addressCount int
 	var statsJSON sql.NullString
 
-	err := cs.db.QueryRow(query, args...).Scan(
+	err := cs.conn().QueryRow(query, args...).Scan(
 		&countyName, &sourceName, &layer, &addressCount, &statsJSON, &boundsGeoJSON,
 	)
 
@@ -198,7 +212,7 @@ func (cs *CountyService) GetCountyStats() (map[string]interface{}, error) {
 	var totalCounties, totalAddresses, maxAddresses, minAddresses int
 	var avgAddresses float64
 
-	err := cs.db.QueryRow(query).Scan(
+	err := cs.conn().QueryRow(query).Scan(
 		&totalCounties, &totalAddresses, &avgAddresses, &maxAddresses, &minAddresses,
 	)
 
@@ -207,11 +221,11 @@ func (cs *CountyService) GetCountyStats() (map[string]interface{}, error) {
 	}
 
 	stats := map[string]interface{}{
-		"total_counties":             totalCounties,
-		"total_addresses":            totalAddresses,
-		"avg_addresses_per_county":   avgAddresses,
-		"max_addresses_per_county":   maxAddresses,
-		"min_addresses_per_county":   minAddresses,
+		"total_counties":           totalCounties,
+		"total_addresses":          totalAddresses,
+		"avg_addresses_per_county": avgAddresses,
+		"max_addresses_per_county": maxAddresses,
+		"min_addresses_per_county": minAddresses,
 	}
 
 	return stats, nil
@@ -229,7 +243,7 @@ func (cs *CountyService) GetCountiesWithinBounds(minLat, minLon, maxLat, maxLon 
 		ORDER BY address_count DESC
 	`
 
-	rows, err := cs.db.Query(query, minLon, minLat, maxLon, maxLat)
+	rows, err := cs.conn().Query(query, minLon, minLat, maxLon, maxLat)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query counties within bounds: %w", err)
 	}

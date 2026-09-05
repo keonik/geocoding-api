@@ -29,6 +29,8 @@ func TestGetKeyUsageProbe(t *testing.T) {
 	database.DB = db
 	defer func() { database.DB = prev }()
 
+	requireTables(t, db, "api_keys", "usage_records")
+
 	as := &AuthService{}
 	got, err := as.GetKeyUsage(1, 30)
 	if err != nil {

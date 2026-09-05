@@ -32,7 +32,7 @@ func InitializeStateData() error {
 	}
 
 	log.Println("States table is empty, loading data from tl_2025_us_state.geojson.gz...")
-	
+
 	file, err := os.Open("tl_2025_us_state.geojson.gz")
 	if err != nil {
 		return fmt.Errorf("failed to open tl_2025_us_state.geojson.gz: %w", err)
@@ -55,20 +55,20 @@ func InitializeStateData() error {
 				Coordinates json.RawMessage `json:"coordinates"`
 			} `json:"geometry"`
 			Properties struct {
-				STATEFP   string `json:"STATEFP"`
-				STATENS   string `json:"STATENS"`
-				GEOID     string `json:"GEOID"`
-				STUSPS    string `json:"STUSPS"`
-				NAME      string `json:"NAME"`
-				LSAD      string `json:"LSAD"`
-				MTFCC     string `json:"MTFCC"`
-				FUNCSTAT  string `json:"FUNCSTAT"`
-				ALAND     int64  `json:"ALAND"`
-				AWATER    int64  `json:"AWATER"`
-				INTPTLAT  string `json:"INTPTLAT"`
-				INTPTLON  string `json:"INTPTLON"`
-				REGION    string `json:"REGION"`
-				DIVISION  string `json:"DIVISION"`
+				STATEFP  string `json:"STATEFP"`
+				STATENS  string `json:"STATENS"`
+				GEOID    string `json:"GEOID"`
+				STUSPS   string `json:"STUSPS"`
+				NAME     string `json:"NAME"`
+				LSAD     string `json:"LSAD"`
+				MTFCC    string `json:"MTFCC"`
+				FUNCSTAT string `json:"FUNCSTAT"`
+				ALAND    int64  `json:"ALAND"`
+				AWATER   int64  `json:"AWATER"`
+				INTPTLAT string `json:"INTPTLAT"`
+				INTPTLON string `json:"INTPTLON"`
+				REGION   string `json:"REGION"`
+				DIVISION string `json:"DIVISION"`
 			} `json:"properties"`
 		} `json:"features"`
 	}
@@ -99,18 +99,18 @@ func InitializeStateData() error {
 
 	count = 0
 	skipped := 0
-	
+
 	for _, feature := range geoJSON.Features {
 		props := feature.Properties
-		
+
 		// Parse internal point coordinates
 		var internalLat, internalLng float64
 		fmt.Sscanf(props.INTPTLAT, "%f", &internalLat)
 		fmt.Sscanf(props.INTPTLON, "%f", &internalLng)
 
 		// Create a GeoJSON geometry string for PostGIS
-		geometryJSON := fmt.Sprintf(`{"type":"%s","coordinates":%s}`, 
-			feature.Geometry.Type, 
+		geometryJSON := fmt.Sprintf(`{"type":"%s","coordinates":%s}`,
+			feature.Geometry.Type,
 			string(feature.Geometry.Coordinates))
 
 		_, err := stmt.Exec(
@@ -136,7 +136,7 @@ func InitializeStateData() error {
 			skipped++
 			continue
 		}
-		
+
 		count++
 	}
 
@@ -153,7 +153,7 @@ func (ss *StateService) SearchStates(params models.StateSearchParams) (*models.S
 		FROM us_states
 		WHERE 1=1
 	`
-	
+
 	var conditions []string
 	var args []interface{}
 	argIndex := 1
@@ -190,6 +190,13 @@ func (ss *StateService) SearchStates(params models.StateSearchParams) (*models.S
 
 	// Add ordering
 	query += " ORDER BY state_name ASC"
+
+	// Everything appended from here on is pagination, not filtering. The count
+	// query below reuses only the filter args, and must not guess how many
+	// those are: OFFSET is conditional, so the old args[:len(args)-2] assumed
+	// two trailing args when there is often one, and panicked on a negative
+	// slice bound for any unfiltered request.
+	whereArgCount := len(args)
 
 	// Add pagination
 	if params.Limit <= 0 {
@@ -269,7 +276,7 @@ func (ss *StateService) SearchStates(params models.StateSearchParams) (*models.S
 	if len(conditions) > 0 {
 		countQuery += " AND " + strings.Join(conditions, " AND ")
 	}
-	err = database.DB.QueryRow(countQuery, args[:len(args)-2]...).Scan(&total)
+	err = database.DB.QueryRow(countQuery, args[:whereArgCount]...).Scan(&total)
 	if err != nil {
 		total = len(states)
 	}

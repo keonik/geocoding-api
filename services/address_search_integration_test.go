@@ -22,6 +22,8 @@ func TestAddressSearchProbe(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
+	requireTables(t, db, "ohio_addresses")
+
 	svc := NewAddressService(db)
 
 	cases := []struct {
