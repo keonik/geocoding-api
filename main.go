@@ -86,6 +86,12 @@ func main() {
 			log.Println("State data can be loaded manually if needed")
 		}
 
+		// Load county boundaries if the table is empty. Not a migration on
+		// purpose -- see database.EnsureCountyBoundaries.
+		if err := database.EnsureCountyBoundaries(); err != nil {
+			log.Printf("Warning: Failed to ensure county boundaries: %v", err)
+		}
+
 		// Sync admin privileges from ADMIN_EMAILS environment variable
 		authService := &services.AuthService{}
 		if err := authService.SyncAdminUsers(); err != nil {
@@ -319,6 +325,7 @@ func main() {
 	admin.GET("/api-keys", handlers.GetAllAPIKeysHandler)
 	admin.GET("/system-status", handlers.GetSystemStatusHandler)
 	admin.GET("/counties", handlers.GetCountyStatsHandler)
+	admin.POST("/counties/load", handlers.LoadCountyBoundariesHandler)
 	admin.GET("/analytics", handlers.GetAdminAnalyticsHandler)
 
 	// Dataset management routes (admin only)

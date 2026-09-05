@@ -69,6 +69,7 @@ servers:
 paths:
   /health:
     get:
+      security: []
       summary: Health Check
       description: Returns the current health status of the API service
       operationId: healthCheck
@@ -1456,6 +1457,8 @@ paths:
 
   /admin/load-data:
     post:
+      security:
+        - BearerAuth: []
       summary: Load ZIP Code Data
       description: |
         **Admin endpoint** to load ZIP code data from CSV file into the database.
@@ -1494,8 +1497,69 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /admin/counties/load:
+    post:
+      summary: Load Ohio County Boundaries
+      description: |
+        Re-run the Ohio county boundary load.
+
+        Migration 9 performs this on first boot, but a migration that loads
+        zero rows is still recorded as applied and never retried -- which is
+        how `ohio_counties` came to be empty in production. This endpoint runs
+        the load on demand once the source files are in place, without editing
+        `schema_migrations` by hand.
+
+        Safe to call repeatedly. The insert is `ON CONFLICT (county_name) DO
+        UPDATE`, and meta files without a `bounds` polygon are skipped rather
+        than inserted, so a failed download cannot fill the table with
+        placeholders.
+      operationId: loadCountyBoundaries
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '200':
+          description: Load attempted; counts report what changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      counties_before:
+                        type: integer
+                        example: 0
+                      counties_after:
+                        type: integer
+                        example: 88
+                      loaded:
+                        type: integer
+                        example: 88
+                      note:
+                        type: string
+                        description: Present only when nothing was loaded, explaining why
+        '401':
+          description: Missing or invalid admin credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Load failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /admin/counties:
     get:
+      security:
+        - BearerAuth: []
       summary: Get County Statistics
       description: |
         **Admin endpoint** to retrieve comprehensive statistics about Ohio counties.
@@ -1520,6 +1584,17 @@ paths:
 
 components:
   securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Session token from POST /auth/login, sent as `Authorization: Bearer <token>`.
+
+        This is the account session, not an API key -- the two are different
+        credentials. Admin routes (middleware.RequireAdminAuth) and the
+        /user/* routes require it; the geocoding endpoints require an API key
+        instead.
     ApiKeyAuth:
       type: apiKey
       in: header

@@ -767,10 +767,14 @@ func cleanupGeoJSONFiles() error {
 		return nil
 	}
 
-	// Get all GeoJSON files (both .geojson and .geojson.meta files)
+	// Only the bulk .geojson extracts. The .geojson.meta sidecars are kept
+	// deliberately: they are tiny, and they carry the county boundary polygons
+	// that loadOhioCountyBoundaries reads. Deleting them here ran before the
+	// county load, so migration 9 globbed an empty directory, loaded zero
+	// counties, returned nil and was recorded as applied -- permanently. That
+	// only happened in production, because this cleanup is skipped in dev.
 	patterns := []string{
 		"oh/*.geojson",
-		"oh/*.geojson.meta",
 	}
 
 	totalFilesDeleted := 0

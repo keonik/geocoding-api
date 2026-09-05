@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"geocoding-api/database"
 	"net/http"
 	"strconv"
 	"time"
@@ -13,10 +14,10 @@ import (
 
 // AdminStatsResponse contains admin dashboard statistics
 type AdminStatsResponse struct {
-	TotalUsers  int `json:"total_users"`
-	ActiveKeys  int `json:"active_keys"`
-	CallsToday  int `json:"calls_today"`
-	ZipCodes    int `json:"zip_codes"`
+	TotalUsers int `json:"total_users"`
+	ActiveKeys int `json:"active_keys"`
+	CallsToday int `json:"calls_today"`
+	ZipCodes   int `json:"zip_codes"`
 }
 
 // AdminUserResponse contains user info for admin dashboard
@@ -33,13 +34,13 @@ type AdminUserResponse struct {
 
 // AdminAPIKeyResponse contains API key info for admin dashboard
 type AdminAPIKeyResponse struct {
-	ID          int       `json:"id"`
-	UserEmail   string    `json:"user_email"`
-	Name        string    `json:"name"`
-	KeyPreview  string    `json:"key_preview"`
-	IsActive    bool      `json:"is_active"`
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         int        `json:"id"`
+	UserEmail  string     `json:"user_email"`
+	Name       string     `json:"name"`
+	KeyPreview string     `json:"key_preview"`
+	IsActive   bool       `json:"is_active"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+	CreatedAt  time.Time  `json:"created_at"`
 }
 
 // SystemStatusResponse contains system health information
@@ -289,5 +290,50 @@ func GetUserUsageMetricsHandler(c echo.Context) error {
 	return c.JSON(http.StatusOK, GeocodeResponse{
 		Success: true,
 		Data:    metrics,
+	})
+}
+
+// LoadCountyBoundariesHandler re-runs the Ohio county boundary load on demand.
+//
+// Migration 9 already does this at first boot, but a migration that loads zero
+// rows is still recorded as applied and never retried -- which is how
+// ohio_counties came to be permanently empty in production. This gives an
+// operator a way to run the load once the source files are actually in place,
+// without touching schema_migrations by hand.
+//
+// Safe to call repeatedly: the underlying insert is ON CONFLICT (county_name)
+// DO UPDATE, and meta files without a bounds polygon are skipped rather than
+// inserted, so a failed download cannot fill the table with placeholders.
+func LoadCountyBoundariesHandler(c echo.Context) error {
+	before, err := database.CountOhioCounties()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to read county boundary count: " + err.Error(),
+		})
+	}
+
+	after, err := database.LoadOhioCountyBoundaries()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to load county boundaries: " + err.Error(),
+		})
+	}
+
+	response := map[string]interface{}{
+		"counties_before": before,
+		"counties_after":  after,
+		"loaded":          after - before,
+	}
+	if after == 0 {
+		response["note"] = "No county boundaries were loaded. The loader reads " +
+			"oh/*-addresses-county.geojson.meta and skips any file without a " +
+			"\"bounds\" polygon, which is what the placeholder fallback writes."
+	}
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data:    response,
 	})
 }

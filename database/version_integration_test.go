@@ -25,6 +25,14 @@ func TestAppliedMigrationVersionProbe(t *testing.T) {
 	}
 	defer db.Close()
 
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('schema_migrations') IS NOT NULL`).Scan(&exists); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if !exists {
+		t.Skip("probe database has no schema_migrations table")
+	}
+
 	prev := DB
 	DB = db
 	defer func() { DB = prev }()
