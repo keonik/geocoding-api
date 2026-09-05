@@ -887,6 +887,29 @@ paths:
           schema:
             type: string
             example: "Franklin"
+        - name: tolerance
+          in: query
+          required: false
+          description: |
+            Simplification distance in SRID 4326 degrees. The default (~55 m) is
+            served from a precomputed column and is invisible at any zoom that
+            fits a county on screen. Pass `0` for full source resolution, which
+            is many times larger and simplified on demand rather than read.
+          schema:
+            type: number
+            format: double
+            default: 0.0005
+            minimum: 0
+            maximum: 0.05
+        - name: precision
+          in: query
+          required: false
+          description: Maximum decimal places per coordinate. 6 is roughly 11 cm.
+          schema:
+            type: integer
+            default: 6
+            minimum: 1
+            maximum: 9
       responses:
         '200':
           description: County boundary retrieved successfully
@@ -906,7 +929,7 @@ paths:
                       stats: {}
                     geometry:
                       type: "Polygon"
-                      coordinates: [[]]
+                      coordinates: [[[-83.2, 39.8], [-82.8, 39.8], [-82.8, 40.1], [-83.2, 40.1], [-83.2, 39.8]]]
         '404':
           description: County not found
           content:
@@ -1198,6 +1221,234 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /states:
+    get:
+      summary: Search States
+      description: |
+        List US states, districts and territories, optionally filtered by name,
+        abbreviation, region or division.
+
+        Passing `lat` and `lng` switches to a point-in-polygon lookup and
+        returns the single containing state; `/states/lookup` is the clearer
+        way to spell that.
+      operationId: searchStates
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - States
+      parameters:
+        - name: name
+          in: query
+          description: Partial, case-insensitive state name match
+          schema:
+            type: string
+            example: "Ohio"
+        - name: abbr
+          in: query
+          description: Two-letter state abbreviation
+          schema:
+            type: string
+            example: "OH"
+        - name: region
+          in: query
+          description: Census region code
+          schema:
+            type: string
+            example: "2"
+        - name: division
+          in: query
+          description: Census division code
+          schema:
+            type: string
+            example: "3"
+        - name: lat
+          in: query
+          description: Latitude; with lng, returns the containing state instead of a list
+          schema:
+            type: number
+            format: double
+        - name: lng
+          in: query
+          description: Longitude; must accompany lat
+          schema:
+            type: number
+            format: double
+        - name: limit
+          in: query
+          description: Maximum results
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          description: Results to skip
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: States retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateSearchResponse'
+        '401':
+          description: Missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /states/lookup:
+    get:
+      summary: Reverse Geocode a Coordinate to a State
+      description: |
+        Resolve a latitude/longitude to the state containing it, by
+        point-in-polygon against the state boundary geometry.
+
+        This is the inverse of the geocoding endpoints: coordinate in, place
+        out.
+      operationId: lookupStateByCoordinates
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - States
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          description: Latitude in decimal degrees (WGS 84)
+          schema:
+            type: number
+            format: double
+            example: 39.9612
+        - name: lng
+          in: query
+          required: true
+          description: Longitude in decimal degrees (WGS 84)
+          schema:
+            type: number
+            format: double
+            example: -82.9988
+      responses:
+        '200':
+          description: State containing the coordinate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateLookupResponse'
+        '400':
+          description: Both lat and lng are required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No state contains the coordinate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /states/{identifier}:
+    get:
+      summary: Get State
+      description: |
+        Retrieve one state by FIPS code, two-letter abbreviation, or full name.
+        All three are accepted in the same path segment.
+      operationId: getState
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - States
+      parameters:
+        - name: identifier
+          in: path
+          required: true
+          description: FIPS code, abbreviation, or full name (case-insensitive)
+          schema:
+            type: string
+            example: "OH"
+      responses:
+        '200':
+          description: State retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateResponse'
+        '404':
+          description: State not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /states/{identifier}/boundary:
+    get:
+      summary: Get State Boundary
+      description: |
+        Retrieve a state's boundary as a GeoJSON Feature, ready for Leaflet,
+        MapLibre, Mapbox or OpenLayers.
+
+        Geometry is served simplified by default from a precomputed column.
+        Full TIGER resolution is available with `tolerance=0`, but it is large
+        -- Texas is roughly 1.8 MB against 165 kB at the default -- and is
+        simplified on demand rather than read, so prefer the default unless you
+        genuinely need source fidelity.
+      operationId: getStateBoundary
+      security:
+        - ApiKeyAuth: []
+      tags:
+        - States
+      parameters:
+        - name: identifier
+          in: path
+          required: true
+          description: FIPS code, abbreviation, or full name (case-insensitive)
+          schema:
+            type: string
+            example: "OH"
+        - name: tolerance
+          in: query
+          required: false
+          description: |
+            Simplification distance in SRID 4326 degrees. The default (~55 m) is
+            precomputed; `0` returns full source resolution.
+          schema:
+            type: number
+            format: double
+            default: 0.0005
+            minimum: 0
+            maximum: 0.05
+        - name: precision
+          in: query
+          required: false
+          description: Maximum decimal places per coordinate. 6 is roughly 11 cm.
+          schema:
+            type: integer
+            default: 6
+            minimum: 1
+            maximum: 9
+      responses:
+        '200':
+          description: State boundary as a GeoJSON Feature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateBoundaryFeature'
+        '404':
+          description: State boundary not found
           content:
             application/json:
               schema:
@@ -1997,6 +2248,147 @@ components:
               description: Number of ZIP codes
               example: 8
 
+    State:
+      type: object
+      description: A US state, district or territory, as published by the Census TIGER files.
+      properties:
+        id:
+          type: integer
+          example: 16
+        state_fips:
+          type: string
+          description: Two-digit FIPS code
+          example: "39"
+        state_abbr:
+          type: string
+          description: Two-letter USPS abbreviation
+          example: "OH"
+        state_name:
+          type: string
+          example: "Ohio"
+        state_ns:
+          type: string
+          description: GNIS feature identifier
+          example: "01085497"
+        geoid:
+          type: string
+          example: "39"
+        region:
+          type: string
+          description: Census region code
+          example: "2"
+        division:
+          type: string
+          description: Census division code
+          example: "3"
+        lsad:
+          type: string
+          description: Legal/statistical area description code
+          example: "00"
+        mtfcc:
+          type: string
+          description: MAF/TIGER feature class code
+          example: "G4000"
+        funcstat:
+          type: string
+          description: Functional status code
+          example: "A"
+        area_land:
+          type: integer
+          format: int64
+          description: Land area in square metres
+          example: 105824499476
+        area_water:
+          type: integer
+          format: int64
+          description: Water area in square metres
+          example: 10273857263
+        internal_lat:
+          type: number
+          format: double
+          description: Latitude of an internal point guaranteed to fall inside the state
+          example: 40.4149297
+        internal_lng:
+          type: number
+          format: double
+          example: -82.7119975
+        created_at:
+          type: string
+          format: date-time
+
+    StateSearchResponse:
+      type: object
+      properties:
+        states:
+          type: array
+          items:
+            $ref: '#/components/schemas/State'
+        total:
+          type: integer
+          description: Total matches, independent of limit and offset
+          example: 56
+        limit:
+          type: integer
+          example: 50
+        offset:
+          type: integer
+          example: 0
+
+    StateResponse:
+      type: object
+      properties:
+        state:
+          $ref: '#/components/schemas/State'
+
+    StateLookupResponse:
+      type: object
+      description: Result of resolving a coordinate to its containing state.
+      properties:
+        coordinates:
+          type: object
+          description: The coordinate that was looked up, echoed back
+          properties:
+            lat:
+              type: number
+              format: double
+              example: 39.9612
+            lng:
+              type: number
+              format: double
+              example: -82.9988
+        state:
+          $ref: '#/components/schemas/State'
+
+    StateBoundaryFeature:
+      type: object
+      description: |
+        A single GeoJSON Feature. Note this is a bare Feature, not the
+        FeatureCollection the county boundary endpoint returns.
+      properties:
+        type:
+          type: string
+          example: "Feature"
+        properties:
+          type: object
+          properties:
+            state_abbr:
+              type: string
+              example: "OH"
+            state_name:
+              type: string
+              example: "Ohio"
+            state_fips:
+              type: string
+              example: "39"
+            area_land:
+              type: integer
+              format: int64
+            area_water:
+              type: integer
+              format: int64
+        geometry:
+          $ref: '#/components/schemas/GeoJSONGeometry'
+
 tags:
   - name: Geocoding
     description: Core geocoding operations for ZIP code lookup
@@ -2010,6 +2402,8 @@ tags:
     description: Ohio county boundary and geographic data operations (89 counties)
   - name: Cities
     description: US city search and ZIP code lookup operations (31,000+ cities). Use for fallback when ZIP code is unknown or incorrect.
+  - name: States
+    description: US state lookup, reverse geocoding from a coordinate, and boundary polygons (56 states, districts and territories)
   - name: Admin
     description: Administrative operations for data management
   - name: System

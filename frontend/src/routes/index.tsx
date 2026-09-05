@@ -47,15 +47,32 @@ const CAPABILITIES = [
     title: 'Nearby',
     body: 'Every ZIP whose centroid falls inside a radius, nearest first — or a straight yes/no proximity check between two of them.',
   },
+  {
+    path: 'GET /api/v1/states/lookup',
+    title: 'Reverse',
+    body: 'The inverse of the rest: a latitude and longitude in, the containing state out, resolved point-in-polygon against real boundary geometry.',
+  },
+  {
+    path: 'GET /api/v1/states/{id}/boundary',
+    title: 'Boundaries',
+    body: 'State outlines as GeoJSON, ready to hand straight to Leaflet or MapLibre. Simplified for display by default; ask for full source resolution when you need it.',
+  },
 ]
 
 const ENDPOINT_TABLE = [
   ['/api/v1/geocode/{zipcode}', 'One ZIP record, with county weights and centroid'],
   ['/api/v1/search', 'ZIP codes by city name, ordered by population'],
   ['/api/v1/addresses/search', 'Ohio street address matched to a point'],
+  ['/api/v1/addresses/{id}', 'One Ohio parcel address by id'],
   ['/api/v1/distance/{from}/{to}', 'Distance between two ZIP centroids'],
   ['/api/v1/nearby/{zipcode}', 'ZIP codes within a radius, nearest first'],
   ['/api/v1/proximity/{center}/{target}', 'Whether a ZIP falls inside a radius'],
+  ['/api/v1/cities', 'US cities, filterable by name and state'],
+  ['/api/v1/cities/zips', 'Every ZIP code belonging to a city'],
+  ['/api/v1/states', 'States and territories, with census region and division'],
+  ['/api/v1/states/lookup', 'The state containing a coordinate'],
+  ['/api/v1/states/{id}', 'One state by FIPS code, abbreviation or name'],
+  ['/api/v1/states/{id}/boundary', 'State outline as a GeoJSON Feature'],
 ]
 
 function LandingPage() {
@@ -87,15 +104,15 @@ function LandingPage() {
       <div className="flex flex-wrap gap-[2px] border-b-2 border-[var(--color-divider)] bg-[var(--color-divider)]">
         <div className="min-w-0 flex-[1_1_380px] bg-[var(--color-bg)] px-[clamp(20px,4vw,40px)] pt-[clamp(40px,7vw,76px)] pb-[clamp(36px,6vw,64px)]">
           <div className="mb-6 text-[11px] uppercase tracking-[0.14em] text-[var(--color-accent-700)]">
-            US ZIP codes · Ohio parcel addresses
+            US ZIP codes · Ohio parcel addresses · state boundaries
           </div>
           <h1 className="m-0 mb-6 max-w-[17ch] text-[clamp(34px,6.5vw,64px)] leading-[0.98] tracking-[-0.03em] text-pretty">
             Every address, resolved to a point.
           </h1>
           <p className="m-0 mb-7 max-w-[48ch] text-lg leading-[1.55]">
             Look up a ZIP or a city, match a messy Ohio address list against canonical
-            parcel records, measure distance between any two points. One REST call, one
-            key, metered per call.
+            parcel records, turn a coordinate back into a place, measure distance between
+            any two points. One REST call, one key, metered per call.
           </p>
           <div className="flex flex-wrap gap-3">
             <Link to="/auth/signup" className="btn btn-primary px-5 py-[13px] text-[15px]">
@@ -120,12 +137,16 @@ function LandingPage() {
       </div>
 
       {/* Capabilities */}
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(230px,1fr))] border-b-2 border-[var(--color-divider)]">
-        {CAPABILITIES.map((c, i) => (
+      {/* Capped at three columns so six cards always fill their rows. auto-fit
+          would give five-plus-one on a wide screen, and the gap technique below
+          would paint the empty cell divider-coloured. Hairlines come from a 1px
+          gap over a divider-coloured ground, as the hero does, which stays
+          correct however the cards wrap. */}
+      <div className="grid grid-cols-1 gap-[1px] border-b-2 border-[var(--color-divider)] bg-[var(--color-divider)] md:grid-cols-2 lg:grid-cols-3">
+        {CAPABILITIES.map((c) => (
           <div
             key={c.path}
-            className="border-r border-[var(--color-divider)] px-[clamp(20px,3vw,28px)] py-[clamp(24px,3vw,32px)]"
-            style={{ borderTop: i > 0 ? '1px solid var(--color-divider)' : 'none' }}
+            className="bg-[var(--color-bg)] px-[clamp(20px,3vw,28px)] py-[clamp(24px,3vw,32px)]"
           >
             <div className="mb-[14px] font-mono text-xs text-[var(--color-accent-700)]">
               {c.path}
