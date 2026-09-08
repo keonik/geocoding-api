@@ -1,0 +1,75 @@
+name: CI
+
+# This repository auto-deploys to production on every push to main, with no
+# gate in between. These checks do not block that -- Coolify reacts to the
+# push directly -- but they turn "the deploy went out broken" into a red mark
+# within a couple of minutes instead of a report from a user.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      # vet is the point of this job. It reports real defects here -- a Printf
+      # whose format string did not match its arguments mangled every request
+      # log line for months, because ./... could not compile and nobody ran it.
+      - name: Vet
+        run: go vet ./...
+
+      # Tests that need Postgres skip themselves when nothing is listening, so
+      # this stays fast without a service container. The integration probes
+      # additionally require PROBE_DSN and are skipped here by design.
+      - name: Test
+        run: go test ./... -timeout 5m
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      # --frozen-lockfile matches the Dockerfile, so a lockfile that would
+      # break the image build breaks here first.
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc -b
+
+      - name: Lint
+        run: bunx eslint .
+
+      - name: Build
+        run: bunx vite build
+
+  spec:
+    name: OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # api-docs.yaml is a compiled contract, not documentation: gameplan
+      # generates its client from it with openapi-typescript, so a malformed
+      # spec breaks a different repository's build. Duplicate keys parse fine
+      # in most YAML loaders and are caught here.
+      - name: Lint OpenAPI description
+        run: npx --yes @redocly/cli@1.25.11 lint api-docs.yaml

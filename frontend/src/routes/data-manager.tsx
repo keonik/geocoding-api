@@ -344,7 +344,7 @@ function DataManager() {
       await datasetAPI.delete(id)
       toast.success('Dataset deleted successfully')
       loadData()
-    } catch (err) {
+    } catch {
       toast.error('Failed to delete dataset')
     }
   }
@@ -354,7 +354,7 @@ function DataManager() {
       await datasetAPI.reprocess(id)
       toast.success('Reprocessing started')
       loadData()
-    } catch (err) {
+    } catch {
       toast.error('Failed to reprocess dataset')
     }
   }

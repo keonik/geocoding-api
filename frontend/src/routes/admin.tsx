@@ -59,7 +59,7 @@ function AdminDashboard() {
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('users')
   const [selectedUserMetrics, setSelectedUserMetrics] = useState<UserUsageMetrics | null>(null)
-  const [_metricsLoading, setMetricsLoading] = useState(false)
+  const [, setMetricsLoading] = useState(false)
   const [analytics, setAnalytics] = useState<AdminAnalytics | null>(null)
   const [days, setDays] = useState(30)
 
@@ -106,7 +106,7 @@ function AdminDashboard() {
       await adminAPI.updateUserStatus(userId, !currentStatus)
       toast.success('User status updated successfully')
       loadData()
-    } catch (err) {
+    } catch {
       toast.error('Failed to update user status')
     }
   }
@@ -120,7 +120,7 @@ function AdminDashboard() {
       await adminAPI.updateUserAdmin(userId, !currentAdmin)
       toast.success('Admin privileges updated successfully')
       loadData()
-    } catch (err) {
+    } catch {
       toast.error('Failed to update admin privileges')
     }
   }
@@ -135,7 +135,7 @@ function AdminDashboard() {
       await adminAPI.loadData()
       toast.success('ZIP code data loaded successfully')
       loadData()
-    } catch (err) {
+    } catch {
       toast.error('Failed to load ZIP code data')
     }
   }
@@ -154,7 +154,7 @@ function AdminDashboard() {
       } else {
         toast.error('Failed to load user metrics')
       }
-    } catch (err) {
+    } catch {
       toast.error('Failed to load user metrics')
     } finally {
       setMetricsLoading(false)

@@ -3,9 +3,12 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 
 	"geocoding-api/database"
 	"geocoding-api/models"
@@ -15,8 +18,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// setupTestEnvironment initializes the database and services for testing
+// setupTestEnvironment initializes the database and services for testing.
+//
+// These tests need a seeded database; they are not self-contained. InitDB
+// retries for sixty seconds by design, to tolerate container startup ordering
+// in production, so without one this hung for the full timeout before failing
+// -- which is why the package could not be part of a CI run. Probe the socket
+// first and skip when nothing is listening.
 func setupTestEnvironment(t *testing.T) {
+	t.Helper()
+
+	requireDatabase(t)
+
 	// Initialize database
 	if err := database.InitDB(); err != nil {
 		t.Fatalf("Failed to initialize database: %v", err)
@@ -24,6 +37,26 @@ func setupTestEnvironment(t *testing.T) {
 
 	// Initialize services
 	services.InitAddressService(database.DB)
+}
+
+// requireDatabase skips when nothing is listening on the configured Postgres
+// address. Shared by both setups in this package.
+func requireDatabase(t *testing.T) {
+	t.Helper()
+	host := envOr("DB_HOST", "localhost")
+	port := envOr("DB_PORT", "5432")
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 2*time.Second)
+	if err != nil {
+		t.Skipf("no database listening on %s:%s (these tests need a seeded database)", host, port)
+	}
+	conn.Close()
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func TestSearchOhioAddresses(t *testing.T) {
@@ -139,15 +172,15 @@ func TestSearchOhioAddresses(t *testing.T) {
 			if tt.expectResults {
 				assert.Greater(t, response.Count, 0, "Expected to find results but got none: %s", tt.description)
 				assert.Greater(t, len(response.Data), 0, "Expected data array to have items")
-				
+
 				// Verify data structure
 				if len(response.Data) > 0 {
 					addr := response.Data[0]
 					assert.NotEmpty(t, addr.ID, "Address should have an ID")
 					assert.NotEmpty(t, addr.County, "Address should have a county")
-					
+
 					// Log the first result for debugging
-					t.Logf("Found address: %s %s, %s, %s %s", 
+					t.Logf("Found address: %s %s, %s, %s %s",
 						addr.HouseNumber, addr.Street, addr.City, addr.Region, addr.Postcode)
 				}
 			} else {
@@ -184,7 +217,7 @@ func TestSearchWithProximity(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.True(t, response.Success)
-	
+
 	if response.Count > 0 {
 		t.Logf("Proximity search found %d addresses within %fkm", response.Count, radius)
 		// Verify addresses are within reasonable distance
@@ -240,7 +273,7 @@ func TestGetOhioAddressById(t *testing.T) {
 	assert.Equal(t, 1, response.Count)
 	assert.Equal(t, addressID, response.Data[0].ID)
 
-	t.Logf("Retrieved address: %s %s, %s", 
+	t.Logf("Retrieved address: %s %s, %s",
 		response.Data[0].HouseNumber, response.Data[0].Street, response.Data[0].City)
 }
 

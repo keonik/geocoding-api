@@ -16,6 +16,10 @@ import (
 
 // setupStateTestDB initializes the database for testing
 func setupStateTestDB(t *testing.T) {
+	// Same reason as setupTestEnvironment: InitDB retries for a minute, and
+	// RunMigrations below would try to download source data. Skip early.
+	requireDatabase(t)
+
 	if err := database.InitDB(); err != nil {
 		t.Fatalf("Failed to initialize database: %v", err)
 	}

@@ -204,7 +204,7 @@ export const datasetAPI = {
             } else {
               resolve({ success: false, error: response.error || response.message || 'Upload failed' })
             }
-          } catch (e) {
+          } catch {
             resolve({ success: false, error: 'Failed to parse server response' })
           }
         }
@@ -347,7 +347,7 @@ export const datasetAPI = {
         } else {
           onComplete({ success: false, error: response.error || response.message || 'Upload failed' })
         }
-      } catch (e) {
+      } catch {
         onError(new Error('Failed to parse server response'))
       }
     }
