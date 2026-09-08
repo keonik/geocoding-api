@@ -26,49 +26,59 @@ func ColorizedLogger() echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			start := time.Now()
 			req := c.Request()
-			
+
 			// Log request start immediately
-			fmt.Printf("%s[REQ START]%s %s %s (Content-Length: %d)\n", 
+			fmt.Printf("%s[REQ START]%s %s %s (Content-Length: %d)\n",
 				Cyan, Reset, req.Method, req.URL.Path, req.ContentLength)
-			
+
 			// Process request
 			err := next(c)
 			if err != nil {
 				c.Error(err)
 			}
-			
+
 			// Calculate request duration
 			latency := time.Since(start)
-			
+
 			// Get response details
 			res := c.Response()
 			method := req.Method
 			path := req.URL.Path
 			status := res.Status
-			
+
 			// Color code based on HTTP method
 			methodColor := getMethodColor(method)
-			
+
 			// Color code based on status
 			statusColor := getStatusColor(status)
-			
+
 			// Format latency
 			latencyStr := formatLatency(latency)
 			latencyColor := getLatencyColor(latency)
-			
+
 			// Build log message
-			fmt.Printf("%s%s%s %s%3d%s %s%-7s%s %s%s\n",
+			fmt.Printf(requestLogFormat,
 				Gray, start.Format("15:04:05"), Reset,
 				statusColor, status, Reset,
 				methodColor, method, Reset,
 				latencyColor, latencyStr, Reset,
 				path,
 			)
-			
+
 			return err
 		}
 	}
 }
+
+// requestLogFormat renders one completed request.
+//
+// Thirteen verbs for thirteen arguments -- it previously had eleven, so the
+// trailing Reset and path had nowhere to go and Go appended
+// "%!(EXTRA string=..., string=...)". Because the newline sits inside the
+// format, that artifact landed on the following line and the line never
+// terminated, corrupting the next entry too. Keep the counts in step; the
+// test in logger_test.go checks them.
+const requestLogFormat = "%s%s%s %s%3d%s %s%-7s%s %s%s%s %s\n"
 
 // getMethodColor returns the color for HTTP method
 func getMethodColor(method string) string {
