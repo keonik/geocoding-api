@@ -28,6 +28,7 @@ var Started = time.Now().UTC()
 
 func init() {
 	if Commit != "" {
+		Commit = short(Commit)
 		return
 	}
 	Commit = "unknown"
@@ -37,11 +38,17 @@ func init() {
 	}
 	for _, s := range info.Settings {
 		if s.Key == "vcs.revision" {
-			Commit = s.Value
-			if len(Commit) > 12 {
-				Commit = Commit[:12]
-			}
+			Commit = short(s.Value)
 			return
 		}
 	}
+}
+
+// short trims a full 40-character SHA to something readable. Coolify supplies
+// the full revision; a local build may pass an already-short one.
+func short(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }

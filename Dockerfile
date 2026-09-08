@@ -39,10 +39,15 @@ COPY . .
 # Go's own VCS stamping cannot fill this in here: .dockerignore excludes the
 # 186 MB .git directory, and including it would be paid on every build.
 ARG GIT_SHA=""
+# Coolify injects SOURCE_COMMIT as a build argument for git-based deploys, so
+# this usually resolves without anything being configured. GIT_SHA stays as an
+# explicit override for local builds:
+#   docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
+ARG SOURCE_COMMIT=""
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s -extldflags '-static' -X geocoding-api/version.Commit=${GIT_SHA}" \
+    -ldflags="-w -s -extldflags '-static' -X geocoding-api/version.Commit=${GIT_SHA:-${SOURCE_COMMIT}}" \
     -o main .
 
 # Production stage
