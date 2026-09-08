@@ -1,7 +1,9 @@
 package version
 
 import (
+	"os"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -26,11 +28,28 @@ var Commit = ""
 // arg, or anything else being set up correctly.
 var Started = time.Now().UTC()
 
+// commitEnvVars are read at startup when no commit was baked in at link time.
+//
+// Coolify does not pass SOURCE_COMMIT as a build argument -- verified against
+// the live deploy, where the ldflags fallback still produced "unknown" -- but
+// it does expose deployment metadata to the container environment, so the same
+// value may be available at runtime instead. Costs one map lookup at startup
+// and cannot report anything worse than "unknown".
+var commitEnvVars = []string{"SOURCE_COMMIT", "COMMIT_SHA", "GIT_SHA", "GIT_COMMIT"}
+
 func init() {
 	if Commit != "" {
 		Commit = short(Commit)
 		return
 	}
+
+	for _, key := range commitEnvVars {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			Commit = short(v)
+			return
+		}
+	}
+
 	Commit = "unknown"
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
