@@ -1998,7 +1998,12 @@ components:
               example: {}
             bounds_geometry:
               type: string
-              description: County boundary in WKT format
+              description: |
+                County boundary in WKT, at full source resolution. This is the
+                bulk of the response -- about 18 kB for a county like Franklin.
+                For map rendering prefer GET /counties/{name}/boundary, which
+                returns GeoJSON and is simplified by default (about 1.8 kB for
+                the same county).
               example: "POLYGON((-83.2 39.8, -82.8 39.8, ...))"
             created_at:
               type: string

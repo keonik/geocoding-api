@@ -53,9 +53,9 @@ const CAPABILITIES = [
     body: 'The inverse of the rest: a latitude and longitude in, the containing state out, resolved point-in-polygon against real boundary geometry.',
   },
   {
-    path: 'GET /api/v1/states/{id}/boundary',
+    path: 'GET /api/v1/{states|counties}/…/boundary',
     title: 'Boundaries',
-    body: 'State outlines as GeoJSON, ready to hand straight to Leaflet or MapLibre. Simplified for display by default; ask for full source resolution when you need it.',
+    body: 'State and Ohio county outlines as GeoJSON, ready to hand straight to Leaflet or MapLibre. Simplified for display by default; ask for full source resolution when you need it.',
   },
 ]
 
@@ -73,6 +73,10 @@ const ENDPOINT_TABLE = [
   ['/api/v1/states/lookup', 'The state containing a coordinate'],
   ['/api/v1/states/{id}', 'One state by FIPS code, abbreviation or name'],
   ['/api/v1/states/{id}/boundary', 'State outline as a GeoJSON Feature'],
+  ['/api/v1/counties', 'Ohio counties, with the address count in each'],
+  ['/api/v1/counties/{name}', 'One county, including its boundary as WKT'],
+  ['/api/v1/counties/{name}/boundary', 'County outline as a GeoJSON FeatureCollection'],
+  ['/api/v1/counties/bounds/search', 'Counties intersecting a bounding box'],
 ]
 
 function LandingPage() {
@@ -104,7 +108,7 @@ function LandingPage() {
       <div className="flex flex-wrap gap-[2px] border-b-2 border-[var(--color-divider)] bg-[var(--color-divider)]">
         <div className="min-w-0 flex-[1_1_380px] bg-[var(--color-bg)] px-[clamp(20px,4vw,40px)] pt-[clamp(40px,7vw,76px)] pb-[clamp(36px,6vw,64px)]">
           <div className="mb-6 text-[11px] uppercase tracking-[0.14em] text-[var(--color-accent-700)]">
-            US ZIP codes · Ohio parcel addresses · state boundaries
+            US ZIP codes · Ohio parcel addresses · state and county boundaries
           </div>
           <h1 className="m-0 mb-6 max-w-[17ch] text-[clamp(34px,6.5vw,64px)] leading-[0.98] tracking-[-0.03em] text-pretty">
             Every address, resolved to a point.
@@ -180,8 +184,8 @@ function LandingPage() {
               <div className="text-xs opacity-65">national coverage</div>
             </div>
             <div>
-              <div className="font-display text-3xl font-extrabold">Ohio</div>
-              <div className="text-xs opacity-65">parcel-level addresses</div>
+              <div className="font-display text-3xl font-extrabold">88</div>
+              <div className="text-xs opacity-65">Ohio counties, parcel-level</div>
             </div>
           </div>
         </div>
