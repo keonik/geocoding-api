@@ -847,6 +847,29 @@ paths:
           schema:
             type: string
             example: "Franklin"
+        - name: tolerance
+          in: query
+          required: false
+          description: |
+            Simplification distance in SRID 4326 degrees for `bounds_geometry`.
+            The default (~55 m) is read from a precomputed column. Pass `0` for
+            full source resolution, which is roughly ten times larger and is
+            simplified on demand rather than read.
+          schema:
+            type: number
+            format: double
+            default: 0.0005
+            minimum: 0
+            maximum: 0.05
+        - name: precision
+          in: query
+          required: false
+          description: Maximum decimal places per coordinate. 6 is roughly 11 cm.
+          schema:
+            type: integer
+            default: 6
+            minimum: 1
+            maximum: 9
       responses:
         '200':
           description: County found successfully
@@ -1999,11 +2022,13 @@ components:
             bounds_geometry:
               type: string
               description: |
-                County boundary in WKT, at full source resolution. This is the
-                bulk of the response -- about 18 kB for a county like Franklin.
-                For map rendering prefer GET /counties/{name}/boundary, which
-                returns GeoJSON and is simplified by default (about 1.8 kB for
-                the same county).
+                County boundary in WKT, simplified for display by default and
+                read from a precomputed column. Pass `tolerance=0` for full
+                source resolution, which is roughly ten times larger.
+
+                If you want geometry for a map, GET /counties/{name}/boundary
+                returns the same outline as GeoJSON, which most mapping
+                libraries accept directly.
               example: "POLYGON((-83.2 39.8, -82.8 39.8, ...))"
             created_at:
               type: string

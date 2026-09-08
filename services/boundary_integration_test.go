@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"geocoding-api/database"
@@ -127,4 +128,53 @@ func truncate(b []byte) string {
 		return string(b[:120]) + "..."
 	}
 	return string(b)
+}
+
+// GetCountyByName used to inline bounds_geometry at full source resolution,
+// making the metadata endpoint ~18 kB for a county like Franklin -- an order
+// of magnitude more than the simplified GeoJSON the dedicated boundary
+// endpoint returns for the same outline. It now reads the same precomputed
+// column by default, with tolerance=0 as the escape hatch.
+func TestCountyDetailGeometryProbe(t *testing.T) {
+	dsn := os.Getenv("PROBE_DSN")
+	if dsn == "" {
+		t.Skip("PROBE_DSN not set")
+	}
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	requireTables(t, db, "ohio_counties")
+	requireColumns(t, db, "ohio_counties", "bounds_geometry_simplified")
+
+	cs := &CountyService{db: db}
+
+	dflt, err := cs.GetCountyByName("Franklin", DefaultBoundaryTolerance, 6)
+	if err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	full, err := cs.GetCountyByName("Franklin", 0, 6)
+	if err != nil {
+		t.Fatalf("tolerance=0: %v", err)
+	}
+
+	// Metadata must be identical either way; only the geometry differs.
+	if dflt.CountyName != full.CountyName || dflt.AddressCount != full.AddressCount {
+		t.Errorf("metadata differs between tolerances: %+v vs %+v", dflt, full)
+	}
+	if dflt.AddressCount == 0 {
+		t.Error("address_count is 0; the metadata this endpoint exists for is missing")
+	}
+
+	if !strings.HasPrefix(dflt.BoundsGeometry, "POLYGON") {
+		t.Errorf("default geometry is not WKT POLYGON: %.40s", dflt.BoundsGeometry)
+	}
+	if len(dflt.BoundsGeometry) >= len(full.BoundsGeometry) {
+		t.Errorf("default (%d bytes) should be smaller than tolerance=0 (%d bytes)",
+			len(dflt.BoundsGeometry), len(full.BoundsGeometry))
+	}
+	t.Logf("bounds_geometry WKT — default: %d bytes, tolerance=0: %d bytes (%.0fx)",
+		len(dflt.BoundsGeometry), len(full.BoundsGeometry),
+		float64(len(full.BoundsGeometry))/float64(len(dflt.BoundsGeometry)))
 }

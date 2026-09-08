@@ -70,7 +70,8 @@ func GetCountyDetailHandler(c echo.Context) error {
 		})
 	}
 
-	county, err := services.County.GetCountyByName(countyName)
+	tolerance, precision := geometryParams(c)
+	county, err := services.County.GetCountyByName(countyName, tolerance, precision)
 	if err != nil {
 		if err.Error() == "county not found: "+countyName {
 			return c.JSON(http.StatusNotFound, map[string]interface{}{

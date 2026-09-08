@@ -104,19 +104,32 @@ func (cs *CountyService) GetAllCounties(params models.CountySearchParams) ([]mod
 	return counties, nil
 }
 
-// GetCountyByName returns detailed information about a specific county
-func (cs *CountyService) GetCountyByName(name string) (*models.OhioCounty, error) {
-	query := `
+// GetCountyByName returns detailed information about a specific county.
+//
+// bounds_geometry is served simplified by default, from the same precomputed
+// column the boundary endpoint reads. Inlining it at full source resolution
+// made this response ~18 kB for a county like Franklin, roughly ten times the
+// simplified GeoJSON that GET /counties/{name}/boundary returns for the same
+// outline -- and this endpoint's job is the county's metadata, not its
+// geometry. tolerance=0 still gives full resolution for callers that want it.
+func (cs *CountyService) GetCountyByName(name string, tolerance float64, precision int) (*models.OhioCounty, error) {
+	geomExpr, needsTolerance := boundaryGeometrySQL("bounds_geometry", "bounds_geometry_simplified", tolerance, 3)
+	args := []interface{}{name, precision}
+	if needsTolerance {
+		args = append(args, tolerance)
+	}
+
+	query := fmt.Sprintf(`
 		SELECT id, county_name, source_name, layer, address_count, stats, 
-			   ST_AsText(bounds_geometry) as bounds_wkt, created_at, updated_at
+			   ST_AsText(%s, $2) as bounds_wkt, created_at, updated_at
 		FROM ohio_counties 
 		WHERE LOWER(county_name) = LOWER($1)
-	`
+	`, geomExpr)
 
 	var county models.OhioCounty
 	var statsJSON sql.NullString
 
-	err := cs.conn().QueryRow(query, name).Scan(
+	err := cs.conn().QueryRow(query, args...).Scan(
 		&county.ID, &county.CountyName, &county.SourceName, &county.Layer,
 		&county.AddressCount, &statsJSON, &county.BoundsGeometry,
 		&county.CreatedAt, &county.UpdatedAt,
