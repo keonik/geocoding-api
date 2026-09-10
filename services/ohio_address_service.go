@@ -38,7 +38,7 @@ func InitializeOhioData() error {
 		return fmt.Errorf("failed to query existing counties: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var loadedCounties []string
 	for rows.Next() {
 		var county string
@@ -47,9 +47,9 @@ func InitializeOhioData() error {
 		}
 		loadedCounties = append(loadedCounties, county)
 	}
-	
+
 	log.Printf("Database contains %d address records across %d counties", totalCount, len(loadedCounties))
-	
+
 	return nil
 }
 
@@ -61,10 +61,10 @@ func LoadOhioAddressData() error {
 // loadMissingCounties loads data for counties not already in the database
 func loadMissingCounties(loadedCounties map[string]bool) error {
 	log.Println("Loading Ohio address data from GeoJSON files...")
-	
+
 	destDir := "."
 	ohDir := filepath.Join(destDir, "oh")
-	
+
 	// Create oh directory if it doesn't exist
 	if err := os.MkdirAll(ohDir, 0755); err != nil {
 		return fmt.Errorf("failed to create ohio data directory: %w", err)
@@ -72,42 +72,42 @@ func loadMissingCounties(loadedCounties map[string]bool) error {
 
 	// Get list of all Ohio counties
 	counties := utils.GetOhioCountyList()
-	
+
 	totalRecords := 0
 	successfulCounties := 0
 	skippedCounties := 0
-	
+
 	for _, county := range counties {
 		// Skip if already loaded
 		if loadedCounties[strings.ToLower(county)] {
 			skippedCounties++
 			continue
 		}
-		
+
 		addressFile := filepath.Join(ohDir, fmt.Sprintf("%s-addresses-county.geojson", county))
-		
+
 		// Decompress if needed (lazy decompression)
 		if err := decompressIfNeeded(addressFile); err != nil {
 			log.Printf("Failed to decompress %s: %v", county, err)
 			continue
 		}
-		
+
 		// Check if file exists after decompression attempt
 		if _, err := os.Stat(addressFile); os.IsNotExist(err) {
 			log.Printf("GeoJSON file not found for %s, skipping (no compressed file available)", county)
 			continue
 		}
-		
+
 		// Load county data
 		count, err := loadCountyAddresses(county, addressFile)
 		if err != nil {
 			log.Printf("Warning: Failed to load %s: %v", county, err)
 			continue
 		}
-		
+
 		totalRecords += count
 		successfulCounties++
-		
+
 		if count > 0 {
 			log.Printf("Loaded %d records from %s", count, strings.Title(county))
 		} else {
@@ -117,7 +117,7 @@ func loadMissingCounties(loadedCounties map[string]bool) error {
 				log.Printf("Loaded 0 records from %s (could not read file: %v)", strings.Title(county), readErr)
 			} else {
 				contentStr := string(content)
-				
+
 				// Check for ArcGIS indicators
 				if strings.Contains(contentStr, "FeatureServer") {
 					log.Printf("Info: %s uses ArcGIS FeatureServer (not yet supported)", strings.Title(county))
@@ -129,36 +129,36 @@ func loadMissingCounties(loadedCounties map[string]bool) error {
 			}
 		}
 	}
-	
+
 	if skippedCounties > 0 {
 		log.Printf("Skipped %d counties (already loaded)", skippedCounties)
 	}
 	log.Printf("Completed loading Ohio address data: %d records from %d counties", totalRecords, successfulCounties)
-	
+
 	// Clean up GeoJSON files after successful loading to save disk space
 	if err := cleanupGeoJSONFiles(); err != nil {
 		log.Printf("Warning: Failed to cleanup GeoJSON files: %v", err)
 		// Don't return error as the loading was successful
 	}
-	
+
 	return nil
 }
 
 // cleanupGeoJSONFiles removes GeoJSON and meta files after data has been loaded into database
 func cleanupGeoJSONFiles() error {
 	log.Println("Cleaning up GeoJSON files to save disk space...")
-	
+
 	// Check if we're in production environment
 	isProd := os.Getenv("ENV") == "production" || os.Getenv("GO_ENV") == "production"
-	
+
 	// Also check if CLEANUP_GEOJSON is explicitly set
 	cleanupEnabled := os.Getenv("CLEANUP_GEOJSON") == "true"
-	
+
 	if !isProd && !cleanupEnabled {
 		log.Println("Skipping GeoJSON cleanup in development environment. Set CLEANUP_GEOJSON=true to force cleanup.")
 		return nil
 	}
-	
+
 	// Only the bulk .geojson extracts. The .geojson.meta sidecars are kept
 	// deliberately: they are tiny, and they carry the county boundary polygons
 	// that loadOhioCountyBoundaries reads. Deleting them here ran before the
@@ -168,39 +168,39 @@ func cleanupGeoJSONFiles() error {
 	patterns := []string{
 		"oh/*.geojson",
 	}
-	
+
 	totalFilesDeleted := 0
 	var totalSizeFreed int64
-	
+
 	for _, pattern := range patterns {
 		files, err := filepath.Glob(pattern)
 		if err != nil {
 			log.Printf("Warning: Failed to find files with pattern %s: %v", pattern, err)
 			continue
 		}
-		
+
 		for _, filePath := range files {
 			// Get file size before deletion
 			if info, err := os.Stat(filePath); err == nil {
 				totalSizeFreed += info.Size()
 			}
-			
+
 			// Delete the file
 			if err := os.Remove(filePath); err != nil {
 				log.Printf("Warning: Failed to delete %s: %v", filePath, err)
 				continue
 			}
-			
+
 			totalFilesDeleted++
 		}
 	}
-	
+
 	// Convert bytes to human readable format
 	sizeFreedMB := float64(totalSizeFreed) / (1024 * 1024)
-	
-	log.Printf("Successfully cleaned up %d GeoJSON files, freed %.2f MB of disk space", 
+
+	log.Printf("Successfully cleaned up %d GeoJSON files, freed %.2f MB of disk space",
 		totalFilesDeleted, sizeFreedMB)
-	
+
 	// Remove the oh directory if it's empty
 	if entries, err := os.ReadDir("oh"); err == nil && len(entries) == 0 {
 		if err := os.Remove("oh"); err != nil {
@@ -209,14 +209,14 @@ func cleanupGeoJSONFiles() error {
 			log.Println("Removed empty oh directory")
 		}
 	}
-	
+
 	return nil
 }
 
 // loadCountyAddresses loads address data from a single county GeoJSON file
 func loadCountyAddresses(county, filePath string) (int, error) {
 	// Loading address file
-	
+
 	// Open and read the GeoJSON file
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -232,17 +232,17 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 		return 0, fmt.Errorf("failed to read file: %w", err)
 	}
 	file.Seek(0, 0) // Reset to beginning
-	
+
 	firstLine := string(firstBytes[:n])
-	isNDJSON := strings.HasPrefix(strings.TrimSpace(firstLine), `{"type":"Feature"`) || 
-	            strings.HasPrefix(strings.TrimSpace(firstLine), `{"type": "Feature"`)
-	
+	isNDJSON := strings.HasPrefix(strings.TrimSpace(firstLine), `{"type":"Feature"`) ||
+		strings.HasPrefix(strings.TrimSpace(firstLine), `{"type": "Feature"`)
+
 	previewLen := 50
 	if len(firstLine) < previewLen {
 		previewLen = len(firstLine)
 	}
 	// Detect format and parse accordingly
-	
+
 	var features []struct {
 		Type     string `json:"type"`
 		Geometry struct {
@@ -257,7 +257,6 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 
 		scanner := bufio.NewScanner(file)
 		scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // 10MB max line size
-		
 
 		lineCount := 0
 		for scanner.Scan() {
@@ -270,19 +269,17 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 				} `json:"geometry"`
 				Properties map[string]interface{} `json:"properties"`
 			}
-			
+
 			if err := json.Unmarshal(scanner.Bytes(), &feature); err != nil {
 				if lineCount <= 3 {
 
 				}
 				continue // Skip malformed lines
 			}
-			
+
 			features = append(features, feature)
 		}
-		
 
-		
 		if err := scanner.Err(); err != nil {
 			return 0, fmt.Errorf("failed to scan NDJSON file: %w", err)
 		}
@@ -304,7 +301,7 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 		if err := decoder.Decode(&geoJSON); err != nil {
 			return 0, fmt.Errorf("failed to parse GeoJSON: %w", err)
 		}
-		
+
 		features = geoJSON.Features
 	}
 
@@ -333,28 +330,28 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 
 		// Extract properties
 		props := feature.Properties
-		
+
 		// Get coordinates (GeoJSON is [longitude, latitude])
 		longitude := feature.Geometry.Coordinates[0]
 		latitude := feature.Geometry.Coordinates[1]
 
 		// Extract address components with various possible field names from Ohio LBRS shapefiles and OpenAddresses
-	houseNumber := getStringProperty(props, "number", "HOUSENUM", "HouseNum", "house_number", "housenumber")
-	streetName := getStringProperty(props, "street", "ST_NAME", "StreetName", "street_name", "STREETNAME", "LSN")
-	unit := getStringProperty(props, "unit", "UNITNUM", "Unit", "UNIT")
-	city := getStringProperty(props, "city", "USPS_CITY", "City", "CITY", "MUNI")
-	state := getStringProperty(props, "region", "STATE", "State", "state", "REGION")
-	// Truncate state to 2 characters to match database schema VARCHAR(2)
-	if len(state) > 2 {
-		state = state[:2]
-	}
-	zipCode := getStringProperty(props, "postcode", "ZIPCODE", "ZipCode", "zip_code", "POSTCODE")		
+		houseNumber := getStringProperty(props, "number", "HOUSENUM", "HouseNum", "house_number", "housenumber")
+		streetName := getStringProperty(props, "street", "ST_NAME", "StreetName", "street_name", "STREETNAME", "LSN")
+		unit := getStringProperty(props, "unit", "UNITNUM", "Unit", "UNIT")
+		city := getStringProperty(props, "city", "USPS_CITY", "City", "CITY", "MUNI")
+		state := getStringProperty(props, "region", "STATE", "State", "state", "REGION")
+		// Truncate state to 2 characters to match database schema VARCHAR(2)
+		if len(state) > 2 {
+			state = state[:2]
+		}
+		zipCode := getStringProperty(props, "postcode", "ZIPCODE", "ZipCode", "zip_code", "POSTCODE")
 		// Use existing hash if available (OpenAddresses format), otherwise generate one
 		hash := getStringProperty(props, "hash")
 		if hash == "" {
 			hash = fmt.Sprintf("%s_%s_%s_%f_%f", county, houseNumber, streetName, latitude, longitude)
 		}
-		
+
 		// Skip if no meaningful address data
 		if houseNumber == "" && streetName == "" {
 			continue
@@ -411,44 +408,44 @@ func decompressIfNeeded(geojsonPath string) error {
 	if _, err := os.Stat(geojsonPath); err == nil {
 		return nil
 	}
-	
+
 	// Check if compressed version exists
 	compressedPath := geojsonPath + ".gz"
 	if _, err := os.Stat(compressedPath); os.IsNotExist(err) {
 		// Neither compressed nor decompressed file exists
 		return nil
 	}
-	
+
 	log.Printf("Decompressing %s...", filepath.Base(compressedPath))
-	
+
 	// Open compressed file
 	compressedFile, err := os.Open(compressedPath)
 	if err != nil {
 		return fmt.Errorf("failed to open compressed file: %w", err)
 	}
 	defer compressedFile.Close()
-	
+
 	// Create gzip reader
 	gzReader, err := gzip.NewReader(compressedFile)
 	if err != nil {
 		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
 	defer gzReader.Close()
-	
+
 	// Create output file
 	outputFile, err := os.Create(geojsonPath)
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
 	defer outputFile.Close()
-	
+
 	// Copy decompressed data
 	if _, err := io.Copy(outputFile, gzReader); err != nil {
 		// Clean up partial file on error
 		os.Remove(geojsonPath)
 		return fmt.Errorf("failed to decompress: %w", err)
 	}
-	
+
 	log.Printf("Successfully decompressed %s", filepath.Base(geojsonPath))
 	return nil
 }

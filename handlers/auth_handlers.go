@@ -204,10 +204,10 @@ func CreateAPIKeyHandler(c echo.Context) error {
 	return c.JSON(http.StatusCreated, GeocodeResponse{
 		Success: true,
 		Data: map[string]interface{}{
-			"api_key":     apiKey,
-			"key_string":  keyString,
-			"message":     "API key created successfully. Store the key securely - it won't be shown again.",
-			"warning":     "This is the only time you'll see the full API key. Store it securely!",
+			"api_key":    apiKey,
+			"key_string": keyString,
+			"message":    "API key created successfully. Store the key securely - it won't be shown again.",
+			"warning":    "This is the only time you'll see the full API key. Store it securely!",
 		},
 	})
 }

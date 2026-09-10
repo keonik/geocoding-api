@@ -52,7 +52,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 
 			// Extract API key from either X-API-Key or Authorization header
 			var apiKey string
-			
+
 			// First, try X-API-Key header
 			if xApiKey := c.Request().Header.Get("X-API-Key"); xApiKey != "" {
 				apiKey = xApiKey
@@ -104,7 +104,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				responseTime := int(time.Since(startTime).Milliseconds())
 				ipAddress := c.RealIP()
 				userAgent := c.Request().UserAgent()
-				
+
 				go func() {
 					err := services.Auth.RecordUsage(
 						user.ID, keyRecord.ID, overLimitEndpoint, method,
@@ -114,7 +114,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 						log.Printf("Failed to record over-limit usage: %v", err)
 					}
 				}()
-				
+
 				// Report the cap that actually tripped. Saying "monthly" for a
 				// daily rejection showed the user a usage count well under the
 				// limit they were told they had exceeded.
@@ -159,8 +159,8 @@ func APIKeyAuth() echo.MiddlewareFunc {
 					Success: false,
 					Error:   "API key does not have permission for this endpoint",
 					Data: map[string]interface{}{
-						"endpoint":          endpoint,
-						"required_permission": endpoint,
+						"endpoint":              endpoint,
+						"required_permission":   endpoint,
 						"available_permissions": keyRecord.Permissions,
 					},
 				})
@@ -319,7 +319,7 @@ func isAdminEmail(email string) bool {
 	if adminEmails == "" {
 		return false
 	}
-	
+
 	emails := strings.Split(adminEmails, ",")
 	for _, adminEmail := range emails {
 		if strings.TrimSpace(adminEmail) == email {
@@ -334,7 +334,7 @@ func RequireAdminAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			log.Printf("[AdminAuth] Request: %s %s", c.Request().Method, c.Request().URL.Path)
-			
+
 			// Use JWT authentication for admin routes
 			authHeader := c.Request().Header.Get("Authorization")
 			if authHeader == "" {

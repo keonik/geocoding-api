@@ -94,17 +94,17 @@ func ExpandAddressQuery(query string) string {
 // Example: "drive" -> ["drive", "dr", "dr."]
 func GetAbbreviationVariants(word string) []string {
 	word = strings.ToLower(strings.TrimSuffix(word, "."))
-	
+
 	// If it's already a full form, return its abbreviations
 	if variants, exists := streetAbbreviations[word]; exists {
 		return variants
 	}
-	
+
 	// If it's an abbreviation, get the full form and return all variants
 	if fullForm, exists := reverseAbbreviations[word]; exists {
 		return streetAbbreviations[fullForm]
 	}
-	
+
 	// Not a known street type, return as-is
 	return []string{word}
 }

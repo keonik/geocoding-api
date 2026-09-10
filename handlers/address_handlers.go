@@ -13,14 +13,14 @@ import (
 // SearchOhioAddressesHandler handles address search requests
 func SearchOhioAddressesHandler(c echo.Context) error {
 	var params models.AddressSearchParams
-	
+
 	// Manually parse query parameters (Echo's Bind doesn't always work for query params)
 	params.Query = c.QueryParam("query")
 	params.County = c.QueryParam("county")
 	params.City = c.QueryParam("city")
 	params.Postcode = c.QueryParam("postcode")
 	params.Street = c.QueryParam("street")
-	
+
 	// Parse numeric parameters
 	if lat := c.QueryParam("lat"); lat != "" {
 		if val, err := strconv.ParseFloat(lat, 64); err == nil {

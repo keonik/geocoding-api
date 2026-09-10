@@ -21,19 +21,19 @@ func InitDB() error {
 	password := getEnv("DB_PASSWORD", "postgres")
 	dbname := getEnv("DB_NAME", "geocoding_db")
 	sslmode := getEnv("DB_SSLMODE", "disable")
-	
+
 	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		host, port, user, password, dbname, sslmode)
-	
+
 	maskedUrl := fmt.Sprintf("postgres://%s:***@%s:%s/%s?sslmode=%s", user, host, port, dbname, sslmode)
 	log.Printf("Connecting to database: %s", maskedUrl)
 
 	var err error
-	
+
 	// Retry logic for database connection (useful for container startup ordering)
 	maxRetries := 30
 	retryDelay := 2 * time.Second
-	
+
 	for i := 0; i < maxRetries; i++ {
 		DB, err = sql.Open("postgres", psqlInfo)
 		if err != nil {
@@ -46,20 +46,20 @@ func InitDB() error {
 		if err == nil {
 			break
 		}
-		
+
 		log.Printf("Attempt %d/%d: Failed to ping database: %v", i+1, maxRetries, err)
 		DB.Close()
 		time.Sleep(retryDelay)
 	}
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to connect to database after %d attempts: %w", maxRetries, err)
 	}
 
 	// Optimize connection pool for performance
-	DB.SetMaxOpenConns(25)          // Maximum open connections
-	DB.SetMaxIdleConns(10)           // Keep connections ready
-	DB.SetConnMaxLifetime(0)         // Reuse connections indefinitely
+	DB.SetMaxOpenConns(25)   // Maximum open connections
+	DB.SetMaxIdleConns(10)   // Keep connections ready
+	DB.SetConnMaxLifetime(0) // Reuse connections indefinitely
 
 	log.Println("Database connection established successfully")
 	return nil

@@ -24,9 +24,9 @@ type AuthService struct{}
 
 // JWTClaims represents the JWT token claims
 type JWTClaims struct {
-	UserID   int    `json:"user_id"`
-	Email    string `json:"email"`
-	IsAdmin  bool   `json:"is_admin"`
+	UserID  int    `json:"user_id"`
+	Email   string `json:"email"`
+	IsAdmin bool   `json:"is_admin"`
 	jwt.StandardClaims
 }
 
@@ -117,7 +117,7 @@ func (as *AuthService) RegisterUser(email, password, name string, company *strin
 		VALUES ($1, $2, $3, $4, true, false, 'free', NOW(), NOW())
 		RETURNING id, email, name, company, is_active, is_admin, plan_type, created_at, updated_at
 	`, email, name, company, string(hashedPassword)).Scan(
-		&user.ID, &user.Email, &user.Name, &user.Company, 
+		&user.ID, &user.Email, &user.Name, &user.Company,
 		&user.IsActive, &user.IsAdmin, &user.PlanType, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
@@ -226,7 +226,7 @@ func (as *AuthService) GenerateAPIKey(userID int, name string, permissions []str
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create API key: %w", err)
 	}
-	
+
 	// Convert pq.StringArray to JSONArray
 	key.Permissions = models.JSONArray(permissionsArray)
 
@@ -442,7 +442,7 @@ func isAdminEmail(email string) bool {
 // GetUserAPIKeys retrieves all API keys for a user
 func (a *AuthService) GetUserAPIKeys(userID int) ([]models.APIKey, error) {
 	var apiKeys []models.APIKey
-	
+
 	query := `
 		SELECT id, user_id, name, key_preview, permissions, 
 		       is_active, last_used_at, created_at, expires_at
@@ -450,17 +450,17 @@ func (a *AuthService) GetUserAPIKeys(userID int) ([]models.APIKey, error) {
 		WHERE user_id = $1 AND is_active = true
 		ORDER BY created_at DESC
 	`
-	
+
 	rows, err := database.DB.Query(query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query API keys: %w", err)
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var key models.APIKey
 		var permissionsJSON pq.StringArray
-		
+
 		err := rows.Scan(
 			&key.ID, &key.UserID, &key.Name, &key.KeyPreview,
 			&permissionsJSON, &key.IsActive, &key.LastUsedAt,
@@ -469,17 +469,17 @@ func (a *AuthService) GetUserAPIKeys(userID int) ([]models.APIKey, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan API key: %w", err)
 		}
-		
+
 		// Convert pq.StringArray to []string
 		key.Permissions = []string(permissionsJSON)
-		
+
 		apiKeys = append(apiKeys, key)
 	}
-	
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating API keys: %w", err)
 	}
-	
+
 	return apiKeys, nil
 }
 
@@ -533,25 +533,25 @@ func (a *AuthService) DeleteAPIKey(userID, keyID int) error {
 		"SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1 AND user_id = $2 AND is_active = true)",
 		keyID, userID,
 	).Scan(&exists)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to verify API key ownership: %w", err)
 	}
-	
+
 	if !exists {
 		return fmt.Errorf("API key not found or access denied")
 	}
-	
+
 	// Soft delete by marking as inactive
 	_, err = database.DB.Exec(
 		"UPDATE api_keys SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2",
 		keyID, userID,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to delete API key: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -587,7 +587,7 @@ func (as *AuthService) IsUserAdmin(userID int) bool {
 // GetAdminStats returns statistics for admin dashboard
 func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
-	
+
 	// Total users
 	var totalUsers int
 	err := database.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
@@ -595,7 +595,7 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 		return nil, err
 	}
 	stats["total_users"] = totalUsers
-	
+
 	// Active API keys
 	var activeKeys int
 	err = database.DB.QueryRow("SELECT COUNT(*) FROM api_keys WHERE is_active = true").Scan(&activeKeys)
@@ -603,7 +603,7 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 		return nil, err
 	}
 	stats["active_keys"] = activeKeys
-	
+
 	// API calls today
 	var callsToday int
 	err = database.DB.QueryRow(`
@@ -614,7 +614,7 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 		return nil, err
 	}
 	stats["calls_today"] = callsToday
-	
+
 	// ZIP codes count
 	var zipCodes int
 	err = database.DB.QueryRow("SELECT COUNT(*) FROM zip_codes").Scan(&zipCodes)
@@ -622,7 +622,7 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 		return nil, err
 	}
 	stats["zip_codes"] = zipCodes
-	
+
 	return stats, nil
 }
 
@@ -673,7 +673,7 @@ func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var users []map[string]interface{}
 	for rows.Next() {
 		var id int
@@ -682,13 +682,13 @@ func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
 		var isActive, isAdmin bool
 		var createdAt time.Time
 		var monthlyUsage, todayUsage, totalUsage, activeKeys int
-		
+
 		err := rows.Scan(&id, &email, &name, &company, &planType, &isActive, &isAdmin, &createdAt,
 			&monthlyUsage, &todayUsage, &totalUsage, &activeKeys)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		user := map[string]interface{}{
 			"id":            id,
 			"email":         email,
@@ -705,14 +705,14 @@ func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
 		}
 		users = append(users, user)
 	}
-	
+
 	return users, nil
 }
 
 // GetUserUsageMetrics returns detailed usage metrics for a specific user
 func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]interface{}, error) {
 	metrics := make(map[string]interface{})
-	
+
 	// Get user info
 	var email, planType string
 	var name *string
@@ -722,12 +722,12 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 	if err != nil {
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
-	
+
 	metrics["user_id"] = userID
 	metrics["email"] = email
 	metrics["name"] = name
 	metrics["plan_type"] = planType
-	
+
 	// Total calls
 	var totalCalls, billableCalls int
 	err = database.DB.QueryRow(`
@@ -742,7 +742,7 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 	}
 	metrics["total_calls"] = totalCalls
 	metrics["billable_calls"] = billableCalls
-	
+
 	// Average response time
 	var avgResponseTime sql.NullFloat64
 	err = database.DB.QueryRow(`
@@ -755,7 +755,7 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 	} else {
 		metrics["avg_response_time"] = 0
 	}
-	
+
 	// Success/Error rate
 	var successCount, errorCount int
 	err = database.DB.QueryRow(`
@@ -770,7 +770,7 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 	}
 	metrics["success_count"] = successCount
 	metrics["error_count"] = errorCount
-	
+
 	// Endpoint breakdown
 	endpointRows, err := database.DB.Query(`
 		SELECT 
@@ -787,32 +787,32 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 		return nil, err
 	}
 	defer endpointRows.Close()
-	
+
 	var endpoints []map[string]interface{}
 	for endpointRows.Next() {
 		var endpoint string
 		var total, billable int
 		var avgTime sql.NullFloat64
-		
+
 		if err := endpointRows.Scan(&endpoint, &total, &billable, &avgTime); err != nil {
 			continue
 		}
-		
+
 		endpointData := map[string]interface{}{
-			"endpoint":       endpoint,
-			"total":          total,
-			"billable":       billable,
-			"avg_time":       0.0,
+			"endpoint": endpoint,
+			"total":    total,
+			"billable": billable,
+			"avg_time": 0.0,
 		}
-		
+
 		if avgTime.Valid {
 			endpointData["avg_time"] = avgTime.Float64
 		}
-		
+
 		endpoints = append(endpoints, endpointData)
 	}
 	metrics["endpoints"] = endpoints
-	
+
 	// Daily breakdown
 	dailyRows, err := database.DB.Query(`
 		SELECT 
@@ -828,16 +828,16 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 		return nil, err
 	}
 	defer dailyRows.Close()
-	
+
 	var dailyUsage []map[string]interface{}
 	for dailyRows.Next() {
 		var date time.Time
 		var total, billable int
-		
+
 		if err := dailyRows.Scan(&date, &total, &billable); err != nil {
 			continue
 		}
-		
+
 		dailyUsage = append(dailyUsage, map[string]interface{}{
 			"date":     date.Format("2006-01-02"),
 			"total":    total,
@@ -845,7 +845,7 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 		})
 	}
 	metrics["daily_usage"] = dailyUsage
-	
+
 	return metrics, nil
 }
 
@@ -861,7 +861,7 @@ func (as *AuthService) GetAllAPIKeys() ([]map[string]interface{}, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var apiKeys []map[string]interface{}
 	for rows.Next() {
 		var id int
@@ -869,12 +869,12 @@ func (as *AuthService) GetAllAPIKeys() ([]map[string]interface{}, error) {
 		var isActive bool
 		var lastUsedAt *time.Time
 		var createdAt time.Time
-		
+
 		err := rows.Scan(&id, &userEmail, &name, &keyPreview, &isActive, &lastUsedAt, &createdAt)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		apiKey := map[string]interface{}{
 			"id":           id,
 			"user_email":   userEmail,
@@ -886,7 +886,7 @@ func (as *AuthService) GetAllAPIKeys() ([]map[string]interface{}, error) {
 		}
 		apiKeys = append(apiKeys, apiKey)
 	}
-	
+
 	return apiKeys, nil
 }
 
@@ -911,16 +911,16 @@ func (as *AuthService) UpdateUserAdmin(userID int, isAdmin bool) error {
 // GetSystemStatus returns system health information
 func (as *AuthService) GetSystemStatus() (map[string]interface{}, error) {
 	status := make(map[string]interface{})
-	
+
 	// Check database connection
 	err := database.DB.Ping()
 	status["database_connected"] = err == nil
-	
+
 	// Check if migrations are current (simplified check)
 	var migrationCount int
 	err = database.DB.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
 	status["migrations_current"] = err == nil && migrationCount >= 7 // Expected number of migrations
-	
+
 	return status, nil
 }
 
@@ -1073,9 +1073,9 @@ func (as *AuthService) GetEndpointUsage(userID int, days int) ([]models.Endpoint
 	for rows.Next() {
 		var usage models.EndpointUsage
 		err := rows.Scan(
-			&usage.Endpoint, 
-			&usage.TotalCalls, 
-			&usage.BillableCalls, 
+			&usage.Endpoint,
+			&usage.TotalCalls,
+			&usage.BillableCalls,
 			&usage.AvgResponseTime,
 			&usage.SuccessCount,
 			&usage.ErrorCount,
@@ -1250,7 +1250,7 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 	// Map endpoints to required permissions
 	permissionMap := map[string]string{
 		"geocode":   "geocode",
-		"search":    "search", 
+		"search":    "search",
 		"distance":  "distance",
 		"nearby":    "distance",
 		"proximity": "distance",
@@ -1279,7 +1279,7 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 // GetAdminAnalytics returns system-wide analytics data
 func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, error) {
 	analytics := make(map[string]interface{})
-	
+
 	// Total calls across all users
 	var totalCalls, billableCalls int
 	err := database.DB.QueryRow(`
@@ -1294,7 +1294,7 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 	}
 	analytics["total_calls"] = totalCalls
 	analytics["billable_calls"] = billableCalls
-	
+
 	// Average response time
 	var avgResponseTime sql.NullFloat64
 	err = database.DB.QueryRow(`
@@ -1307,7 +1307,7 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 	} else {
 		analytics["avg_response_time"] = 0
 	}
-	
+
 	// Success/Error rate
 	var successCount, errorCount int
 	err = database.DB.QueryRow(`
@@ -1322,7 +1322,7 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 	}
 	analytics["success_count"] = successCount
 	analytics["error_count"] = errorCount
-	
+
 	// Endpoint breakdown
 	endpointRows, err := database.DB.Query(`
 		SELECT 
@@ -1339,32 +1339,32 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 		return nil, err
 	}
 	defer endpointRows.Close()
-	
+
 	var endpoints []map[string]interface{}
 	for endpointRows.Next() {
 		var endpoint string
 		var total, billable int
-		var avgTime sql.NullFloat64	
-		
+		var avgTime sql.NullFloat64
+
 		if err := endpointRows.Scan(&endpoint, &total, &billable, &avgTime); err != nil {
 			continue
 		}
-		
+
 		endpointData := map[string]interface{}{
-			"endpoint":       endpoint,
-			"total":          total,
-			"billable":       billable,
-			"avg_time":       0.0,
+			"endpoint": endpoint,
+			"total":    total,
+			"billable": billable,
+			"avg_time": 0.0,
 		}
-		
+
 		if avgTime.Valid {
 			endpointData["avg_time"] = avgTime.Float64
 		}
-		
+
 		endpoints = append(endpoints, endpointData)
 	}
 	analytics["endpoints"] = endpoints
-	
+
 	// Daily breakdown
 	dailyRows, err := database.DB.Query(`
 		SELECT 
@@ -1380,16 +1380,16 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 		return nil, err
 	}
 	defer dailyRows.Close()
-	
+
 	var dailyUsage []map[string]interface{}
 	for dailyRows.Next() {
 		var date time.Time
 		var total, billable int
-		
+
 		if err := dailyRows.Scan(&date, &total, &billable); err != nil {
 			continue
 		}
-		
+
 		dailyUsage = append(dailyUsage, map[string]interface{}{
 			"date":           date.Format("2006-01-02"),
 			"total_calls":    total,
@@ -1397,6 +1397,6 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 		})
 	}
 	analytics["daily_usage"] = dailyUsage
-	
+
 	return analytics, nil
 }

@@ -36,11 +36,11 @@ type CountyFeatureGeoJSON struct {
 
 // CountyPropertiesGeoJSON represents the properties of a county feature
 type CountyPropertiesGeoJSON struct {
-	CountyName    string                 `json:"county_name"`
-	SourceName    string                 `json:"source_name"`
-	Layer         string                 `json:"layer"`
-	AddressCount  int                    `json:"address_count"`
-	Stats         map[string]interface{} `json:"stats,omitempty"`
+	CountyName   string                 `json:"county_name"`
+	SourceName   string                 `json:"source_name"`
+	Layer        string                 `json:"layer"`
+	AddressCount int                    `json:"address_count"`
+	Stats        map[string]interface{} `json:"stats,omitempty"`
 }
 
 // CountyListResponse represents a simplified list of counties

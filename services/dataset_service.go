@@ -660,11 +660,11 @@ func (s *DatasetService) cleanupUploadedFile(filePath string) error {
 	if filePath == "" {
 		return nil
 	}
-	
+
 	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete file %s: %w", filePath, err)
 	}
-	
+
 	log.Printf("Cleaned up uploaded file: %s", filePath)
 	return nil
 }
@@ -702,7 +702,7 @@ func (s *DatasetService) CheckDatasetExists(state, county string) (bool, *models
 		ORDER BY uploaded_at DESC
 		LIMIT 1
 	`
-	
+
 	var dataset models.Dataset
 	err := s.db.QueryRow(query, state, county).Scan(
 		&dataset.ID,
@@ -713,13 +713,13 @@ func (s *DatasetService) CheckDatasetExists(state, county string) (bool, *models
 		&dataset.RecordCount,
 		&dataset.UploadedAt,
 	)
-	
+
 	if err == sql.ErrNoRows {
 		return false, nil, nil
 	}
 	if err != nil {
 		return false, nil, err
 	}
-	
+
 	return true, &dataset, nil
 }

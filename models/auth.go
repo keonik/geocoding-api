@@ -24,56 +24,56 @@ type User struct {
 
 // APIKey represents an API key for a user
 type APIKey struct {
-	ID          int       `json:"id" db:"id"`
-	UserID      int       `json:"user_id" db:"user_id"`
-	Name        string    `json:"name" db:"name"` // User-friendly name
-	KeyHash     string    `json:"-" db:"key_hash"` // Hashed version, never return actual key
-	KeyPreview  string    `json:"key_preview" db:"key_preview"` // First/last few chars for UI
-	IsActive    bool      `json:"is_active" db:"is_active"`
+	ID          int        `json:"id" db:"id"`
+	UserID      int        `json:"user_id" db:"user_id"`
+	Name        string     `json:"name" db:"name"`               // User-friendly name
+	KeyHash     string     `json:"-" db:"key_hash"`              // Hashed version, never return actual key
+	KeyPreview  string     `json:"key_preview" db:"key_preview"` // First/last few chars for UI
+	IsActive    bool       `json:"is_active" db:"is_active"`
 	LastUsedAt  *time.Time `json:"last_used_at" db:"last_used_at"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+	CreatedAt   time.Time  `json:"created_at" db:"created_at"`
 	ExpiresAt   *time.Time `json:"expires_at" db:"expires_at"`
-	Permissions JSONArray `json:"permissions" db:"permissions"` // ["geocode", "distance", "search"]
+	Permissions JSONArray  `json:"permissions" db:"permissions"` // ["geocode", "distance", "search"]
 }
 
 // UsageRecord represents API usage tracking
 type UsageRecord struct {
-	ID          int       `json:"id" db:"id"`
-	UserID      int       `json:"user_id" db:"user_id"`
-	APIKeyID    int       `json:"api_key_id" db:"api_key_id"`
-	Endpoint    string    `json:"endpoint" db:"endpoint"` // geocode, distance, search, etc.
-	Method      string    `json:"method" db:"method"` // GET, POST
-	StatusCode  int       `json:"status_code" db:"status_code"`
-	ResponseTime int      `json:"response_time_ms" db:"response_time_ms"` // milliseconds
-	IPAddress   string    `json:"ip_address" db:"ip_address"`
-	UserAgent   string    `json:"user_agent" db:"user_agent"`
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	Billable    bool      `json:"billable" db:"billable"` // false for errors, over-limit calls
+	ID           int       `json:"id" db:"id"`
+	UserID       int       `json:"user_id" db:"user_id"`
+	APIKeyID     int       `json:"api_key_id" db:"api_key_id"`
+	Endpoint     string    `json:"endpoint" db:"endpoint"` // geocode, distance, search, etc.
+	Method       string    `json:"method" db:"method"`     // GET, POST
+	StatusCode   int       `json:"status_code" db:"status_code"`
+	ResponseTime int       `json:"response_time_ms" db:"response_time_ms"` // milliseconds
+	IPAddress    string    `json:"ip_address" db:"ip_address"`
+	UserAgent    string    `json:"user_agent" db:"user_agent"`
+	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+	Billable     bool      `json:"billable" db:"billable"` // false for errors, over-limit calls
 }
 
 // Subscription represents user subscription and billing info
 type Subscription struct {
-	ID                int       `json:"id" db:"id"`
-	UserID            int       `json:"user_id" db:"user_id"`
-	PlanType          string    `json:"plan_type" db:"plan_type"`
-	Status            string    `json:"status" db:"status"` // active, cancelled, past_due
+	ID                 int       `json:"id" db:"id"`
+	UserID             int       `json:"user_id" db:"user_id"`
+	PlanType           string    `json:"plan_type" db:"plan_type"`
+	Status             string    `json:"status" db:"status"` // active, cancelled, past_due
 	CurrentPeriodStart time.Time `json:"current_period_start" db:"current_period_start"`
 	CurrentPeriodEnd   time.Time `json:"current_period_end" db:"current_period_end"`
-	MonthlyLimit      int       `json:"monthly_limit" db:"monthly_limit"` // API calls per month
-	PricePerCall      float64   `json:"price_per_call" db:"price_per_call"` // in cents
-	StripeCustomerID  *string   `json:"stripe_customer_id" db:"stripe_customer_id"`
-	StripeSubID       *string   `json:"stripe_subscription_id" db:"stripe_subscription_id"`
-	CreatedAt         time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
+	MonthlyLimit       int       `json:"monthly_limit" db:"monthly_limit"`   // API calls per month
+	PricePerCall       float64   `json:"price_per_call" db:"price_per_call"` // in cents
+	StripeCustomerID   *string   `json:"stripe_customer_id" db:"stripe_customer_id"`
+	StripeSubID        *string   `json:"stripe_subscription_id" db:"stripe_subscription_id"`
+	CreatedAt          time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // UsageSummary represents aggregated usage statistics
 type UsageSummary struct {
-	UserID       int     `json:"user_id"`
-	Month        string  `json:"month"` // YYYY-MM format
-	TotalCalls   int     `json:"total_calls"`
-	BillableCalls int    `json:"billable_calls"`
-	TotalCost    float64 `json:"total_cost"` // in dollars
+	UserID            int            `json:"user_id"`
+	Month             string         `json:"month"` // YYYY-MM format
+	TotalCalls        int            `json:"total_calls"`
+	BillableCalls     int            `json:"billable_calls"`
+	TotalCost         float64        `json:"total_cost"` // in dollars
 	EndpointBreakdown map[string]int `json:"endpoint_breakdown"`
 }
 
@@ -125,19 +125,19 @@ func (ja *JSONArray) Scan(value interface{}) error {
 		*ja = JSONArray{}
 		return nil
 	}
-	
+
 	// Handle PostgreSQL array format
 	if pgArray, ok := value.(pq.StringArray); ok {
 		*ja = JSONArray(pgArray)
 		return nil
 	}
-	
+
 	// Handle JSON format (fallback)
 	bytes, ok := value.([]byte)
 	if !ok {
 		return nil
 	}
-	
+
 	return json.Unmarshal(bytes, ja)
 }
 

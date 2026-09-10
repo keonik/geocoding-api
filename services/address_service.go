@@ -451,13 +451,13 @@ func (s *AddressService) GetCountyStats() (map[string]int, error) {
 
 // AddressSearchResult contains search results along with metadata about the search
 type AddressSearchResult struct {
-	Addresses       []models.OhioAddress
-	ExactCount      int                  // Number of exact matches
-	FallbackCount   int                  // Number of fallback (street-only) matches
-	FallbackQuery   string               // The query used for fallback (empty if no fallback)
-	OriginalQuery   string
-	ParsedQuery     *utils.ParsedAddress // Parsed address components (nil if not parsed)
-	SearchMethod    string               // "component" or "fulltext"
+	Addresses     []models.OhioAddress
+	ExactCount    int    // Number of exact matches
+	FallbackCount int    // Number of fallback (street-only) matches
+	FallbackQuery string // The query used for fallback (empty if no fallback)
+	OriginalQuery string
+	ParsedQuery   *utils.ParsedAddress // Parsed address components (nil if not parsed)
+	SearchMethod  string               // "component" or "fulltext"
 }
 
 // FullTextSearchAddresses performs a simple full-text search on the full_address column
@@ -667,10 +667,10 @@ func (s *AddressService) searchWithFallback(exactQuery, fallbackQuery string, li
 
 // componentSearchResult holds addresses with exact vs nearby counts from tiered search.
 type componentSearchResult struct {
-	Addresses    []models.OhioAddress
-	ExactCount   int // Tiers that matched the house number (exact address)
-	NearbyCount  int // Tiers that dropped the house number (same street/city)
-	BestTier     int // The most specific tier that returned results
+	Addresses   []models.OhioAddress
+	ExactCount  int // Tiers that matched the house number (exact address)
+	NearbyCount int // Tiers that dropped the house number (same street/city)
+	BestTier    int // The most specific tier that returned results
 }
 
 // searchByComponents searches using parsed address components against individual fields.
@@ -925,12 +925,12 @@ func (s *AddressService) searchAddressesWithVariants(query string, limit int) ([
 	// Get all variants of the query (handles both abbreviations and full forms)
 	// This allows "dr" to match "drive" and "drive" to match "dr"
 	queryVariants := utils.GetAddressQueryVariants(query)
-	
+
 	// Build OR conditions for all variants
 	var conditions []string
 	var args []interface{}
 	argNum := 1
-	
+
 	for _, variant := range queryVariants {
 		pattern := "%" + variant + "%"
 		conditions = append(conditions, fmt.Sprintf("full_address ILIKE $%d", argNum))
@@ -1003,20 +1003,20 @@ func (s *AddressService) searchAddressesWithVariants(query string, limit int) ([
 func extractStreetFromQuery(query string) string {
 	query = strings.TrimSpace(query)
 	words := strings.Fields(query)
-	
+
 	if len(words) < 2 {
 		return query
 	}
-	
+
 	// Check if the first word looks like a house number
 	firstWord := words[0]
-	
+
 	// House numbers are typically:
 	// - Pure digits: "123"
 	// - Digits with letter suffix: "123A", "456B"
 	// - Digit ranges: "100-102"
 	isHouseNumber := false
-	
+
 	// Check if it starts with a digit
 	if len(firstWord) > 0 && firstWord[0] >= '0' && firstWord[0] <= '9' {
 		isHouseNumber = true
@@ -1032,12 +1032,12 @@ func extractStreetFromQuery(query string) string {
 			isHouseNumber = false
 		}
 	}
-	
+
 	if isHouseNumber {
 		// Return everything after the house number
 		return strings.Join(words[1:], " ")
 	}
-	
+
 	return query
 }
 
@@ -1090,6 +1090,7 @@ func GetDB() *sql.DB {
 	}
 	return nil
 }
+
 // sanitizeTSTerm strips everything that is not alphanumeric so a user-supplied
 // word can never be interpreted as tsquery syntax (&, |, !, parentheses, :*).
 func sanitizeTSTerm(word string) string {
