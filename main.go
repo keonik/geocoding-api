@@ -157,6 +157,11 @@ func main() {
 	// Add request ID middleware for tracing
 	e.Use(echomiddleware.RequestID())
 
+	// Decide how the client IP is derived before anything reads it. Both the
+	// auth throttle and the ip_address column on every usage record depend on
+	// this being right.
+	middleware.ConfigureIPExtractor(e)
+
 	// Determine which frontend to serve
 	staticDir := "static-new"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
@@ -258,7 +263,13 @@ func main() {
 	api.GET("/health", handlers.HealthCheckHandler)
 
 	// Authentication routes (no auth required)
+	//
+	// These are the only endpoints reachable without a key, so they are the
+	// only ones the monthly quota in APIKeyAuth does not cover. Login runs a
+	// bcrypt comparison per attempt, which makes an unthrottled endpoint both
+	// a credential-stuffing surface and a cheap way to burn server CPU.
 	auth := api.Group("/auth")
+	auth.Use(middleware.AuthRateLimiter())
 	auth.POST("/register", handlers.RegisterHandler)
 	auth.POST("/login", handlers.LoginHandler)
 	auth.GET("/plans", handlers.GetPlansHandler)
