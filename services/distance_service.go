@@ -8,10 +8,25 @@ import (
 	"geocoding-api/models"
 )
 
+// metersPerMile is the international mile, exactly 1609.344 m. Radius search
+// converts miles to meters for PostGIS and back again for the response.
+const metersPerMile = 1609.344
+
+// earthRadiusMiles is the mean Earth radius PostGIS uses for its sphere
+// (6371008.771415 m), expressed in miles.
+//
+// It was 3959.0 until radius search moved onto PostGIS. Both numbers are
+// defensible as "the" Earth radius, but only one of them makes /distance,
+// /proximity and /nearby report the same mileage for the same pair of ZIPs,
+// and disagreeing endpoints are worse than a rounding choice. The change moves
+// every distance this package reports by 0.006% -- about 32 feet in 100 miles,
+// far inside the error already introduced by treating a ZIP code as a point.
+const earthRadiusMiles = 6371008.771415 / metersPerMile
+
 // DistanceResponse represents the response for distance calculations
 type DistanceResponse struct {
-	FromZipCode  string  `json:"from_zip_code"`
-	ToZipCode    string  `json:"to_zip_code"`
+	FromZipCode   string  `json:"from_zip_code"`
+	ToZipCode     string  `json:"to_zip_code"`
 	DistanceMiles float64 `json:"distance_miles"`
 	DistanceKm    float64 `json:"distance_km"`
 }
@@ -52,13 +67,42 @@ func CalculateDistanceBetweenZipCodes(fromZip, toZip string) (*DistanceResponse,
 		FromZipCode:   fromZip,
 		ToZipCode:     toZip,
 		DistanceMiles: distanceMiles,
-		DistanceKm:    distanceMiles * 1.60934, // Convert miles to kilometers
+		DistanceKm:    distanceMiles * metersPerMile / 1000.0,
 	}, nil
 }
 
-// FindZipCodesWithinRadius finds all ZIP codes within a specified radius of a center ZIP code
+// FindZipCodesWithinRadius finds all ZIP codes within a specified radius of a
+// center ZIP code, nearest first.
+//
+// This used to draw a lat/lng bounding box, pull LIMIT*3 rows ordered by
+// squared degrees, then filter by Haversine in Go and stop at LIMIT. That was
+// wrong in two ways, not merely slow:
+//
+//   - A bounding box circumscribes the circle, so up to 1 - pi/4 (21%) of its
+//     area -- concentrated in the corners -- is outside the radius. When
+//     enough of the LIMIT*3 candidates fell in those corners they consumed the
+//     slice and were then discarded, and the call returned fewer ZIPs than
+//     genuinely sat inside the radius. A silent wrong answer.
+//   - Squared degrees is not distance. A degree of longitude is cos(latitude)
+//     as long as a degree of latitude -- 0.68x at 47 deg N -- so the ordering
+//     that decided which LIMIT*3 rows to keep was itself skewed, and skewed
+//     worse the further from the equator.
+//
+// Now it is one indexed query. ST_DWithin does the filtering against the GIST
+// index from migration 21, the KNN operator orders by true distance, and LIMIT
+// applies in SQL to a set that is already correct.
+//
+// use_spheroid is false throughout, which asks PostGIS for great-circle
+// distance on a sphere -- the same model as haversineDistance, so /nearby
+// agrees with /distance and /proximity for any given pair. Leaving it at the
+// default (true, WGS84 spheroid) would be more accurate in isolation but would
+// disagree with those endpoints by ~0.25%, which is a quarter mile over a
+// hundred. Reported distance comes from the same ST_Distance call the filter
+// used, so a result can never come back reporting a distance above the radius
+// that admitted it.
 func FindZipCodesWithinRadius(centerZip string, radiusMiles float64, limit int) ([]*RadiusSearchResult, error) {
-	// Get center ZIP code coordinates
+	// Confirm the center exists so a bad ZIP is a clear error rather than an
+	// empty result set.
 	centerZipCode, err := GetZipCodeByZip(centerZip)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get center ZIP code: %w", err)
@@ -67,33 +111,23 @@ func FindZipCodesWithinRadius(centerZip string, radiusMiles float64, limit int) 
 		return nil, fmt.Errorf("center ZIP code %s not found", centerZip)
 	}
 
-	// Calculate bounding box for efficient querying
-	// This creates a rough square around the center point to limit database results
-	latDelta := radiusMiles / 69.0 // Approximate miles per degree of latitude
-	lngDelta := radiusMiles / (69.0 * math.Cos(centerZipCode.Latitude*math.Pi/180.0)) // Adjust for longitude
-
-	minLat := centerZipCode.Latitude - latDelta
-	maxLat := centerZipCode.Latitude + latDelta
-	minLng := centerZipCode.Longitude - lngDelta
-	maxLng := centerZipCode.Longitude + lngDelta
-
-	// Query database with bounding box filter
 	query := `
-		SELECT zip_code, city_name, state_code, state_name, zcta, zcta_parent,
-			   population, density, primary_county_code, primary_county_name,
-			   county_weights, county_names, county_codes, imprecise, military,
-			   timezone, latitude, longitude
-		FROM zip_codes
-		WHERE latitude BETWEEN $1 AND $2
-		  AND longitude BETWEEN $3 AND $4
-		  AND zip_code != $5
-		ORDER BY 
-			(latitude - $6) * (latitude - $6) + (longitude - $7) * (longitude - $7)
-		LIMIT $8
+		WITH center AS (
+			SELECT geog FROM zip_codes WHERE zip_code = $1
+		)
+		SELECT z.zip_code, z.city_name, z.state_code, z.state_name, z.zcta, z.zcta_parent,
+			   z.population, z.density, z.primary_county_code, z.primary_county_name,
+			   z.county_weights, z.county_names, z.county_codes, z.imprecise, z.military,
+			   z.timezone, z.latitude, z.longitude,
+			   ST_Distance(z.geog, center.geog, false) AS distance_meters
+		FROM zip_codes z, center
+		WHERE z.zip_code <> $1
+		  AND ST_DWithin(z.geog, center.geog, $2, false)
+		ORDER BY z.geog <-> center.geog
+		LIMIT $3
 	`
 
-	rows, err := database.DB.Query(query, minLat, maxLat, minLng, maxLng, centerZip, 
-		centerZipCode.Latitude, centerZipCode.Longitude, limit*3) // Get more than needed for precise filtering
+	rows, err := database.DB.Query(query, centerZip, radiusMiles*metersPerMile, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query ZIP codes: %w", err)
 	}
@@ -102,35 +136,27 @@ func FindZipCodesWithinRadius(centerZip string, radiusMiles float64, limit int) 
 	var results []*RadiusSearchResult
 	for rows.Next() {
 		zc := &models.ZipCode{}
+		var distanceMeters float64
 		err := rows.Scan(
 			&zc.ZipCode, &zc.CityName, &zc.StateCode, &zc.StateName, &zc.ZCTA, &zc.ZCTAParent,
 			&zc.Population, &zc.Density, &zc.PrimaryCountyCode, &zc.PrimaryCountyName,
 			&zc.CountyWeights, &zc.CountyNames, &zc.CountyCodes, &zc.Imprecise, &zc.Military,
 			&zc.Timezone, &zc.Latitude, &zc.Longitude,
+			&distanceMeters,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan ZIP code: %w", err)
 		}
 
-		// Calculate precise distance using Haversine formula
-		distance := haversineDistance(
-			centerZipCode.Latitude, centerZipCode.Longitude,
-			zc.Latitude, zc.Longitude,
-		)
-
-		// Only include if within the specified radius
-		if distance <= radiusMiles {
-			results = append(results, &RadiusSearchResult{
-				ZipCode:       zc,
-				DistanceMiles: distance,
-				DistanceKm:    distance * 1.60934,
-			})
-
-			// Stop if we've reached the limit
-			if len(results) >= limit {
-				break
-			}
-		}
+		distanceMiles := distanceMeters / metersPerMile
+		results = append(results, &RadiusSearchResult{
+			ZipCode:       zc,
+			DistanceMiles: distanceMiles,
+			DistanceKm:    distanceMeters / 1000.0,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read ZIP code rows: %w", err)
 	}
 
 	return results, nil
@@ -149,8 +175,6 @@ func IsZipCodeWithinRadius(centerZip, targetZip string, radiusMiles float64) (bo
 // haversineDistance calculates the distance between two points on Earth using the Haversine formula
 // Returns distance in miles
 func haversineDistance(lat1, lng1, lat2, lng2 float64) float64 {
-	const earthRadiusMiles = 3959.0
-
 	// Convert degrees to radians
 	lat1Rad := lat1 * math.Pi / 180.0
 	lng1Rad := lng1 * math.Pi / 180.0

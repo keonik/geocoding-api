@@ -137,6 +137,12 @@ func RunMigrations() error {
 			Up:          addSimplifiedBoundaryGeometry,
 			Down:        removeSimplifiedBoundaryGeometry,
 		},
+		{
+			Version:     21,
+			Description: "Add geography point and GIST index to zip_codes for radius search",
+			Up:          addZipCodeGeography,
+			Down:        removeZipCodeGeography,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1293,6 +1299,67 @@ func removeSimplifiedBoundaryGeometry() error {
 	for _, stmt := range statements {
 		if _, err := DB.Exec(stmt); err != nil {
 			return fmt.Errorf("failed to drop simplified boundary geometry: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// addZipCodeGeography gives zip_codes a real spatial column and index.
+//
+// Radius search had been running a lat/lng bounding box against
+// idx_zip_codes_location, a composite btree on (latitude, longitude). A range
+// predicate on both columns can only seek on the leading one, so longitude was
+// a filter applied to every row the latitude range returned -- and a bounding
+// box is the wrong shape for a radius anyway, so the service had to re-filter
+// in Go and could silently drop results. See FindZipCodesWithinRadius.
+//
+// The column is GENERATED ... STORED rather than a plain column with a
+// backfill on purpose. ZIP data is reloaded from CSV by InitializeData and by
+// the admin /load-data endpoint, both of which upsert latitude and longitude;
+// a plain column would go stale on every reload unless something remembered to
+// maintain it. A generated column is recomputed by the upsert for free.
+// ST_MakePoint, ST_SetSRID and the geometry->geography cast are all IMMUTABLE,
+// which is what makes this legal.
+//
+// Cost on boot: adding a STORED column rewrites the table under ACCESS
+// EXCLUSIVE, and the GIST build is the slower half. zip_codes is ~42k rows, so
+// both are well under a second. A table two orders of magnitude larger would
+// need CREATE INDEX CONCURRENTLY and a plain column instead.
+//
+// latitude and longitude are DECIMAL(10,7); ST_MakePoint takes double
+// precision, hence the casts.
+func addZipCodeGeography() error {
+	statements := []string{
+		`ALTER TABLE zip_codes ADD COLUMN IF NOT EXISTS geog geography(Point,4326)
+			GENERATED ALWAYS AS (
+				ST_SetSRID(
+					ST_MakePoint(longitude::double precision, latitude::double precision),
+					4326
+				)::geography
+			) STORED`,
+		`CREATE INDEX IF NOT EXISTS idx_zip_codes_geog ON zip_codes USING GIST (geog)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := DB.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to add zip code geography: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// removeZipCodeGeography drops the spatial column and its index.
+func removeZipCodeGeography() error {
+	statements := []string{
+		`DROP INDEX IF EXISTS idx_zip_codes_geog`,
+		`ALTER TABLE zip_codes DROP COLUMN IF EXISTS geog`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := DB.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to drop zip code geography: %w", err)
 		}
 	}
 
