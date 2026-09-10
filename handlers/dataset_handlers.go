@@ -40,8 +40,8 @@ func checkDatasetsTableExists() bool {
 // migrationsPendingResponse returns a standard response when migrations are still running
 func migrationsPendingResponse(c echo.Context) error {
 	return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
-		"success": false,
-		"error":   "Database migrations are still in progress. Please wait a moment and try again.",
+		"success":            false,
+		"error":              "Database migrations are still in progress. Please wait a moment and try again.",
 		"migrations_running": database.MigrationRunning,
 	})
 }
@@ -72,8 +72,8 @@ func UploadDatasetHandler(c echo.Context) error {
 		fmt.Printf("[Upload] Warning: Failed to check for existing dataset: %v\n", err)
 	} else if exists && existingDataset != nil {
 		return c.JSON(http.StatusConflict, map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Dataset for %s County, %s already exists (ID: %d, status: %s, %d records)", county, state, existingDataset.ID, existingDataset.Status, existingDataset.RecordCount),
+			"success":          false,
+			"error":            fmt.Sprintf("Dataset for %s County, %s already exists (ID: %d, status: %s, %d records)", county, state, existingDataset.ID, existingDataset.Status, existingDataset.RecordCount),
 			"existing_dataset": existingDataset,
 		})
 	}
@@ -146,7 +146,7 @@ func UploadMultipleHandler(c echo.Context) error {
 	fmt.Println("[BulkUpload] Starting bulk upload request")
 	fmt.Printf("[BulkUpload] Content-Length: %d\n", c.Request().ContentLength)
 	fmt.Printf("[BulkUpload] Content-Type: %s\n", c.Request().Header.Get("Content-Type"))
-	
+
 	// Get form values
 	state := c.FormValue("state")
 	fmt.Printf("[BulkUpload] State: %s\n", state)
@@ -188,7 +188,7 @@ func UploadMultipleHandler(c echo.Context) error {
 			"error":   "no files provided",
 		})
 	}
-	
+
 	// Log all file names
 	for i, f := range files {
 		fmt.Printf("[BulkUpload] File %d: %s (size: %d bytes)\n", i+1, f.Filename, f.Size)
@@ -290,17 +290,17 @@ func UploadMultipleHandler(c echo.Context) error {
 
 // UploadProgressEvent represents a progress update sent via SSE
 type UploadProgressEvent struct {
-	Type        string          `json:"type"`        // "start", "file_saved", "file_error", "processing", "complete"
-	Filename    string          `json:"filename,omitempty"`
-	FileIndex   int             `json:"file_index,omitempty"`
-	TotalFiles  int             `json:"total_files,omitempty"`
-	Success     bool            `json:"success,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	Dataset     *models.Dataset `json:"dataset,omitempty"`
-	DatasetID   int             `json:"dataset_id,omitempty"`
-	Message     string          `json:"message,omitempty"`
-	SuccessCount int            `json:"success_count,omitempty"`
-	FailCount   int             `json:"fail_count,omitempty"`
+	Type         string          `json:"type"` // "start", "file_saved", "file_error", "processing", "complete"
+	Filename     string          `json:"filename,omitempty"`
+	FileIndex    int             `json:"file_index,omitempty"`
+	TotalFiles   int             `json:"total_files,omitempty"`
+	Success      bool            `json:"success,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	Dataset      *models.Dataset `json:"dataset,omitempty"`
+	DatasetID    int             `json:"dataset_id,omitempty"`
+	Message      string          `json:"message,omitempty"`
+	SuccessCount int             `json:"success_count,omitempty"`
+	FailCount    int             `json:"fail_count,omitempty"`
 }
 
 // UploadMultipleStreamHandler handles multiple file uploads with SSE streaming progress
@@ -391,7 +391,7 @@ func UploadMultipleStreamHandler(c echo.Context) error {
 	// Process files sequentially for streaming updates
 	for i, file := range files {
 		filename := file.Filename
-		
+
 		// Send progress update
 		sendEvent(UploadProgressEvent{
 			Type:       "processing",
@@ -403,7 +403,7 @@ func UploadMultipleStreamHandler(c echo.Context) error {
 
 		// Process the file
 		result := processUploadedFile(file, state, userID)
-		
+
 		if result.Success {
 			successCount++
 			if result.Dataset != nil {
@@ -463,7 +463,7 @@ func UploadMultipleStreamHandler(c echo.Context) error {
 func processUploadedFile(file *multipart.FileHeader, state string, userID int) BatchUploadResult {
 	filename := file.Filename
 	fmt.Printf("[ProcessFile] Processing: %s\n", filename)
-	
+
 	// Extract county name from filename (e.g., "adams-addresses-county.geojson.gz" -> "Adams")
 	county := extractCountyFromFilename(filename)
 	if county == "" {
@@ -519,30 +519,30 @@ func extractCountyFromFilename(filename string) string {
 	name = strings.TrimSuffix(name, ".gz")
 	name = strings.TrimSuffix(name, ".geojson")
 	name = strings.TrimSuffix(name, ".json")
-	
+
 	// Common patterns:
 	// "adams-addresses-county" -> "adams"
 	// "adams_addresses_county" -> "adams"
 	// "adams-county" -> "adams"
 	// "adams" -> "adams"
-	
+
 	// Try to extract county name
 	parts := strings.FieldsFunc(name, func(r rune) bool {
 		return r == '-' || r == '_'
 	})
-	
+
 	if len(parts) > 0 {
 		// Return first part, capitalized
 		return strings.Title(strings.ToLower(parts[0]))
 	}
-	
+
 	return ""
 }
 
 // saveUploadedFile saves a file and creates a dataset record
 func saveUploadedFile(file *multipart.FileHeader, name, state, county string, userID int) (*models.Dataset, error) {
 	fmt.Printf("[SaveFile] Starting save for: %s (state=%s, county=%s)\n", file.Filename, state, county)
-	
+
 	// Validate file type
 	allowedExtensions := []string{".geojson", ".json", ".gz"}
 	ext := strings.ToLower(filepath.Ext(file.Filename))
@@ -595,7 +595,7 @@ func saveUploadedFile(file *multipart.FileHeader, name, state, county string, us
 		fmt.Printf("[SaveFile] ERROR copying file: %v\n", err)
 		return nil, fmt.Errorf("failed to save file: %w", err)
 	}
-	
+
 	// Sync to ensure data is written to disk
 	if err := dest.Sync(); err != nil {
 		fmt.Printf("[SaveFile] WARNING: failed to sync file: %v\n", err)
@@ -651,7 +651,7 @@ func processDatasetsConcurrently(datasetIDs []int) {
 		go func(workerID int) {
 			defer wg.Done()
 			datasetService := services.NewDatasetService(services.GetDB())
-			
+
 			for datasetID := range jobs {
 				fmt.Printf("[Worker %d] Processing dataset %d\n", workerID, datasetID)
 				if err := datasetService.ProcessGeoJSONDataset(datasetID); err != nil {
@@ -683,7 +683,7 @@ func GetDatasetsHandler(c echo.Context) error {
 
 	state := c.QueryParam("state")
 	status := c.QueryParam("status")
-	
+
 	limitStr := c.QueryParam("limit")
 	limit := 50
 	if limitStr != "" {

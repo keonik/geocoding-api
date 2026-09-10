@@ -34,7 +34,7 @@ func InitializeCityData() error {
 	}
 
 	log.Println("Cities table is empty, loading data from uscities.csv.gz...")
-	
+
 	file, err := os.Open("uscities.csv.gz")
 	if err != nil {
 		return fmt.Errorf("failed to open uscities.csv.gz: %w", err)
@@ -48,7 +48,7 @@ func InitializeCityData() error {
 	defer gzReader.Close()
 
 	csvReader := csv.NewReader(gzReader)
-	
+
 	// Read header
 	header, err := csvReader.Read()
 	if err != nil {
@@ -72,7 +72,7 @@ func InitializeCityData() error {
 
 	count = 0
 	skipped := 0
-	
+
 	for {
 		record, err := csvReader.Read()
 		if err == io.EOF {
@@ -100,23 +100,23 @@ func InitializeCityData() error {
 		incorporated := strings.ToUpper(record[12]) == "TRUE"
 
 		_, err = stmt.Exec(
-			record[0],  // city
-			record[1],  // city_ascii
-			record[2],  // state_id
-			record[3],  // state_name
-			record[4],  // county_fips
-			record[5],  // county_name
-			lat,        // lat
-			lng,        // lng
-			population, // population
-			density,    // density
-			record[10], // source
-			military,   // military
+			record[0],    // city
+			record[1],    // city_ascii
+			record[2],    // state_id
+			record[3],    // state_name
+			record[4],    // county_fips
+			record[5],    // county_name
+			lat,          // lat
+			lng,          // lng
+			population,   // population
+			density,      // density
+			record[10],   // source
+			military,     // military
 			incorporated, // incorporated
-			record[13], // timezone
-			ranking,    // ranking
-			record[15], // zips
-			record[16], // external_id
+			record[13],   // timezone
+			ranking,      // ranking
+			record[15],   // zips
+			record[16],   // external_id
 		)
 		if err != nil {
 			log.Printf("Error inserting city %s, %s: %v", record[0], record[2], err)
@@ -353,7 +353,7 @@ func (cs *CityService) GetCityByID(id int64) (*models.City, error) {
 func (cs *CityService) GetZIPCodesForCity(cityAscii, state string) ([]string, error) {
 	var zips sql.NullString
 	var query string
-	
+
 	// Handle state as either state_id (2 chars) or state_name
 	stateUpper := strings.ToUpper(state)
 	if len(state) == 2 {
@@ -363,7 +363,7 @@ func (cs *CityService) GetZIPCodesForCity(cityAscii, state string) ([]string, er
 		// State name like "Ohio" - check both state_id and state_name
 		query = "SELECT zips FROM cities WHERE city_ascii ILIKE $1 AND (state_id = $2 OR state_name ILIKE $2)"
 	}
-	
+
 	err := database.DB.QueryRow(query, cityAscii, stateUpper).Scan(&zips)
 	if err == sql.ErrNoRows {
 		return []string{}, nil

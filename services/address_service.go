@@ -242,6 +242,16 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	// Ordering. Distance ordering takes lat/lng as fresh parameters, numbered
 	// after the SELECT ones so placeholder numbers keep matching positions in
 	// fullQueryArgs.
+	//
+	// Every ordering ends in id. Without it none of them is a total order and
+	// pagination is unsound: LIMIT/OFFSET re-runs the query per page, and rows
+	// the sort considers equal may come back in a different arrangement each
+	// time, so a row can appear on two consecutive pages or on neither. Real
+	// data ties constantly here -- apartment units in one building share a
+	// house number and a coordinate, so ST_Distance and the relevance score are
+	// both routinely equal across many rows. Measured on 300k rows the extra
+	// key is free: the unfiltered browse keeps its incremental sort off
+	// idx_ohio_addresses_county and stays at ~82ms.
 	var orderBy string
 	var orderByArgs []interface{}
 	if params.Lat != 0 && params.Lng != 0 {
@@ -250,14 +260,14 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 			ORDER BY ST_Distance(
 				geom, 
 				ST_SetSRID(ST_MakePoint($%d, $%d), 4326)::geography
-			) ASC`, argIndex, argIndex+1)
+			) ASC, id`, argIndex, argIndex+1)
 		orderByArgs = append(orderByArgs, params.Lng, params.Lat)
 		argIndex += 2
 	} else if hasRelevanceScore {
 		// Order by relevance score (highest first)
-		orderBy = "ORDER BY relevance_score DESC, county, city, street, house_number"
+		orderBy = "ORDER BY relevance_score DESC, county, city, street, house_number, id"
 	} else {
-		orderBy = "ORDER BY county, city, street, house_number"
+		orderBy = "ORDER BY county, city, street, house_number, id"
 	}
 
 	// Construct the full query
@@ -266,33 +276,55 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
+	// How the total is obtained depends on whether there is a filter.
+	//
+	// With one, COUNT(*) OVER () rides along on the main query so the predicate
+	// is evaluated once instead of twice. Window functions are computed after
+	// WHERE and before ORDER BY/LIMIT, so the value is the full match count,
+	// unaffected by pagination.
+	//
+	// With no filter it stays a separate COUNT, because the window function is
+	// dramatically slower there. ORDER BY county, city, street, house_number is
+	// served from idx_ohio_addresses_county as an incremental sort that stops
+	// once LIMIT rows are out; COUNT(*) OVER () must consume every row before it
+	// can emit the first one, which forbids that early exit and spills the whole
+	// table through a tuplestore (EXPLAIN shows temp read=1751 written=1897).
+	// A filter generally rules out that early-exit plan anyway, so nothing is
+	// given up by using the window count there. Measured over 300k seeded rows,
+	// as total time for the old pair vs the single new query:
+	//
+	//	postcode+street, ~30 rows     30.1ms ->   3.9ms  (7.7x faster)
+	//	city ILIKE, ~30k rows       1163.0ms -> 926.0ms  (1.3x faster)
+	//	one-word fts, ~30k rows      285.0ms -> 262.0ms
+	//	two-word fts                 466.0ms -> 456.0ms
+	//	no filter at all             164.0ms -> 756.0ms  (4.6x SLOWER)
+	//
+	// The unfiltered browse is the one shape where two queries beat one.
+	useWindowCount := whereClause != ""
+
 	// Build SELECT clause
 	selectClause := baseFields
 	if len(selectFields) > 0 {
 		selectClause = baseFields + ", " + strings.Join(selectFields, ", ")
 	}
-	
-	baseQuery := fmt.Sprintf("SELECT %s FROM ohio_addresses", selectClause)
-
-	// Get total count for pagination (only use args for WHERE clause, not ORDER BY)
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM ohio_addresses %s", whereClause)
-	
-	var total int
-	err := q.QueryRow(countQuery, args[:whereArgCount]...).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
+	if useWindowCount {
+		// Takes no parameters, so this cannot disturb the placeholder numbering
+		// that the WHERE, relevance and ORDER BY clauses depend on.
+		selectClause += ", COUNT(*) OVER () as total_count"
 	}
+
+	baseQuery := fmt.Sprintf("SELECT %s FROM ohio_addresses", selectClause)
 
 	// Main query with pagination - now add ORDER BY args
 	fullQueryArgs := make([]interface{}, len(args))
 	copy(fullQueryArgs, args)
 	fullQueryArgs = append(fullQueryArgs, orderByArgs...)
-	
+
 	fullQuery := fmt.Sprintf(`
-		%s %s %s 
+		%s %s %s
 		LIMIT $%d OFFSET $%d
 	`, baseQuery, whereClause, orderBy, argIndex, argIndex+1)
-	
+
 	fullQueryArgs = append(fullQueryArgs, params.Limit, params.Offset)
 
 	rows, err := q.Query(fullQuery, fullQueryArgs...)
@@ -301,35 +333,62 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	}
 	defer rows.Close()
 
+	var total int
 	var addresses []models.OhioAddress
 	for rows.Next() {
 		var addr models.OhioAddress
 		var relevanceScore *int // May or may not be present
-		
+		var rowTotal int
+
+		// Scan targets are assembled in the same order the SELECT list was
+		// built above: base fields, then relevance_score if it was added, then
+		// total_count if it was added.
+		dest := []interface{}{
+			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
+			&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
+		}
 		if hasRelevanceScore {
-			err := rows.Scan(
-				&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
-				&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
-				&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &relevanceScore,
-			)
-			if err != nil {
-				return nil, 0, fmt.Errorf("failed to scan address row with score: %w", err)
-			}
-		} else {
-			err := rows.Scan(
-				&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
-				&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
-				&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
-			)
-			if err != nil {
-				return nil, 0, fmt.Errorf("failed to scan address row: %w", err)
-			}
+			dest = append(dest, &relevanceScore)
+		}
+		if useWindowCount {
+			dest = append(dest, &rowTotal)
+		}
+
+		if err := rows.Scan(dest...); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan address row: %w", err)
+		}
+
+		// Every row carries the same window count.
+		if useWindowCount {
+			total = rowTotal
 		}
 		addresses = append(addresses, addr)
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("error iterating address rows: %w", err)
+	}
+	// Release the rows before issuing another statement: on the fuzzy path q is
+	// a *sql.Tx, which allows only one active query at a time.
+	rows.Close()
+
+	// Two cases still need a standalone count. The unfiltered search, per the
+	// note above. And a filtered search whose OFFSET landed past the end: the
+	// window count arrives *on* the rows, so a page past the end returns none
+	// and carries no total with it. Without this, a client walking one page too
+	// far would read total 0 and conclude the result set had emptied. Zero rows
+	// at offset 0 is a genuine zero and is left alone, so the common path never
+	// pays for this.
+	if !useWindowCount || (len(addresses) == 0 && params.Offset > 0) {
+		// Only the WHERE parameters are passed. Postgres infers a parameter's
+		// type from where it is used, so handing this statement SELECT or
+		// ORDER BY args it never mentions fails to parse with "could not
+		// determine data type of parameter $1".
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM ohio_addresses %s", whereClause)
+		if err := q.QueryRow(countQuery, args[:whereArgCount]...).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("failed to get total count: %w", err)
+		}
 	}
 
 	return addresses, total, nil
@@ -392,13 +451,13 @@ func (s *AddressService) GetCountyStats() (map[string]int, error) {
 
 // AddressSearchResult contains search results along with metadata about the search
 type AddressSearchResult struct {
-	Addresses       []models.OhioAddress
-	ExactCount      int                  // Number of exact matches
-	FallbackCount   int                  // Number of fallback (street-only) matches
-	FallbackQuery   string               // The query used for fallback (empty if no fallback)
-	OriginalQuery   string
-	ParsedQuery     *utils.ParsedAddress // Parsed address components (nil if not parsed)
-	SearchMethod    string               // "component" or "fulltext"
+	Addresses     []models.OhioAddress
+	ExactCount    int    // Number of exact matches
+	FallbackCount int    // Number of fallback (street-only) matches
+	FallbackQuery string // The query used for fallback (empty if no fallback)
+	OriginalQuery string
+	ParsedQuery   *utils.ParsedAddress // Parsed address components (nil if not parsed)
+	SearchMethod  string               // "component" or "fulltext"
 }
 
 // FullTextSearchAddresses performs a simple full-text search on the full_address column
@@ -608,10 +667,10 @@ func (s *AddressService) searchWithFallback(exactQuery, fallbackQuery string, li
 
 // componentSearchResult holds addresses with exact vs nearby counts from tiered search.
 type componentSearchResult struct {
-	Addresses    []models.OhioAddress
-	ExactCount   int // Tiers that matched the house number (exact address)
-	NearbyCount  int // Tiers that dropped the house number (same street/city)
-	BestTier     int // The most specific tier that returned results
+	Addresses   []models.OhioAddress
+	ExactCount  int // Tiers that matched the house number (exact address)
+	NearbyCount int // Tiers that dropped the house number (same street/city)
+	BestTier    int // The most specific tier that returned results
 }
 
 // searchByComponents searches using parsed address components against individual fields.
@@ -866,12 +925,12 @@ func (s *AddressService) searchAddressesWithVariants(query string, limit int) ([
 	// Get all variants of the query (handles both abbreviations and full forms)
 	// This allows "dr" to match "drive" and "drive" to match "dr"
 	queryVariants := utils.GetAddressQueryVariants(query)
-	
+
 	// Build OR conditions for all variants
 	var conditions []string
 	var args []interface{}
 	argNum := 1
-	
+
 	for _, variant := range queryVariants {
 		pattern := "%" + variant + "%"
 		conditions = append(conditions, fmt.Sprintf("full_address ILIKE $%d", argNum))
@@ -944,20 +1003,20 @@ func (s *AddressService) searchAddressesWithVariants(query string, limit int) ([
 func extractStreetFromQuery(query string) string {
 	query = strings.TrimSpace(query)
 	words := strings.Fields(query)
-	
+
 	if len(words) < 2 {
 		return query
 	}
-	
+
 	// Check if the first word looks like a house number
 	firstWord := words[0]
-	
+
 	// House numbers are typically:
 	// - Pure digits: "123"
 	// - Digits with letter suffix: "123A", "456B"
 	// - Digit ranges: "100-102"
 	isHouseNumber := false
-	
+
 	// Check if it starts with a digit
 	if len(firstWord) > 0 && firstWord[0] >= '0' && firstWord[0] <= '9' {
 		isHouseNumber = true
@@ -973,12 +1032,12 @@ func extractStreetFromQuery(query string) string {
 			isHouseNumber = false
 		}
 	}
-	
+
 	if isHouseNumber {
 		// Return everything after the house number
 		return strings.Join(words[1:], " ")
 	}
-	
+
 	return query
 }
 
@@ -1031,6 +1090,7 @@ func GetDB() *sql.DB {
 	}
 	return nil
 }
+
 // sanitizeTSTerm strips everything that is not alphanumeric so a user-supplied
 // word can never be interpreted as tsquery syntax (&, |, !, parentheses, :*).
 func sanitizeTSTerm(word string) string {

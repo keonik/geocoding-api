@@ -12,13 +12,13 @@ import (
 // SearchCitiesHandler handles city search requests
 func SearchCitiesHandler(c echo.Context) error {
 	var params models.CitySearchParams
-	
+
 	// Parse query parameters
 	params.Query = c.QueryParam("query")
 	params.City = c.QueryParam("city")
 	params.State = c.QueryParam("state")
 	params.County = c.QueryParam("county")
-	
+
 	// Parse numeric parameters
 	if lat := c.QueryParam("lat"); lat != "" {
 		if val, err := strconv.ParseFloat(lat, 64); err == nil {

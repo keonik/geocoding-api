@@ -137,6 +137,18 @@ func RunMigrations() error {
 			Up:          addSimplifiedBoundaryGeometry,
 			Down:        removeSimplifiedBoundaryGeometry,
 		},
+		{
+			Version:     20,
+			Description: "Repair subscription monthly limits written from the wrong plan table",
+			Up:          RepairSubscriptionLimits,
+			Down:        RestoreLegacySubscriptionLimits,
+		},
+		{
+			Version:     21,
+			Description: "Add geography point and GIST index to zip_codes for radius search",
+			Up:          addZipCodeGeography,
+			Down:        removeZipCodeGeography,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1293,6 +1305,152 @@ func removeSimplifiedBoundaryGeometry() error {
 	for _, stmt := range statements {
 		if _, err := DB.Exec(stmt); err != nil {
 			return fmt.Errorf("failed to drop simplified boundary geometry: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// legacyPlanMonthlyLimits are the monthly limits models.PlanLimits used to
+// carry. Every one of them was wrong, and RegisterUser wrote them into a
+// subscriptions row for each new user.
+//
+// The map is spelled out here rather than imported so that editing the plan
+// table later cannot retroactively change what this migration matches. A
+// migration has to mean the same thing every time it runs.
+var legacyPlanMonthlyLimits = map[string]int{
+	"free":       100000,
+	"starter":    10000,
+	"pro":        100000,
+	"enterprise": 1000000,
+}
+
+// correctedPlanMonthlyLimits are the values those rows should have held: the
+// numbers /api/v1/auth/plans has always advertised.
+var correctedPlanMonthlyLimits = map[string]int{
+	"free":       3000,
+	"starter":    30000,
+	"pro":        500000,
+	"enterprise": -1,
+}
+
+// RepairSubscriptionLimits fixes subscription rows carrying a wrong default.
+//
+// CheckRateLimit resolves a user's monthly cap as COALESCE(subscription
+// override, plan default). RegisterUser creates a subscription for every new
+// user, and subscriptions.is_active defaults to true, so that override is
+// always present and always won -- meaning the plan table was never actually
+// what got enforced. With the table now wrong, a free account advertised at
+// 3,000 calls/month was enforced at 100,000.
+//
+// The update is deliberately keyed on (plan_type, exact legacy value). A row
+// holding any other number was either already correct or is a genuinely
+// negotiated custom limit, and must survive untouched -- which is what keeps
+// honouring the override safe at all.
+func RepairSubscriptionLimits() error {
+	for planType, legacy := range legacyPlanMonthlyLimits {
+		corrected, ok := correctedPlanMonthlyLimits[planType]
+		if !ok {
+			continue
+		}
+
+		res, err := DB.Exec(`
+			UPDATE subscriptions
+			SET monthly_limit = $1, updated_at = NOW()
+			WHERE plan_type = $2 AND monthly_limit = $3
+		`, corrected, planType, legacy)
+		if err != nil {
+			return fmt.Errorf("failed to repair %s subscription limits: %w", planType, err)
+		}
+
+		if n, err := res.RowsAffected(); err == nil && n > 0 {
+			log.Printf("Migration 20: reset %d %s subscription(s) from %d to %d", n, planType, legacy, corrected)
+		}
+	}
+
+	return nil
+}
+
+// RestoreLegacySubscriptionLimits puts the wrong values back.
+//
+// This is the best available inverse, not an exact one: a row that legitimately
+// held the corrected value before the Up ran is indistinguishable from one the
+// Up rewrote, so rolling back over-reverts. That is the right trade for a
+// down-migration whose only purpose is to unblock a rollback.
+func RestoreLegacySubscriptionLimits() error {
+	for planType, legacy := range legacyPlanMonthlyLimits {
+		corrected, ok := correctedPlanMonthlyLimits[planType]
+		if !ok {
+			continue
+		}
+
+		if _, err := DB.Exec(`
+			UPDATE subscriptions
+			SET monthly_limit = $1, updated_at = NOW()
+			WHERE plan_type = $2 AND monthly_limit = $3
+		`, legacy, planType, corrected); err != nil {
+			return fmt.Errorf("failed to restore %s subscription limits: %w", planType, err)
+		}
+	}
+
+	return nil
+}
+
+// addZipCodeGeography gives zip_codes a real spatial column and index.
+//
+// Radius search had been running a lat/lng bounding box against
+// idx_zip_codes_location, a composite btree on (latitude, longitude). A range
+// predicate on both columns can only seek on the leading one, so longitude was
+// a filter applied to every row the latitude range returned -- and a bounding
+// box is the wrong shape for a radius anyway, so the service had to re-filter
+// in Go and could silently drop results. See FindZipCodesWithinRadius.
+//
+// The column is GENERATED ... STORED rather than a plain column with a
+// backfill on purpose. ZIP data is reloaded from CSV by InitializeData and by
+// the admin /load-data endpoint, both of which upsert latitude and longitude;
+// a plain column would go stale on every reload unless something remembered to
+// maintain it. A generated column is recomputed by the upsert for free.
+// ST_MakePoint, ST_SetSRID and the geometry->geography cast are all IMMUTABLE,
+// which is what makes this legal.
+//
+// Cost on boot: adding a STORED column rewrites the table under ACCESS
+// EXCLUSIVE, and the GIST build is the slower half. zip_codes is ~42k rows, so
+// both are well under a second. A table two orders of magnitude larger would
+// need CREATE INDEX CONCURRENTLY and a plain column instead.
+//
+// latitude and longitude are DECIMAL(10,7); ST_MakePoint takes double
+// precision, hence the casts.
+func addZipCodeGeography() error {
+	statements := []string{
+		`ALTER TABLE zip_codes ADD COLUMN IF NOT EXISTS geog geography(Point,4326)
+			GENERATED ALWAYS AS (
+				ST_SetSRID(
+					ST_MakePoint(longitude::double precision, latitude::double precision),
+					4326
+				)::geography
+			) STORED`,
+		`CREATE INDEX IF NOT EXISTS idx_zip_codes_geog ON zip_codes USING GIST (geog)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := DB.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to add zip code geography: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// removeZipCodeGeography drops the spatial column and its index.
+func removeZipCodeGeography() error {
+	statements := []string{
+		`DROP INDEX IF EXISTS idx_zip_codes_geog`,
+		`ALTER TABLE zip_codes DROP COLUMN IF EXISTS geog`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := DB.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to drop zip code geography: %w", err)
 		}
 	}
 

@@ -113,7 +113,7 @@ func (rdd *RealDataDownloader) DownloadOhioRealData(destDir string) error {
 	successCount := 0
 	for _, source := range sources {
 		fmt.Printf("Trying source: %s\n", source.Name)
-		
+
 		switch source.Type {
 		case "openaddresses":
 			if err := rdd.downloadOpenAddressesConfigs(source.URLs, ohDir); err != nil {
@@ -151,11 +151,11 @@ func (rdd *RealDataDownloader) generateOpenAddressesURLs() map[string]string {
 	baseURL := "https://raw.githubusercontent.com/openaddresses/openaddresses/master/sources/us/oh"
 	counties := GetOhioCountyList()
 	urls := make(map[string]string)
-	
+
 	for _, county := range counties {
 		urls[county] = fmt.Sprintf("%s/%s.json", baseURL, county)
 	}
-	
+
 	return urls
 }
 
@@ -163,7 +163,7 @@ func (rdd *RealDataDownloader) generateOpenAddressesURLs() map[string]string {
 func (rdd *RealDataDownloader) DownloadAndConvertCounty(county, destDir string) error {
 	// Get the OpenAddresses configuration for this county
 	configURL := fmt.Sprintf("https://raw.githubusercontent.com/openaddresses/openaddresses/master/sources/us/oh/%s.json", county)
-	
+
 	resp, err := rdd.Client.Get(configURL)
 	if err != nil {
 		return fmt.Errorf("failed to download config: %w", err)
@@ -186,7 +186,7 @@ func (rdd *RealDataDownloader) DownloadAndConvertCounty(county, destDir string) 
 	}
 
 	dataSourceURL := source.Layers.Addresses[0].Data
-	
+
 	// Check if it's an Ohio LBRS source
 	if !strings.Contains(dataSourceURL, "gis1.oit.ohio.gov/LBRS") {
 		// Check if it's an ArcGIS FeatureServer
@@ -197,13 +197,13 @@ func (rdd *RealDataDownloader) DownloadAndConvertCounty(county, destDir string) 
 	}
 
 	fmt.Printf("Downloading real data from Ohio LBRS for %s...\n", county)
-	
+
 	ohDir := filepath.Join(destDir, "oh")
 	addressFile := filepath.Join(ohDir, fmt.Sprintf("%s-addresses-county.geojson", county))
-	
+
 	// Download the ZIP file
 	zipPath := filepath.Join(rdd.CacheDir, fmt.Sprintf("%s_ADDS.zip", strings.ToUpper(county[:3])))
-	
+
 	// Check if already downloaded and recent
 	if !rdd.isCached(zipPath, 24*time.Hour) {
 		if err := rdd.DownloadFileFromURL(dataSourceURL, zipPath); err != nil {
@@ -224,7 +224,7 @@ func (rdd *RealDataDownloader) DownloadAndConvertCounty(county, destDir string) 
 // downloadOpenAddressesConfigs downloads OpenAddresses configuration files
 func (rdd *RealDataDownloader) downloadOpenAddressesConfigs(urls map[string]string, destDir string) error {
 	successCount := 0
-	
+
 	for county, url := range urls {
 		// Download the configuration file
 		resp, err := rdd.Client.Get(url)
@@ -277,10 +277,10 @@ func (rdd *RealDataDownloader) processOpenAddressesConfig(county string, source 
 	// If we have a real data source URL (Ohio LBRS), download it
 	if strings.Contains(dataSourceURL, "gis1.oit.ohio.gov/LBRS") {
 		fmt.Printf("Downloading real data from Ohio LBRS for %s...\n", county)
-		
+
 		// Download the ZIP file
 		zipPath := filepath.Join(rdd.CacheDir, fmt.Sprintf("%s_ADDS.zip", strings.ToUpper(county[:3])))
-		
+
 		// Check if already downloaded and recent
 		if !rdd.isCached(zipPath, 24*time.Hour) {
 			if err := rdd.DownloadFileFromURL(dataSourceURL, zipPath); err != nil {
@@ -384,7 +384,7 @@ func (rdd *RealDataDownloader) convertShapefileToGeoJSON(zipPath, outputPath, co
 	fmt.Printf("=== Starting conversion for %s ===\n", county)
 	fmt.Printf("ZIP path: %s\n", zipPath)
 	fmt.Printf("Output path: %s\n", outputPath)
-	
+
 	// Check if ogr2ogr is available
 	ogrPath, err := exec.LookPath("ogr2ogr")
 	if err != nil {
@@ -487,7 +487,7 @@ func (rdd *RealDataDownloader) extractZip(zipPath, destDir string) error {
 		if err != nil {
 			return err
 		}
-		
+
 		fmt.Printf("Extracted: %s\n", f.Name)
 	}
 
@@ -524,35 +524,35 @@ func (rdd *RealDataDownloader) findShapefile(dir string) (string, error) {
 // createPlaceholderFiles creates placeholder files when no real data is available
 func (rdd *RealDataDownloader) createPlaceholderFiles(destDir string) error {
 	counties := GetOhioCountyList()
-	
+
 	for _, county := range counties {
 		addressFile := filepath.Join(destDir, fmt.Sprintf("%s-addresses-county.geojson", county))
 		metaFile := filepath.Join(destDir, fmt.Sprintf("%s-addresses-county.geojson.meta", county))
-		
+
 		// Skip if files already exist and are recent
 		if rdd.isCached(addressFile, 24*time.Hour) && rdd.isCached(metaFile, 24*time.Hour) {
 			continue
 		}
-		
+
 		// Create minimal GeoJSON structure
 		geoJSON := map[string]interface{}{
 			"type":     "FeatureCollection",
 			"features": []interface{}{},
 			"metadata": map[string]interface{}{
-				"county":      strings.Title(county),
-				"state":       "Ohio",
+				"county":       strings.Title(county),
+				"state":        "Ohio",
 				"record_count": 0,
 				"last_updated": time.Now().Format(time.RFC3339),
-				"source":      "placeholder",
-				"note":        "This is a placeholder file. Real data needs to be downloaded from appropriate sources.",
+				"source":       "placeholder",
+				"note":         "This is a placeholder file. Real data needs to be downloaded from appropriate sources.",
 			},
 		}
-		
+
 		geoJSONData, _ := json.MarshalIndent(geoJSON, "", "  ")
 		if err := os.WriteFile(addressFile, geoJSONData, 0644); err != nil {
 			return fmt.Errorf("failed to create %s: %w", addressFile, err)
 		}
-		
+
 		// Create meta file
 		meta := map[string]interface{}{
 			"county":       strings.Title(county),
@@ -562,13 +562,13 @@ func (rdd *RealDataDownloader) createPlaceholderFiles(destDir string) error {
 			"source":       "placeholder",
 			"note":         "This is a placeholder file. Real data needs to be downloaded from appropriate sources.",
 		}
-		
+
 		metaData, _ := json.MarshalIndent(meta, "", "  ")
 		if err := os.WriteFile(metaFile, metaData, 0644); err != nil {
 			return fmt.Errorf("failed to create %s: %w", metaFile, err)
 		}
 	}
-	
+
 	fmt.Printf("Created placeholder files for %d Ohio counties\n", len(counties))
 	return nil
 }
@@ -590,7 +590,7 @@ func (rdd *RealDataDownloader) isCached(filePath string, maxAge time.Duration) b
 // DownloadFileFromURL downloads a file from a URL with progress tracking
 func (rdd *RealDataDownloader) DownloadFileFromURL(url, destination string) error {
 	fmt.Printf("Downloading %s...\n", url)
-	
+
 	resp, err := rdd.Client.Get(url)
 	if err != nil {
 		return fmt.Errorf("failed to download: %w", err)

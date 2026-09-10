@@ -24,9 +24,9 @@ type AuthService struct{}
 
 // JWTClaims represents the JWT token claims
 type JWTClaims struct {
-	UserID   int    `json:"user_id"`
-	Email    string `json:"email"`
-	IsAdmin  bool   `json:"is_admin"`
+	UserID  int    `json:"user_id"`
+	Email   string `json:"email"`
+	IsAdmin bool   `json:"is_admin"`
 	jwt.StandardClaims
 }
 
@@ -117,7 +117,7 @@ func (as *AuthService) RegisterUser(email, password, name string, company *strin
 		VALUES ($1, $2, $3, $4, true, false, 'free', NOW(), NOW())
 		RETURNING id, email, name, company, is_active, is_admin, plan_type, created_at, updated_at
 	`, email, name, company, string(hashedPassword)).Scan(
-		&user.ID, &user.Email, &user.Name, &user.Company, 
+		&user.ID, &user.Email, &user.Name, &user.Company,
 		&user.IsActive, &user.IsAdmin, &user.PlanType, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
@@ -226,7 +226,7 @@ func (as *AuthService) GenerateAPIKey(userID int, name string, permissions []str
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create API key: %w", err)
 	}
-	
+
 	// Convert pq.StringArray to JSONArray
 	key.Permissions = models.JSONArray(permissionsArray)
 
@@ -275,101 +275,174 @@ func (as *AuthService) ValidateAPIKey(apiKey string) (*models.User, *models.APIK
 	return &user, &key, nil
 }
 
-// CheckRateLimit verifies if user has exceeded their monthly limit
+// Scope names for RateLimitStatus.Exceeded.
+const (
+	ScopeDaily   = "daily"
+	ScopeMonthly = "monthly"
+)
+
+// RateLimitStatus is the resolved rate-limit state for one user.
+//
+// It carries both periods because both are enforced. The caller needs to know
+// *which* cap tripped: reporting a daily rejection as a monthly one shows the
+// user a usage number far below the limit they were supposedly over, which
+// reads as a bug in the API rather than as a quota they hit.
+type RateLimitStatus struct {
+	Within   bool
+	PlanType string
+
+	MonthlyUsage int
+	MonthlyLimit int // models.Unlimited for no cap
+	DailyUsage   int
+	DailyLimit   int // models.Unlimited for no cap
+
+	// Exceeded is "", ScopeDaily or ScopeMonthly. When both are over, the
+	// daily cap is reported: it is the one that clears sooner.
+	Exceeded string
+
+	// Reset boundaries come from the database, evaluated with the same
+	// CURRENT_DATE the counting queries use, so a Retry-After built from them
+	// cannot disagree with what enforcement will do a second later.
+	MonthlyReset time.Time
+	DailyReset   time.Time
+}
+
+// Unlimited reports whether the user has no cap at all (admins, enterprise).
+func (s *RateLimitStatus) Unlimited() bool {
+	return s.MonthlyLimit == models.Unlimited && s.DailyLimit == models.Unlimited
+}
+
+// Limit returns the cap that tripped, and when it resets. Only meaningful when
+// Within is false.
+func (s *RateLimitStatus) Limit() (usage int, limit int, reset time.Time) {
+	if s.Exceeded == ScopeDaily {
+		return s.DailyUsage, s.DailyLimit, s.DailyReset
+	}
+	return s.MonthlyUsage, s.MonthlyLimit, s.MonthlyReset
+}
+
+// CheckRateLimit reports whether the user is within their plan's caps.
+//
+// Retained for callers that only care about the monthly pair. New code should
+// prefer CheckRateLimitStatus, which says which cap tripped.
 func (as *AuthService) CheckRateLimit(userID int) (bool, int, int, error) {
-	// Check if user is admin - admins get unlimited usage
-	var isAdmin bool
-	var email string
-	err := database.DB.QueryRow(`SELECT is_admin, email FROM users WHERE id = $1`, userID).Scan(&isAdmin, &email)
+	status, err := as.CheckRateLimitStatus(userID)
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to get user info: %w", err)
+		return false, 0, 0, err
 	}
+	return status.Within, status.MonthlyUsage, status.MonthlyLimit, nil
+}
 
-	// Check if user is in ADMIN_EMAILS environment variable
-	adminEmails := os.Getenv("ADMIN_EMAILS")
-	isAdminEmail := false
-	if adminEmails != "" {
-		emails := strings.Split(adminEmails, ",")
-		for _, adminEmail := range emails {
-			if strings.TrimSpace(adminEmail) == email {
-				isAdminEmail = true
-				break
-			}
-		}
-	}
-
-	// Admins get unlimited usage
-	if isAdmin || isAdminEmail {
-		return true, 0, -1, nil // -1 indicates unlimited
-	}
-
-	// Get user's plan type from users table if no subscription exists
-	var monthlyLimit, dailyLimit int
-	err = database.DB.QueryRow(`
-		SELECT 
-			COALESCE(s.monthly_limit, 
-				CASE 
-					WHEN u.plan_type = 'free' THEN 3000
-					WHEN u.plan_type = 'starter' THEN 30000
-					WHEN u.plan_type = 'pro' THEN 500000
-					WHEN u.plan_type = 'enterprise' THEN -1
-					ELSE 3000
-				END
-			) as monthly_limit,
-			CASE 
-				WHEN u.plan_type = 'free' THEN 500
-				WHEN u.plan_type = 'starter' THEN 5000
-				WHEN u.plan_type = 'pro' THEN 100000
-				WHEN u.plan_type = 'enterprise' THEN -1
-				ELSE 500
-			END as daily_limit
+// CheckRateLimitStatus resolves the user's plan and current usage.
+//
+// Two queries, not four. The plan lookup and the admin check were separate
+// round trips against the same row; the monthly and daily counts were separate
+// aggregates over the same index range, and today is always inside this month,
+// so one scan with FILTER produces both. This runs on every authenticated
+// request, so the count matters.
+//
+// Limits resolve from models.PlanLimits rather than a SQL CASE. A
+// subscriptions.monthly_limit override still wins where present -- that is how
+// a negotiated custom limit is expressed -- which is only safe because
+// migration 20 rewrote the rows that held a wrong default.
+func (as *AuthService) CheckRateLimitStatus(userID int) (*RateLimitStatus, error) {
+	var (
+		isAdmin       bool
+		email         string
+		planType      string
+		limitOverride sql.NullInt64
+	)
+	err := database.DB.QueryRow(`
+		SELECT u.is_admin, u.email, u.plan_type, s.monthly_limit
 		FROM users u
 		LEFT JOIN subscriptions s ON u.id = s.user_id AND s.is_active = true
 		WHERE u.id = $1
-	`, userID).Scan(&monthlyLimit, &dailyLimit)
+	`, userID).Scan(&isAdmin, &email, &planType, &limitOverride)
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to get user plan: %w", err)
+		return nil, fmt.Errorf("failed to get user plan: %w", err)
 	}
 
-	// Count current month's usage
-	var currentUsage int
+	status := &RateLimitStatus{PlanType: planType}
+
+	// Admins get unlimited usage. Returning before the count query keeps the
+	// admin path to a single round trip.
+	if isAdmin || isAdminEmail(email) {
+		status.Within = true
+		status.MonthlyLimit = models.Unlimited
+		status.DailyLimit = models.Unlimited
+		return status, nil
+	}
+
+	plan := models.PlanFor(planType)
+	status.MonthlyLimit = plan.MonthlyLimit
+	status.DailyLimit = plan.DailyLimit
+	if limitOverride.Valid {
+		status.MonthlyLimit = int(limitOverride.Int64)
+	}
+
+	// One pass over the month's rows yields both counts: CURRENT_DATE is always
+	// inside date_trunc('month', CURRENT_DATE), so the daily count is a subset
+	// of the rows already being scanned. The two reset boundaries are constant
+	// expressions, so they ride along without touching the table; casting to
+	// timestamptz resolves them against the session TimeZone, which is the same
+	// clock the comparisons above use.
 	err = database.DB.QueryRow(`
-		SELECT COUNT(*) FROM usage_records 
-		WHERE user_id = $1 AND billable = true 
-		AND created_at >= date_trunc('month', CURRENT_DATE)
-	`, userID).Scan(&currentUsage)
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE),
+			(date_trunc('month', CURRENT_DATE) + interval '1 month')::timestamptz,
+			(CURRENT_DATE + interval '1 day')::timestamptz
+		FROM usage_records
+		WHERE user_id = $1 AND billable = true
+		  AND created_at >= date_trunc('month', CURRENT_DATE)
+	`, userID).Scan(&status.MonthlyUsage, &status.DailyUsage, &status.MonthlyReset, &status.DailyReset)
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to get usage count: %w", err)
+		return nil, fmt.Errorf("failed to get usage count: %w", err)
 	}
 
-	// Count today's usage
-	var dailyUsage int
-	err = database.DB.QueryRow(`
-		SELECT COUNT(*) FROM usage_records 
-		WHERE user_id = $1 AND billable = true 
-		AND created_at >= CURRENT_DATE
-	`, userID).Scan(&dailyUsage)
-	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to get daily usage count: %w", err)
+	status.Exceeded = exceededScope(status.MonthlyUsage, status.MonthlyLimit, status.DailyUsage, status.DailyLimit)
+	status.Within = status.Exceeded == ""
+
+	return status, nil
+}
+
+// exceededScope reports which cap a user is over, or "" for neither.
+//
+// When both are over it returns ScopeDaily: that is the cap that clears sooner,
+// so it is the more useful deadline to hand the caller. Split out from
+// CheckRateLimitStatus so the decision is testable without a database.
+func exceededScope(monthlyUsage, monthlyLimit, dailyUsage, dailyLimit int) string {
+	overDaily := dailyLimit != models.Unlimited && dailyUsage >= dailyLimit
+	if overDaily {
+		return ScopeDaily
 	}
 
-	// Enterprise plan has unlimited usage (-1 indicates no limit)
-	if monthlyLimit == -1 || dailyLimit == -1 {
-		return true, currentUsage, monthlyLimit, nil
+	overMonthly := monthlyLimit != models.Unlimited && monthlyUsage >= monthlyLimit
+	if overMonthly {
+		return ScopeMonthly
 	}
 
-	// Check both monthly and daily limits
-	withinMonthlyLimit := currentUsage < monthlyLimit
-	withinDailyLimit := dailyUsage < dailyLimit
-	withinLimit := withinMonthlyLimit && withinDailyLimit
-	
-	return withinLimit, currentUsage, monthlyLimit, nil
+	return ""
+}
+
+// isAdminEmail reports whether email is listed in ADMIN_EMAILS.
+func isAdminEmail(email string) bool {
+	adminEmails := os.Getenv("ADMIN_EMAILS")
+	if adminEmails == "" {
+		return false
+	}
+	for _, adminEmail := range strings.Split(adminEmails, ",") {
+		if strings.TrimSpace(adminEmail) == email {
+			return true
+		}
+	}
+	return false
 }
 
 // GetUserAPIKeys retrieves all API keys for a user
 func (a *AuthService) GetUserAPIKeys(userID int) ([]models.APIKey, error) {
 	var apiKeys []models.APIKey
-	
+
 	query := `
 		SELECT id, user_id, name, key_preview, permissions, 
 		       is_active, last_used_at, created_at, expires_at
@@ -377,17 +450,17 @@ func (a *AuthService) GetUserAPIKeys(userID int) ([]models.APIKey, error) {
 		WHERE user_id = $1 AND is_active = true
 		ORDER BY created_at DESC
 	`
-	
+
 	rows, err := database.DB.Query(query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query API keys: %w", err)
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var key models.APIKey
 		var permissionsJSON pq.StringArray
-		
+
 		err := rows.Scan(
 			&key.ID, &key.UserID, &key.Name, &key.KeyPreview,
 			&permissionsJSON, &key.IsActive, &key.LastUsedAt,
@@ -396,17 +469,17 @@ func (a *AuthService) GetUserAPIKeys(userID int) ([]models.APIKey, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan API key: %w", err)
 		}
-		
+
 		// Convert pq.StringArray to []string
 		key.Permissions = []string(permissionsJSON)
-		
+
 		apiKeys = append(apiKeys, key)
 	}
-	
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating API keys: %w", err)
 	}
-	
+
 	return apiKeys, nil
 }
 
@@ -460,44 +533,43 @@ func (a *AuthService) DeleteAPIKey(userID, keyID int) error {
 		"SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1 AND user_id = $2 AND is_active = true)",
 		keyID, userID,
 	).Scan(&exists)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to verify API key ownership: %w", err)
 	}
-	
+
 	if !exists {
 		return fmt.Errorf("API key not found or access denied")
 	}
-	
+
 	// Soft delete by marking as inactive
 	_, err = database.DB.Exec(
 		"UPDATE api_keys SET is_active = false, updated_at = NOW() WHERE id = $1 AND user_id = $2",
 		keyID, userID,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to delete API key: %w", err)
 	}
-	
+
 	return nil
 }
 
 // RecordUsage logs an API call for billing and analytics
 func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string, statusCode, responseTime int, ipAddress, userAgent string, billable bool) error {
-	log.Printf("Recording usage: UserID=%d, APIKeyID=%d, Endpoint=%s, Method=%s, Billable=%t", 
-		userID, apiKeyID, endpoint, method, billable)
-	
+	// Deliberately silent on success. This runs once per authenticated request,
+	// so logging the happy path put two lines in the log for every API call --
+	// log volume proportional to traffic, with nothing in it that a usage_records
+	// query could not answer better.
 	_, err := database.DB.Exec(`
 		INSERT INTO usage_records (user_id, api_key_id, endpoint, method, status_code, response_time_ms, ip_address, user_agent, billable, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 	`, userID, apiKeyID, endpoint, method, statusCode, responseTime, ipAddress, userAgent, billable)
-	
+
 	if err != nil {
-		log.Printf("Failed to record usage: %v", err)
-	} else {
-		log.Printf("Successfully recorded usage for user %d", userID)
+		log.Printf("Failed to record usage for user %d (endpoint=%s): %v", userID, endpoint, err)
 	}
-	
+
 	return err
 }
 
@@ -515,7 +587,7 @@ func (as *AuthService) IsUserAdmin(userID int) bool {
 // GetAdminStats returns statistics for admin dashboard
 func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
-	
+
 	// Total users
 	var totalUsers int
 	err := database.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
@@ -523,7 +595,7 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 		return nil, err
 	}
 	stats["total_users"] = totalUsers
-	
+
 	// Active API keys
 	var activeKeys int
 	err = database.DB.QueryRow("SELECT COUNT(*) FROM api_keys WHERE is_active = true").Scan(&activeKeys)
@@ -531,7 +603,7 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 		return nil, err
 	}
 	stats["active_keys"] = activeKeys
-	
+
 	// API calls today
 	var callsToday int
 	err = database.DB.QueryRow(`
@@ -542,7 +614,7 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 		return nil, err
 	}
 	stats["calls_today"] = callsToday
-	
+
 	// ZIP codes count
 	var zipCodes int
 	err = database.DB.QueryRow("SELECT COUNT(*) FROM zip_codes").Scan(&zipCodes)
@@ -550,7 +622,7 @@ func (as *AuthService) GetAdminStats() (map[string]interface{}, error) {
 		return nil, err
 	}
 	stats["zip_codes"] = zipCodes
-	
+
 	return stats, nil
 }
 
@@ -601,7 +673,7 @@ func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var users []map[string]interface{}
 	for rows.Next() {
 		var id int
@@ -610,13 +682,13 @@ func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
 		var isActive, isAdmin bool
 		var createdAt time.Time
 		var monthlyUsage, todayUsage, totalUsage, activeKeys int
-		
+
 		err := rows.Scan(&id, &email, &name, &company, &planType, &isActive, &isAdmin, &createdAt,
 			&monthlyUsage, &todayUsage, &totalUsage, &activeKeys)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		user := map[string]interface{}{
 			"id":            id,
 			"email":         email,
@@ -633,14 +705,14 @@ func (as *AuthService) GetAllUsers() ([]map[string]interface{}, error) {
 		}
 		users = append(users, user)
 	}
-	
+
 	return users, nil
 }
 
 // GetUserUsageMetrics returns detailed usage metrics for a specific user
 func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]interface{}, error) {
 	metrics := make(map[string]interface{})
-	
+
 	// Get user info
 	var email, planType string
 	var name *string
@@ -650,12 +722,12 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 	if err != nil {
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
-	
+
 	metrics["user_id"] = userID
 	metrics["email"] = email
 	metrics["name"] = name
 	metrics["plan_type"] = planType
-	
+
 	// Total calls
 	var totalCalls, billableCalls int
 	err = database.DB.QueryRow(`
@@ -670,7 +742,7 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 	}
 	metrics["total_calls"] = totalCalls
 	metrics["billable_calls"] = billableCalls
-	
+
 	// Average response time
 	var avgResponseTime sql.NullFloat64
 	err = database.DB.QueryRow(`
@@ -683,7 +755,7 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 	} else {
 		metrics["avg_response_time"] = 0
 	}
-	
+
 	// Success/Error rate
 	var successCount, errorCount int
 	err = database.DB.QueryRow(`
@@ -698,7 +770,7 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 	}
 	metrics["success_count"] = successCount
 	metrics["error_count"] = errorCount
-	
+
 	// Endpoint breakdown
 	endpointRows, err := database.DB.Query(`
 		SELECT 
@@ -715,32 +787,32 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 		return nil, err
 	}
 	defer endpointRows.Close()
-	
+
 	var endpoints []map[string]interface{}
 	for endpointRows.Next() {
 		var endpoint string
 		var total, billable int
 		var avgTime sql.NullFloat64
-		
+
 		if err := endpointRows.Scan(&endpoint, &total, &billable, &avgTime); err != nil {
 			continue
 		}
-		
+
 		endpointData := map[string]interface{}{
-			"endpoint":       endpoint,
-			"total":          total,
-			"billable":       billable,
-			"avg_time":       0.0,
+			"endpoint": endpoint,
+			"total":    total,
+			"billable": billable,
+			"avg_time": 0.0,
 		}
-		
+
 		if avgTime.Valid {
 			endpointData["avg_time"] = avgTime.Float64
 		}
-		
+
 		endpoints = append(endpoints, endpointData)
 	}
 	metrics["endpoints"] = endpoints
-	
+
 	// Daily breakdown
 	dailyRows, err := database.DB.Query(`
 		SELECT 
@@ -756,16 +828,16 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 		return nil, err
 	}
 	defer dailyRows.Close()
-	
+
 	var dailyUsage []map[string]interface{}
 	for dailyRows.Next() {
 		var date time.Time
 		var total, billable int
-		
+
 		if err := dailyRows.Scan(&date, &total, &billable); err != nil {
 			continue
 		}
-		
+
 		dailyUsage = append(dailyUsage, map[string]interface{}{
 			"date":     date.Format("2006-01-02"),
 			"total":    total,
@@ -773,7 +845,7 @@ func (as *AuthService) GetUserUsageMetrics(userID int, days int) (map[string]int
 		})
 	}
 	metrics["daily_usage"] = dailyUsage
-	
+
 	return metrics, nil
 }
 
@@ -789,7 +861,7 @@ func (as *AuthService) GetAllAPIKeys() ([]map[string]interface{}, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var apiKeys []map[string]interface{}
 	for rows.Next() {
 		var id int
@@ -797,12 +869,12 @@ func (as *AuthService) GetAllAPIKeys() ([]map[string]interface{}, error) {
 		var isActive bool
 		var lastUsedAt *time.Time
 		var createdAt time.Time
-		
+
 		err := rows.Scan(&id, &userEmail, &name, &keyPreview, &isActive, &lastUsedAt, &createdAt)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		apiKey := map[string]interface{}{
 			"id":           id,
 			"user_email":   userEmail,
@@ -814,7 +886,7 @@ func (as *AuthService) GetAllAPIKeys() ([]map[string]interface{}, error) {
 		}
 		apiKeys = append(apiKeys, apiKey)
 	}
-	
+
 	return apiKeys, nil
 }
 
@@ -839,16 +911,16 @@ func (as *AuthService) UpdateUserAdmin(userID int, isAdmin bool) error {
 // GetSystemStatus returns system health information
 func (as *AuthService) GetSystemStatus() (map[string]interface{}, error) {
 	status := make(map[string]interface{})
-	
+
 	// Check database connection
 	err := database.DB.Ping()
 	status["database_connected"] = err == nil
-	
+
 	// Check if migrations are current (simplified check)
 	var migrationCount int
 	err = database.DB.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
 	status["migrations_current"] = err == nil && migrationCount >= 7 // Expected number of migrations
-	
+
 	return status, nil
 }
 
@@ -1001,9 +1073,9 @@ func (as *AuthService) GetEndpointUsage(userID int, days int) ([]models.Endpoint
 	for rows.Next() {
 		var usage models.EndpointUsage
 		err := rows.Scan(
-			&usage.Endpoint, 
-			&usage.TotalCalls, 
-			&usage.BillableCalls, 
+			&usage.Endpoint,
+			&usage.TotalCalls,
+			&usage.BillableCalls,
 			&usage.AvgResponseTime,
 			&usage.SuccessCount,
 			&usage.ErrorCount,
@@ -1178,7 +1250,7 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 	// Map endpoints to required permissions
 	permissionMap := map[string]string{
 		"geocode":   "geocode",
-		"search":    "search", 
+		"search":    "search",
 		"distance":  "distance",
 		"nearby":    "distance",
 		"proximity": "distance",
@@ -1207,7 +1279,7 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 // GetAdminAnalytics returns system-wide analytics data
 func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, error) {
 	analytics := make(map[string]interface{})
-	
+
 	// Total calls across all users
 	var totalCalls, billableCalls int
 	err := database.DB.QueryRow(`
@@ -1222,7 +1294,7 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 	}
 	analytics["total_calls"] = totalCalls
 	analytics["billable_calls"] = billableCalls
-	
+
 	// Average response time
 	var avgResponseTime sql.NullFloat64
 	err = database.DB.QueryRow(`
@@ -1235,7 +1307,7 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 	} else {
 		analytics["avg_response_time"] = 0
 	}
-	
+
 	// Success/Error rate
 	var successCount, errorCount int
 	err = database.DB.QueryRow(`
@@ -1250,7 +1322,7 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 	}
 	analytics["success_count"] = successCount
 	analytics["error_count"] = errorCount
-	
+
 	// Endpoint breakdown
 	endpointRows, err := database.DB.Query(`
 		SELECT 
@@ -1267,32 +1339,32 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 		return nil, err
 	}
 	defer endpointRows.Close()
-	
+
 	var endpoints []map[string]interface{}
 	for endpointRows.Next() {
 		var endpoint string
 		var total, billable int
-		var avgTime sql.NullFloat64	
-		
+		var avgTime sql.NullFloat64
+
 		if err := endpointRows.Scan(&endpoint, &total, &billable, &avgTime); err != nil {
 			continue
 		}
-		
+
 		endpointData := map[string]interface{}{
-			"endpoint":       endpoint,
-			"total":          total,
-			"billable":       billable,
-			"avg_time":       0.0,
+			"endpoint": endpoint,
+			"total":    total,
+			"billable": billable,
+			"avg_time": 0.0,
 		}
-		
+
 		if avgTime.Valid {
 			endpointData["avg_time"] = avgTime.Float64
 		}
-		
+
 		endpoints = append(endpoints, endpointData)
 	}
 	analytics["endpoints"] = endpoints
-	
+
 	// Daily breakdown
 	dailyRows, err := database.DB.Query(`
 		SELECT 
@@ -1308,16 +1380,16 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 		return nil, err
 	}
 	defer dailyRows.Close()
-	
+
 	var dailyUsage []map[string]interface{}
 	for dailyRows.Next() {
 		var date time.Time
 		var total, billable int
-		
+
 		if err := dailyRows.Scan(&date, &total, &billable); err != nil {
 			continue
 		}
-		
+
 		dailyUsage = append(dailyUsage, map[string]interface{}{
 			"date":           date.Format("2006-01-02"),
 			"total_calls":    total,
@@ -1325,6 +1397,6 @@ func (as *AuthService) GetAdminAnalytics(days int) (map[string]interface{}, erro
 		})
 	}
 	analytics["daily_usage"] = dailyUsage
-	
+
 	return analytics, nil
 }

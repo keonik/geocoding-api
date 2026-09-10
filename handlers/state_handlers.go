@@ -13,7 +13,7 @@ import (
 // SearchStatesHandler handles GET /api/v1/states - Search for states
 func SearchStatesHandler(c echo.Context) error {
 	var params models.StateSearchParams
-	
+
 	// Parse query parameters
 	params.Name = c.QueryParam("name")
 	params.Abbr = c.QueryParam("abbr")
@@ -80,7 +80,7 @@ func GetStateHandler(c echo.Context) error {
 	state, err := services.State.GetStateByIdentifier(identifier)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]interface{}{
-			"error": "State not found",
+			"error":      "State not found",
 			"identifier": identifier,
 		})
 	}
@@ -103,7 +103,7 @@ func GetStateBoundaryHandler(c echo.Context) error {
 	geoJSON, err := services.State.GetStateBoundaryGeoJSON(identifier, tolerance, precision)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]interface{}{
-			"error": "State boundary not found",
+			"error":      "State boundary not found",
 			"identifier": identifier,
 		})
 	}

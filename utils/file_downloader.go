@@ -99,7 +99,7 @@ func (fd *FileDownloader) ExtractZip(src, dest string) error {
 	// Extract files
 	for _, file := range reader.File {
 		path := filepath.Join(dest, file.Name)
-		
+
 		// Ensure the file path is safe
 		if !strings.HasPrefix(path, filepath.Clean(dest)+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid file path: %s", file.Name)
@@ -185,11 +185,11 @@ func (fd *FileDownloader) DownloadOhioData(destDir string) error {
 	if err := realDownloader.DownloadOhioRealData(destDir); err != nil {
 		fmt.Printf("Real data download failed: %v\n", err)
 		fmt.Println("Falling back to placeholder files...")
-		
+
 		// Fall back to creating placeholder files
 		return fd.createBasicPlaceholderFiles(destDir)
 	}
-	
+
 	return nil
 }
 
@@ -200,31 +200,31 @@ func (fd *FileDownloader) createBasicPlaceholderFiles(destDir string) error {
 	if err := os.MkdirAll(ohDir, 0755); err != nil {
 		return fmt.Errorf("failed to create oh directory: %w", err)
 	}
-	
+
 	counties := GetOhioCountyList()
-	
+
 	for _, county := range counties {
 		// Create placeholder files for now - these would be replaced with actual downloads
 		addressFile := filepath.Join(ohDir, fmt.Sprintf("%s-addresses-county.geojson", county))
 		metaFile := filepath.Join(ohDir, fmt.Sprintf("%s-addresses-county.geojson.meta", county))
-		
+
 		// Check if files already exist and are recent
 		if fd.isCached(addressFile, 24*time.Hour) && fd.isCached(metaFile, 24*time.Hour) {
 			continue
 		}
-		
+
 		fmt.Printf("Creating placeholder files for %s county\n", county)
-		
+
 		// Create a minimal GeoJSON structure
 		minimalGeoJSON := `{
   "type": "FeatureCollection",
   "features": []
 }`
-		
+
 		if err := os.WriteFile(addressFile, []byte(minimalGeoJSON), 0644); err != nil {
 			return fmt.Errorf("failed to create %s: %w", addressFile, err)
 		}
-		
+
 		// Create a minimal meta file
 		minimalMeta := fmt.Sprintf(`{
   "county": "%s",
@@ -233,12 +233,12 @@ func (fd *FileDownloader) createBasicPlaceholderFiles(destDir string) error {
   "last_updated": "%s",
   "source": "placeholder"
 }`, strings.Title(county), time.Now().Format(time.RFC3339))
-		
+
 		if err := os.WriteFile(metaFile, []byte(minimalMeta), 0644); err != nil {
 			return fmt.Errorf("failed to create %s: %w", metaFile, err)
 		}
 	}
-	
+
 	fmt.Printf("Created placeholder files for %d Ohio counties\n", len(counties))
 	return nil
 }

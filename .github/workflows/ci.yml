@@ -24,6 +24,18 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # Formatting drifts silently otherwise: twenty-three files had drifted
+      # before this check existed, which buries real changes in whitespace
+      # noise whenever someone's editor finally reformats one.
+      - name: Gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       # vet is the point of this job. It reports real defects here -- a Printf
       # whose format string did not match its arguments mangled every request
       # log line for months, because ./... could not compile and nobody ran it.

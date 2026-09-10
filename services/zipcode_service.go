@@ -23,7 +23,7 @@ func LoadZipCodesFromCSV(filePath string) error {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-	reader.Comma = ';' // CSV uses semicolon as delimiter
+	reader.Comma = ';'          // CSV uses semicolon as delimiter
 	reader.FieldsPerRecord = 17 // Expected number of fields
 
 	// Skip header row
@@ -210,7 +210,7 @@ func GetZipCodeByZip(zipCode string) (*models.ZipCode, error) {
 	`
 
 	row := database.DB.QueryRow(query, zipCode)
-	
+
 	zc := &models.ZipCode{}
 	err := row.Scan(
 		&zc.ZipCode,
@@ -253,14 +253,14 @@ func SearchZipCodesByCity(cityName string, stateCode string, limit int) ([]*mode
 		FROM zip_codes
 		WHERE LOWER(city_name) LIKE LOWER($1)
 	`
-	
+
 	args := []interface{}{"%" + cityName + "%"}
-	
+
 	if stateCode != "" {
 		query += " AND state_code = $2"
 		args = append(args, stateCode)
 	}
-	
+
 	query += " ORDER BY city_name, zip_code LIMIT $" + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
 
@@ -317,7 +317,7 @@ func InitializeData() error {
 	}
 
 	log.Println("No ZIP code data found, attempting to load from CSV...")
-	
+
 	// Try to find the CSV file in common locations
 	csvPaths := []string{
 		"georef-united-states-of-america-zc-point.csv",

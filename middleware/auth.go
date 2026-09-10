@@ -9,11 +9,22 @@ import (
 	"time"
 
 	"geocoding-api/handlers"
-	"geocoding-api/models"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
 )
+
+// rateLimitStatusKey is the echo context key under which APIKeyAuth publishes
+// the *services.RateLimitStatus it computed, for UsageHeader to reuse.
+const rateLimitStatusKey = "rate_limit_status"
+
+// scopeLabel renders a limit scope for the human-readable error string.
+func scopeLabel(scope string) string {
+	if scope == services.ScopeDaily {
+		return "Daily"
+	}
+	return "Monthly"
+}
 
 // APIKeyAuth middleware validates API keys and enforces rate limits
 func APIKeyAuth() echo.MiddlewareFunc {
@@ -41,7 +52,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 
 			// Extract API key from either X-API-Key or Authorization header
 			var apiKey string
-			
+
 			// First, try X-API-Key header
 			if xApiKey := c.Request().Header.Get("X-API-Key"); xApiKey != "" {
 				apiKey = xApiKey
@@ -74,16 +85,18 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				})
 			}
 
-			// Check rate limits
-			withinLimit, currentUsage, monthlyLimit, err := services.Auth.CheckRateLimit(user.ID)
+			// Check rate limits. The result is stashed on the context below so
+			// UsageHeader can build its headers from it instead of asking again.
+			status, err := services.Auth.CheckRateLimitStatus(user.ID)
 			if err != nil {
 				return c.JSON(http.StatusInternalServerError, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "Failed to check rate limit",
 				})
 			}
+			c.Set(rateLimitStatusKey, status)
 
-			if !withinLimit {
+			if !status.Within {
 				// Record over-limit usage (non-billable)
 				overLimitEndpoint := getEndpointName(path)
 				method := c.Request().Method
@@ -91,7 +104,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				responseTime := int(time.Since(startTime).Milliseconds())
 				ipAddress := c.RealIP()
 				userAgent := c.Request().UserAgent()
-				
+
 				go func() {
 					err := services.Auth.RecordUsage(
 						user.ID, keyRecord.ID, overLimitEndpoint, method,
@@ -101,15 +114,40 @@ func APIKeyAuth() echo.MiddlewareFunc {
 						log.Printf("Failed to record over-limit usage: %v", err)
 					}
 				}()
-				
+
+				// Report the cap that actually tripped. Saying "monthly" for a
+				// daily rejection showed the user a usage count well under the
+				// limit they were told they had exceeded.
+				scopeUsage, scopeLimit, reset := status.Limit()
+				scope := status.Exceeded
+
+				retryAfter := int(time.Until(reset).Seconds())
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				c.Response().Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+				c.Response().Header().Set("X-RateLimit-Scope", scope)
+
 				return c.JSON(http.StatusTooManyRequests, handlers.GeocodeResponse{
 					Success: false,
-					Error:   "Monthly API limit exceeded",
+					Error:   scopeLabel(scope) + " API limit exceeded",
 					Data: map[string]interface{}{
-						"current_usage":  currentUsage,
-						"monthly_limit":  monthlyLimit,
-						"plan_type":      user.PlanType,
-						"upgrade_info":   "Consider upgrading your plan for higher limits",
+						// current_usage and monthly_limit keep their original
+						// names and now describe the cap that was hit, so an
+						// existing client still reads a coherent pair.
+						"current_usage": scopeUsage,
+						"monthly_limit": scopeLimit,
+						"limit":         scopeLimit,
+						"limit_scope":   scope,
+						"monthly_usage": status.MonthlyUsage,
+						"monthly_cap":   status.MonthlyLimit,
+						"daily_usage":   status.DailyUsage,
+						"daily_cap":     status.DailyLimit,
+						"resets_at":     reset.UTC().Format(time.RFC3339),
+						"retry_after":   retryAfter,
+						"plan_type":     user.PlanType,
+						"upgrade_info":  "Consider upgrading your plan for higher limits",
 					},
 				})
 			}
@@ -121,8 +159,8 @@ func APIKeyAuth() echo.MiddlewareFunc {
 					Success: false,
 					Error:   "API key does not have permission for this endpoint",
 					Data: map[string]interface{}{
-						"endpoint":          endpoint,
-						"required_permission": endpoint,
+						"endpoint":              endpoint,
+						"required_permission":   endpoint,
 						"available_permissions": keyRecord.Permissions,
 					},
 				})
@@ -238,23 +276,51 @@ func RequireUserAuth() echo.MiddlewareFunc {
 	}
 }
 
-// UsageHeader middleware adds usage info to response headers
+// UsageHeader middleware adds usage info to response headers.
+//
+// It reads the RateLimitStatus that APIKeyAuth already computed and left on the
+// context. It used to call CheckRateLimit a second time for exactly these three
+// headers, which repeated the plan lookup and both usage aggregates on every
+// single request -- doubling the rate-limit cost of the API for three integers
+// that were already in hand.
+//
+// If the status is absent the headers are simply omitted. That happens only
+// when this middleware runs without APIKeyAuth ahead of it, which no route does;
+// re-querying as a fallback would quietly reintroduce the cost this removes.
 func UsageHeader() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			err := next(c)
-
-			// Add usage info to headers if user is authenticated
-			if user, ok := c.Get("user").(*models.User); ok {
-				// Get current usage for the user
-				if _, currentUsage, monthlyLimit, err := services.Auth.CheckRateLimit(user.ID); err == nil {
-					c.Response().Header().Set("X-API-Usage-Current", strconv.Itoa(currentUsage))
-					c.Response().Header().Set("X-API-Usage-Limit", strconv.Itoa(monthlyLimit))
-					c.Response().Header().Set("X-API-Plan", user.PlanType)
+			// Registered BEFORE next() runs, and deliberately so.
+			//
+			// echo writes the header block on the handler's first write, which
+			// for every handler here is c.JSON. A Header().Set() after next()
+			// returns therefore mutates a map that has already been flushed:
+			// it is visible to httptest.ResponseRecorder.Header(), which hands
+			// back the live map, and invisible to every real client. These
+			// headers had never reached the wire.
+			//
+			// A Before hook runs at WriteHeader time, so the values land while
+			// the block can still be changed.
+			c.Response().Before(func() {
+				status, ok := c.Get(rateLimitStatusKey).(*services.RateLimitStatus)
+				if !ok {
+					return
 				}
-			}
 
-			return err
+				h := c.Response().Header()
+				h.Set("X-API-Usage-Current", strconv.Itoa(status.MonthlyUsage))
+				h.Set("X-API-Usage-Limit", strconv.Itoa(status.MonthlyLimit))
+				h.Set("X-API-Usage-Daily", strconv.Itoa(status.DailyUsage))
+				h.Set("X-API-Usage-Daily-Limit", strconv.Itoa(status.DailyLimit))
+				if status.PlanType != "" {
+					h.Set("X-API-Plan", status.PlanType)
+				}
+				if !status.Unlimited() {
+					h.Set("X-RateLimit-Reset", strconv.FormatInt(status.DailyReset.Unix(), 10))
+				}
+			})
+
+			return next(c)
 		}
 	}
 }
@@ -265,7 +331,7 @@ func isAdminEmail(email string) bool {
 	if adminEmails == "" {
 		return false
 	}
-	
+
 	emails := strings.Split(adminEmails, ",")
 	for _, adminEmail := range emails {
 		if strings.TrimSpace(adminEmail) == email {
@@ -280,7 +346,7 @@ func RequireAdminAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			log.Printf("[AdminAuth] Request: %s %s", c.Request().Method, c.Request().URL.Path)
-			
+
 			// Use JWT authentication for admin routes
 			authHeader := c.Request().Header.Get("Authorization")
 			if authHeader == "" {

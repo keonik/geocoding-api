@@ -30,20 +30,20 @@ type StateWithGeometry struct {
 
 // StateSearchParams represents search parameters for states
 type StateSearchParams struct {
-	Name       string  `query:"name"`
-	Abbr       string  `query:"abbr"`
-	Region     string  `query:"region"`
-	Division   string  `query:"division"`
-	Lat        float64 `query:"lat"`
-	Lng        float64 `query:"lng"`
-	Limit      int     `query:"limit"`
-	Offset     int     `query:"offset"`
+	Name     string  `query:"name"`
+	Abbr     string  `query:"abbr"`
+	Region   string  `query:"region"`
+	Division string  `query:"division"`
+	Lat      float64 `query:"lat"`
+	Lng      float64 `query:"lng"`
+	Limit    int     `query:"limit"`
+	Offset   int     `query:"offset"`
 }
 
 // StateResponse wraps state data for API responses
 type StateResponse struct {
-	State    *State `json:"state"`
-	GeoJSON  interface{} `json:"geojson,omitempty"`
+	State   *State      `json:"state"`
+	GeoJSON interface{} `json:"geojson,omitempty"`
 }
 
 // StateSearchResponse wraps search results

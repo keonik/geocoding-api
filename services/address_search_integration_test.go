@@ -23,6 +23,7 @@ func TestAddressSearchProbe(t *testing.T) {
 	}
 	defer db.Close()
 	requireTables(t, db, "ohio_addresses")
+	requireProbeFixture(t, db)
 
 	svc := NewAddressService(db)
 
@@ -55,5 +56,30 @@ func TestAddressSearchProbe(t *testing.T) {
 			t.Errorf("%-24s total=%d want=%d", c.name, total, c.want)
 		}
 		t.Logf("  %s %-24s total=%d rows=%d", status, c.name, total, len(got))
+	}
+}
+
+// probeFixtureRows is the row count this probe's expectations were written
+// against: a hand-seeded three-row ohio_addresses, not a real extract.
+const probeFixtureRows = 3
+
+// requireProbeFixture skips unless the probe database holds exactly that
+// fixture.
+//
+// Every want below is a literal tied to those three rows, so pointing
+// PROBE_DSN at any other database fails all ten cases at once. That looks
+// alarming and means nothing -- it says the data is different, not that the
+// query builder is broken. Checking up front turns a wall of red into a skip
+// that names the reason.
+func requireProbeFixture(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	var rows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM ohio_addresses").Scan(&rows); err != nil {
+		t.Skipf("cannot count ohio_addresses: %v", err)
+	}
+	if rows != probeFixtureRows {
+		t.Skipf("probe database has %d addresses; this test's expectations are "+
+			"hard-coded for the %d-row fixture", rows, probeFixtureRows)
 	}
 }

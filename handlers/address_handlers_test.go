@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -39,17 +41,45 @@ func setupTestEnvironment(t *testing.T) {
 	services.InitAddressService(database.DB)
 }
 
-// requireDatabase skips when nothing is listening on the configured Postgres
-// address. Shared by both setups in this package.
+// requireDatabase skips unless the configured Postgres is actually reachable
+// AND accepts our credentials. Shared by both setups in this package.
+//
+// A socket probe alone is not enough. Any other Postgres on port 5432 -- and
+// a developer machine often has one for an unrelated project -- answers the
+// dial, so the probe passes and InitDB then spends its full sixty-second
+// retry budget failing to authenticate before the test finally errors out.
+// Ping with a short deadline instead, and treat any failure as "not our
+// database" rather than as a test failure.
 func requireDatabase(t *testing.T) {
 	t.Helper()
 	host := envOr("DB_HOST", "localhost")
 	port := envOr("DB_PORT", "5432")
+
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 2*time.Second)
 	if err != nil {
 		t.Skipf("no database listening on %s:%s (these tests need a seeded database)", host, port)
 	}
 	conn.Close()
+
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		host, port,
+		envOr("DB_USER", "postgres"),
+		envOr("DB_PASSWORD", "postgres"),
+		envOr("DB_NAME", "geocoding_db"),
+		envOr("DB_SSLMODE", "disable"),
+	)
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Skipf("cannot open %s:%s: %v", host, port, err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Skipf("database on %s:%s is not usable for these tests: %v", host, port, err)
+	}
 }
 
 func envOr(key, fallback string) string {

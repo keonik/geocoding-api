@@ -24,16 +24,16 @@ type City struct {
 
 // CitySearchParams represents search parameters for city lookups
 type CitySearchParams struct {
-	Query      string  `json:"query"`
-	City       string  `json:"city"`
-	State      string  `json:"state"`
-	County     string  `json:"county"`
-	Lat        float64 `json:"lat"`
-	Lng        float64 `json:"lng"`
-	Radius     float64 `json:"radius"`
-	MinPop     int     `json:"min_population"`
-	Limit      int     `json:"limit"`
-	Offset     int     `json:"offset"`
+	Query  string  `json:"query"`
+	City   string  `json:"city"`
+	State  string  `json:"state"`
+	County string  `json:"county"`
+	Lat    float64 `json:"lat"`
+	Lng    float64 `json:"lng"`
+	Radius float64 `json:"radius"`
+	MinPop int     `json:"min_population"`
+	Limit  int     `json:"limit"`
+	Offset int     `json:"offset"`
 }
 
 // CitySearchResponse represents the response for city search requests
