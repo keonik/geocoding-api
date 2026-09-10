@@ -269,9 +269,13 @@ func main() {
 	// bcrypt comparison per attempt, which makes an unthrottled endpoint both
 	// a credential-stuffing surface and a cheap way to burn server CPU.
 	auth := api.Group("/auth")
-	auth.Use(middleware.AuthRateLimiter())
-	auth.POST("/register", handlers.RegisterHandler)
-	auth.POST("/login", handlers.LoginHandler)
+	// Applied per route, not to the group. /plans is a cheap public pricing
+	// lookup with no bcrypt behind it; sharing a bucket with login means a
+	// pricing page that refetches, or a few users behind one corporate NAT,
+	// could exhaust the allowance and lock people out of signing in.
+	authThrottle := middleware.AuthRateLimiter()
+	auth.POST("/register", handlers.RegisterHandler, authThrottle)
+	auth.POST("/login", handlers.LoginHandler, authThrottle)
 	auth.GET("/plans", handlers.GetPlansHandler)
 
 	// User management routes (require user auth)

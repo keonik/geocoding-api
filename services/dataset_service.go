@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -301,6 +302,16 @@ type geoFeature struct {
 // being the bottleneck.
 const addressInsertBatchSize = 1000
 
+// maxConsecutiveFailedBatches is how many entirely-failed batches are tolerated
+// before the import gives up. One can be a bad chunk of a file; three in a row
+// is the database, and pressing on would delete the source file for nothing.
+const maxConsecutiveFailedBatches = 3
+
+// errImportAborted marks a failure that came from writing rows rather than
+// from reading the file, so the two can be told apart after they have both
+// travelled back through streamGeoJSONFeatures.
+var errImportAborted = errors.New("address import aborted")
+
 // addressProgressInterval is how many imported rows pass between progress
 // writes to the datasets row. A large county file is now processed in a single
 // pass with no other operator visibility, so record_count is kept live.
@@ -371,6 +382,14 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 
 	if streamErr != nil {
 		s.UpdateDatasetStatus(datasetID, "failed", streamErr.Error(), importer.imported)
+		// streamGeoJSONFeatures surfaces two different failures through this
+		// one return: a malformed file, and an error from the callback, which
+		// here means the inserts gave up. Reporting an insert failure as
+		// "failed to parse GeoJSON" sends whoever reads it to look at the file
+		// instead of at the database.
+		if errors.Is(streamErr, errImportAborted) {
+			return fmt.Errorf("failed to insert addresses: %w", streamErr)
+		}
 		return fmt.Errorf("failed to parse GeoJSON: %w", streamErr)
 	}
 	if flushErr != nil {
@@ -381,18 +400,34 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 	recordCount := importer.imported
 	skippedDuplicates := importer.skipped
 
-	// Update dataset status to completed
-	if err := s.UpdateDatasetStatus(datasetID, "completed", "", recordCount); err != nil {
+	// Rows the database rejected. The import did not abort -- enough batches
+	// succeeded for that -- but it is not a clean run either, and the operator
+	// needs to be told rather than left reading a green status.
+	statusNote := ""
+	if importer.failed > 0 {
+		statusNote = fmt.Sprintf("%d address(es) could not be inserted; see server logs", importer.failed)
+		log.Printf("Dataset %d completed with %d failed row(s)", datasetID, importer.failed)
+	}
+
+	if err := s.UpdateDatasetStatus(datasetID, "completed", statusNote, recordCount); err != nil {
 		return fmt.Errorf("failed to update completion status: %w", err)
 	}
 
-	// Delete the uploaded file after successful processing to save disk space
-	if err := s.cleanupUploadedFile(dataset.FilePath); err != nil {
-		log.Printf("Warning: Failed to cleanup uploaded file: %v", err)
-		// Don't fail the operation, data is already imported
+	// Delete the uploaded file only on a clean run. Deleting it after a
+	// partial import destroys the only copy of the rows that did not make it,
+	// leaving no way to retry -- the disk saving is not worth that.
+	if importer.failed == 0 {
+		if err := s.cleanupUploadedFile(dataset.FilePath); err != nil {
+			log.Printf("Warning: Failed to cleanup uploaded file: %v", err)
+			// Don't fail the operation, data is already imported
+		}
+	} else {
+		log.Printf("Keeping %s: %d row(s) failed and the file is the only way to retry them",
+			dataset.FilePath, importer.failed)
 	}
 
-	log.Printf("Successfully processed dataset %d: %d records imported, %d duplicates skipped", datasetID, recordCount, skippedDuplicates)
+	log.Printf("Successfully processed dataset %d: %d records imported, %d duplicates skipped, %d failed",
+		datasetID, recordCount, skippedDuplicates, importer.failed)
 	return nil
 }
 
@@ -537,10 +572,18 @@ type addressImporter struct {
 	// address within one batch must be counted as a duplicate, exactly as the
 	// old row at a time path did, and deduplicating here also keeps a single
 	// statement from conflicting with its own rows.
-	seen         map[string]struct{}
-	imported     int
-	skipped      int
-	lastProgress int
+	seen     map[string]struct{}
+	imported int
+	skipped  int
+	// failed counts rows the database rejected. Kept apart from skipped
+	// because they mean opposite things: a skipped row is an address already
+	// present, a failed row is one that was supposed to land and did not.
+	// Folding them together reported a broken import as a clean one full of
+	// duplicates.
+	failed int
+	// consecutiveFailedBatches drives the abort in flush.
+	consecutiveFailedBatches int
+	lastProgress             int
 }
 
 func newAddressImporter(db *sql.DB) *addressImporter {
@@ -580,24 +623,48 @@ func (ai *addressImporter) flush() error {
 	ai.seen = make(map[string]struct{}, addressInsertBatchSize)
 
 	inserted, err := ai.insertBatch(batch)
+	rowFailures := 0
 	if err != nil {
 		// One malformed row must not cost the other 999. The old loop logged
 		// and continued past a bad insert, so fall back to row at a time and
 		// preserve that.
 		log.Printf("Warning: batch insert of %d addresses failed (%v), retrying individually", len(batch), err)
 		inserted = 0
+		var lastErr error
 		for i := range batch {
 			n, rowErr := ai.insertBatch(batch[i : i+1])
 			if rowErr != nil {
+				rowFailures++
+				lastErr = rowErr
 				log.Printf("Warning: Failed to insert address: %v", rowErr)
 				continue
 			}
 			inserted += n
 		}
+
+		// A batch where every single row also failed on its own is not bad
+		// data, it is a broken database: the connection dropped, or a
+		// constraint is rejecting everything. Continuing means marking the
+		// dataset completed and deleting the operator's uploaded file while
+		// importing nothing, so give up after a few in a row.
+		if rowFailures == len(batch) {
+			ai.consecutiveFailedBatches++
+			if ai.consecutiveFailedBatches >= maxConsecutiveFailedBatches {
+				return fmt.Errorf("%w: %d consecutive batches failed entirely, last error: %v",
+					errImportAborted, ai.consecutiveFailedBatches, lastErr)
+			}
+		} else {
+			ai.consecutiveFailedBatches = 0
+		}
+	} else {
+		ai.consecutiveFailedBatches = 0
 	}
 
 	ai.imported += inserted
-	ai.skipped += len(batch) - inserted
+	ai.failed += rowFailures
+	// Whatever is left neither inserted nor errored was rejected by
+	// ON CONFLICT, which is the definition of a duplicate.
+	ai.skipped += len(batch) - inserted - rowFailures
 	return nil
 }
 

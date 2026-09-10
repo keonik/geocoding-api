@@ -290,25 +290,37 @@ func RequireUserAuth() echo.MiddlewareFunc {
 func UsageHeader() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			err := next(c)
+			// Registered BEFORE next() runs, and deliberately so.
+			//
+			// echo writes the header block on the handler's first write, which
+			// for every handler here is c.JSON. A Header().Set() after next()
+			// returns therefore mutates a map that has already been flushed:
+			// it is visible to httptest.ResponseRecorder.Header(), which hands
+			// back the live map, and invisible to every real client. These
+			// headers had never reached the wire.
+			//
+			// A Before hook runs at WriteHeader time, so the values land while
+			// the block can still be changed.
+			c.Response().Before(func() {
+				status, ok := c.Get(rateLimitStatusKey).(*services.RateLimitStatus)
+				if !ok {
+					return
+				}
 
-			status, ok := c.Get(rateLimitStatusKey).(*services.RateLimitStatus)
-			if !ok {
-				return err
-			}
+				h := c.Response().Header()
+				h.Set("X-API-Usage-Current", strconv.Itoa(status.MonthlyUsage))
+				h.Set("X-API-Usage-Limit", strconv.Itoa(status.MonthlyLimit))
+				h.Set("X-API-Usage-Daily", strconv.Itoa(status.DailyUsage))
+				h.Set("X-API-Usage-Daily-Limit", strconv.Itoa(status.DailyLimit))
+				if status.PlanType != "" {
+					h.Set("X-API-Plan", status.PlanType)
+				}
+				if !status.Unlimited() {
+					h.Set("X-RateLimit-Reset", strconv.FormatInt(status.DailyReset.Unix(), 10))
+				}
+			})
 
-			c.Response().Header().Set("X-API-Usage-Current", strconv.Itoa(status.MonthlyUsage))
-			c.Response().Header().Set("X-API-Usage-Limit", strconv.Itoa(status.MonthlyLimit))
-			c.Response().Header().Set("X-API-Usage-Daily", strconv.Itoa(status.DailyUsage))
-			c.Response().Header().Set("X-API-Usage-Daily-Limit", strconv.Itoa(status.DailyLimit))
-			if status.PlanType != "" {
-				c.Response().Header().Set("X-API-Plan", status.PlanType)
-			}
-			if !status.Unlimited() {
-				c.Response().Header().Set("X-RateLimit-Reset", strconv.FormatInt(status.DailyReset.Unix(), 10))
-			}
-
-			return err
+			return next(c)
 		}
 	}
 }

@@ -1,11 +1,15 @@
 package services
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"math"
 
 	"geocoding-api/database"
 	"geocoding-api/models"
+
+	"github.com/lib/pq"
 )
 
 // metersPerMile is the international mile, exactly 1609.344 m. Radius search
@@ -111,25 +115,28 @@ func FindZipCodesWithinRadius(centerZip string, radiusMiles float64, limit int) 
 		return nil, fmt.Errorf("center ZIP code %s not found", centerZip)
 	}
 
-	query := `
-		WITH center AS (
-			SELECT geog FROM zip_codes WHERE zip_code = $1
-		)
-		SELECT z.zip_code, z.city_name, z.state_code, z.state_name, z.zcta, z.zcta_parent,
-			   z.population, z.density, z.primary_county_code, z.primary_county_name,
-			   z.county_weights, z.county_names, z.county_codes, z.imprecise, z.military,
-			   z.timezone, z.latitude, z.longitude,
-			   ST_Distance(z.geog, center.geog, false) AS distance_meters
-		FROM zip_codes z, center
-		WHERE z.zip_code <> $1
-		  AND ST_DWithin(z.geog, center.geog, $2, false)
-		ORDER BY z.geog <-> center.geog
-		LIMIT $3
-	`
-
-	rows, err := database.DB.Query(query, centerZip, radiusMiles*metersPerMile, limit)
+	rows, err := database.DB.Query(radiusQuery(true), centerZip, radiusMiles*metersPerMile, limit)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query ZIP codes: %w", err)
+		if !isUndefinedColumn(err) {
+			return nil, fmt.Errorf("failed to query ZIP codes: %w", err)
+		}
+		// zip_codes.geog does not exist yet. Migrations run asynchronously by
+		// default (see main.go), so between a deploy and migration 21 landing
+		// there is a window where the server is serving but the column is not
+		// there. Failing here would make this endpoint 500 for that whole
+		// window -- a regression the bounding-box implementation this replaced
+		// could not have, because it needed no schema beyond latitude and
+		// longitude.
+		//
+		// The fallback builds the same geographies inline from those columns.
+		// Identical results and identical ordering; it just cannot use the
+		// GIST index, so it scans. Correct and slow beats 500 for the minute
+		// or two this is live.
+		log.Printf("radius search: zip_codes.geog missing, falling back to an unindexed scan (migration 21 pending?)")
+		rows, err = database.DB.Query(radiusQuery(false), centerZip, radiusMiles*metersPerMile, limit)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query ZIP codes: %w", err)
+		}
 	}
 	defer rows.Close()
 
@@ -194,4 +201,45 @@ func haversineDistance(lat1, lng1, lat2, lng2 float64) float64 {
 
 	// Distance in miles
 	return earthRadiusMiles * c
+}
+
+// radiusQuery renders the radius search.
+//
+// indexed selects the stored geography column from migration 21, which the
+// GIST index covers. The fallback recomputes the same value inline from
+// longitude/latitude so the query still works before that migration has run.
+// Both forms are the same geography, so results and ordering match exactly.
+func radiusQuery(indexed bool) string {
+	geog := "z.geog"
+	centerGeog := "geog"
+	if !indexed {
+		geog = "ST_SetSRID(ST_MakePoint(z.longitude, z.latitude), 4326)::geography"
+		centerGeog = "ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography"
+	}
+
+	return fmt.Sprintf(`
+		WITH center AS (
+			SELECT %s AS geog FROM zip_codes WHERE zip_code = $1
+		)
+		SELECT z.zip_code, z.city_name, z.state_code, z.state_name, z.zcta, z.zcta_parent,
+			   z.population, z.density, z.primary_county_code, z.primary_county_name,
+			   z.county_weights, z.county_names, z.county_codes, z.imprecise, z.military,
+			   z.timezone, z.latitude, z.longitude,
+			   ST_Distance(%s, center.geog, false) AS distance_meters
+		FROM zip_codes z, center
+		WHERE z.zip_code <> $1
+		  AND ST_DWithin(%s, center.geog, $2, false)
+		ORDER BY %s <-> center.geog
+		LIMIT $3
+	`, centerGeog, geog, geog, geog)
+}
+
+// isUndefinedColumn reports whether err is Postgres 42703, raised when a
+// referenced column does not exist.
+func isUndefinedColumn(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "42703"
+	}
+	return false
 }

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -37,10 +38,11 @@ const (
 // testing but should never be the production setting.
 //
 // A NOTE ON WHAT "PER IP" MEANS HERE. This keys on echo's c.RealIP(), which
-// reads X-Forwarded-For when present. That header is caller-supplied, so
-// unless the server is configured to trust only its real proxy, an attacker
-// can rotate it and walk straight past this limiter. See ConfigureIPExtractor:
-// wiring that up is what makes this middleware more than decorative.
+// by default reads a caller-supplied X-Forwarded-For -- an attacker rotates it
+// and gets a fresh bucket per request, walking past the limiter and growing
+// the visitor map without bound while doing it. ConfigureIPExtractor replaces
+// that default and is applied unconditionally in main.go, which is what makes
+// this middleware more than decorative.
 func AuthRateLimiter() echo.MiddlewareFunc {
 	perMinute := envInt("AUTH_RATE_PER_MINUTE", defaultAuthRatePerMinute)
 	if perMinute <= 0 {
@@ -66,7 +68,8 @@ func AuthRateLimiter() echo.MiddlewareFunc {
 
 	// Retry-After is the wait for a single token to refill, which is the
 	// soonest a denied caller can succeed.
-	retryAfter := strconv.Itoa(int((time.Minute / time.Duration(perMinute)).Seconds()) + 1)
+	retryAfterSeconds := int((time.Minute / time.Duration(perMinute)).Seconds()) + 1
+	retryAfterHeader := strconv.Itoa(retryAfterSeconds)
 
 	return echomiddleware.RateLimiterWithConfig(echomiddleware.RateLimiterConfig{
 		Store: store,
@@ -74,12 +77,16 @@ func AuthRateLimiter() echo.MiddlewareFunc {
 			return c.RealIP(), nil
 		},
 		DenyHandler: func(c echo.Context, identifier string, err error) error {
-			c.Response().Header().Set("Retry-After", retryAfter)
+			c.Response().Header().Set("Retry-After", retryAfterHeader)
 			return c.JSON(http.StatusTooManyRequests, handlers.GeocodeResponse{
 				Success: false,
 				Error:   "Too many authentication attempts. Please wait and try again.",
 				Data: map[string]interface{}{
-					"retry_after_seconds": retryAfter,
+					// A number, matching the retry_after that APIKeyAuth's 429
+					// carries. It used to be the header string here, so a client
+					// doing retry_after_seconds * 1000 got NaN from one 429 and
+					// a correct delay from the other.
+					"retry_after_seconds": retryAfterSeconds,
 					"limit_per_minute":    perMinute,
 				},
 			})
@@ -99,20 +106,32 @@ func AuthRateLimiter() echo.MiddlewareFunc {
 // c.RealIP() against every metered call, so a wrong answer here quietly
 // corrupts the usage analytics too.
 //
-// Echo's default trusts X-Forwarded-For from anyone. That is the right
-// default for a server behind a proxy it controls and the wrong one for a
-// server reachable directly, because the header is just a request header and
-// any caller can write whatever they like into it.
+// Echo's default trusts X-Forwarded-For from anyone, which is wrong here in
+// every configuration: XFF is an ordinary request header, so any caller can
+// write anything into it, and a rate limiter keyed on it limits nothing.
 //
-// This deployment sits behind Cloudflare, which strips inbound
-// CF-Connecting-IP and sets its own. Trusting that header is therefore sound
-// *only if* the origin cannot be reached except through Cloudflare. Because
-// that is a deployment property and not something this code can verify, it is
-// opt-in: set TRUST_CLOUDFLARE_IP=true once the origin is confirmed to reject
-// non-Cloudflare traffic. Without it, we fall back to echo's default rather
-// than pretend to a precision we do not have.
+// The replacement prefers CF-Connecting-IP and otherwise uses the socket peer.
+// It is on by default because it is never worse than what it replaces:
+//
+//   - Behind Cloudflare (this deployment), Cloudflare strips any inbound
+//     CF-Connecting-IP and sets its own, so the value is trustworthy and the
+//     limiter sees real client addresses. Falling back to the socket peer
+//     instead would put every user behind one shared bucket and throttle the
+//     whole world at 12 logins a minute.
+//   - Not behind Cloudflare, the header is simply absent and this is the
+//     socket peer, which cannot be forged at all.
+//   - Reachable directly around Cloudflare, an attacker can forge
+//     CF-Connecting-IP -- but such an attacker can equally forge XFF against
+//     echo's default, so nothing is lost relative to before.
+//
+// TRUST_CLOUDFLARE_IP=false restores echo's default for a deployment that
+// genuinely needs XFF, but it reopens the bypass described above.
+//
+// This also decides the ip_address recorded against every metered call, so the
+// same reasoning applies to the usage analytics.
 func ConfigureIPExtractor(e *echo.Echo) {
-	if os.Getenv("TRUST_CLOUDFLARE_IP") != "true" {
+	if os.Getenv("TRUST_CLOUDFLARE_IP") == "false" {
+		log.Println("TRUST_CLOUDFLARE_IP=false: using echo's default X-Forwarded-For handling, which a caller can forge")
 		return
 	}
 

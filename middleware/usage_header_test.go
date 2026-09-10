@@ -29,6 +29,15 @@ func newUsageHeaderContext(status *services.RateLimitStatus) (echo.Context, *htt
 	return c, rec
 }
 
+// Assertions in this file read rec.Result().Header, never rec.Header().
+//
+// ResponseRecorder.Header() hands back the LIVE header map, which keeps
+// accepting writes long after the response was committed -- so a header set
+// too late still shows up there while never reaching a real client. Result()
+// is the snapshot taken when the header block was written, which is what the
+// client actually got. Asserting on the live map is how these headers were
+// able to be broken on the wire and green in the suite at the same time.
+
 func runUsageHeader(c echo.Context) error {
 	handler := UsageHeader()(func(c echo.Context) error {
 		return c.NoContent(http.StatusOK)
@@ -63,7 +72,7 @@ func TestUsageHeaderReportsBothPeriods(t *testing.T) {
 		"X-RateLimit-Reset": strconv.FormatInt(reset.Unix(), 10),
 	}
 	for header, expected := range want {
-		if got := rec.Header().Get(header); got != expected {
+		if got := rec.Result().Header.Get(header); got != expected {
 			t.Errorf("%s = %q, want %q", header, got, expected)
 		}
 	}
@@ -83,10 +92,10 @@ func TestUsageHeaderOmitsResetWhenUnlimited(t *testing.T) {
 		t.Fatalf("UsageHeader returned %v", err)
 	}
 
-	if got := rec.Header().Get("X-RateLimit-Reset"); got != "" {
+	if got := rec.Result().Header.Get("X-RateLimit-Reset"); got != "" {
 		t.Errorf("X-RateLimit-Reset = %q, want it absent for an unlimited plan", got)
 	}
-	if got := rec.Header().Get("X-API-Usage-Limit"); got != "-1" {
+	if got := rec.Result().Header.Get("X-API-Usage-Limit"); got != "-1" {
 		t.Errorf("X-API-Usage-Limit = %q, want -1", got)
 	}
 }
@@ -104,7 +113,7 @@ func TestUsageHeaderWithoutStatusIsInert(t *testing.T) {
 		t.Errorf("status = %d, want 200", rec.Code)
 	}
 	for _, header := range []string{"X-API-Usage-Current", "X-API-Usage-Limit", "X-API-Plan"} {
-		if got := rec.Header().Get(header); got != "" {
+		if got := rec.Result().Header.Get(header); got != "" {
 			t.Errorf("%s = %q, want it absent", header, got)
 		}
 	}

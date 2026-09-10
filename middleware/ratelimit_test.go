@@ -99,8 +99,8 @@ func TestAuthRateLimiterDisabledAtZero(t *testing.T) {
 
 // The limiter keys on RealIP, so whether X-Forwarded-For is trusted decides
 // whether the limit can be walked past by writing a header.
-func TestConfigureIPExtractorIgnoresForgedXFFWhenTrustingCloudflare(t *testing.T) {
-	t.Setenv("TRUST_CLOUDFLARE_IP", "true")
+func TestConfigureIPExtractorIgnoresForgedXFFByDefault(t *testing.T) {
+	t.Setenv("TRUST_CLOUDFLARE_IP", "")
 
 	e := echo.New()
 	ConfigureIPExtractor(e)
@@ -121,13 +121,46 @@ func TestConfigureIPExtractorIgnoresForgedXFFWhenTrustingCloudflare(t *testing.T
 	}
 }
 
-func TestConfigureIPExtractorIsOptIn(t *testing.T) {
-	t.Setenv("TRUST_CLOUDFLARE_IP", "")
+// The escape hatch has to actually restore echo's default, since a deployment
+// that really does sit behind an XFF-setting proxy it controls needs it.
+func TestConfigureIPExtractorCanBeDisabled(t *testing.T) {
+	t.Setenv("TRUST_CLOUDFLARE_IP", "false")
 
 	e := echo.New()
 	ConfigureIPExtractor(e)
 
 	if e.IPExtractor != nil {
-		t.Error("extractor should be left at echo's default unless explicitly opted in")
+		t.Error("TRUST_CLOUDFLARE_IP=false should leave echo's default extractor in place")
+	}
+}
+
+// The whole point of the throttle is that an attacker cannot mint a fresh
+// bucket per request. Forging XFF must not change which limiter a request
+// lands in.
+func TestForgedXFFCannotEvadeTheThrottle(t *testing.T) {
+	t.Setenv("TRUST_CLOUDFLARE_IP", "")
+	t.Setenv("AUTH_RATE_PER_MINUTE", "12")
+	t.Setenv("AUTH_RATE_BURST", "2")
+
+	e := echo.New()
+	ConfigureIPExtractor(e)
+	g := e.Group("/api/v1/auth")
+	g.Use(AuthRateLimiter())
+	g.POST("/login", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
+
+	send := func(forgedXFF string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
+		req.RemoteAddr = "203.0.113.7:12345"
+		req.Header.Set("X-Forwarded-For", forgedXFF)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Same socket peer throughout, a different forged XFF every time.
+	send("1.1.1.1")
+	send("2.2.2.2")
+	if code := send("3.3.3.3"); code != http.StatusTooManyRequests {
+		t.Errorf("rotating X-Forwarded-For evaded the throttle: got %d, want 429", code)
 	}
 }
