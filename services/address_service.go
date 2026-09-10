@@ -266,33 +266,55 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
+	// How the total is obtained depends on whether there is a filter.
+	//
+	// With one, COUNT(*) OVER () rides along on the main query so the predicate
+	// is evaluated once instead of twice. Window functions are computed after
+	// WHERE and before ORDER BY/LIMIT, so the value is the full match count,
+	// unaffected by pagination.
+	//
+	// With no filter it stays a separate COUNT, because the window function is
+	// dramatically slower there. ORDER BY county, city, street, house_number is
+	// served from idx_ohio_addresses_county as an incremental sort that stops
+	// once LIMIT rows are out; COUNT(*) OVER () must consume every row before it
+	// can emit the first one, which forbids that early exit and spills the whole
+	// table through a tuplestore (EXPLAIN shows temp read=1751 written=1897).
+	// A filter generally rules out that early-exit plan anyway, so nothing is
+	// given up by using the window count there. Measured over 300k seeded rows,
+	// as total time for the old pair vs the single new query:
+	//
+	//	postcode+street, ~30 rows     30.1ms ->   3.9ms  (7.7x faster)
+	//	city ILIKE, ~30k rows       1163.0ms -> 926.0ms  (1.3x faster)
+	//	one-word fts, ~30k rows      285.0ms -> 262.0ms
+	//	two-word fts                 466.0ms -> 456.0ms
+	//	no filter at all             164.0ms -> 756.0ms  (4.6x SLOWER)
+	//
+	// The unfiltered browse is the one shape where two queries beat one.
+	useWindowCount := whereClause != ""
+
 	// Build SELECT clause
 	selectClause := baseFields
 	if len(selectFields) > 0 {
 		selectClause = baseFields + ", " + strings.Join(selectFields, ", ")
 	}
-	
-	baseQuery := fmt.Sprintf("SELECT %s FROM ohio_addresses", selectClause)
-
-	// Get total count for pagination (only use args for WHERE clause, not ORDER BY)
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM ohio_addresses %s", whereClause)
-	
-	var total int
-	err := q.QueryRow(countQuery, args[:whereArgCount]...).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get total count: %w", err)
+	if useWindowCount {
+		// Takes no parameters, so this cannot disturb the placeholder numbering
+		// that the WHERE, relevance and ORDER BY clauses depend on.
+		selectClause += ", COUNT(*) OVER () as total_count"
 	}
+
+	baseQuery := fmt.Sprintf("SELECT %s FROM ohio_addresses", selectClause)
 
 	// Main query with pagination - now add ORDER BY args
 	fullQueryArgs := make([]interface{}, len(args))
 	copy(fullQueryArgs, args)
 	fullQueryArgs = append(fullQueryArgs, orderByArgs...)
-	
+
 	fullQuery := fmt.Sprintf(`
-		%s %s %s 
+		%s %s %s
 		LIMIT $%d OFFSET $%d
 	`, baseQuery, whereClause, orderBy, argIndex, argIndex+1)
-	
+
 	fullQueryArgs = append(fullQueryArgs, params.Limit, params.Offset)
 
 	rows, err := q.Query(fullQuery, fullQueryArgs...)
@@ -301,35 +323,62 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	}
 	defer rows.Close()
 
+	var total int
 	var addresses []models.OhioAddress
 	for rows.Next() {
 		var addr models.OhioAddress
 		var relevanceScore *int // May or may not be present
-		
+		var rowTotal int
+
+		// Scan targets are assembled in the same order the SELECT list was
+		// built above: base fields, then relevance_score if it was added, then
+		// total_count if it was added.
+		dest := []interface{}{
+			&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
+			&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
+			&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
+		}
 		if hasRelevanceScore {
-			err := rows.Scan(
-				&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
-				&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
-				&addr.Latitude, &addr.Longitude, &addr.CreatedAt, &relevanceScore,
-			)
-			if err != nil {
-				return nil, 0, fmt.Errorf("failed to scan address row with score: %w", err)
-			}
-		} else {
-			err := rows.Scan(
-				&addr.ID, &addr.Hash, &addr.HouseNumber, &addr.Street, &addr.Unit,
-				&addr.City, &addr.District, &addr.Region, &addr.Postcode, &addr.County, &addr.FullAddress,
-				&addr.Latitude, &addr.Longitude, &addr.CreatedAt,
-			)
-			if err != nil {
-				return nil, 0, fmt.Errorf("failed to scan address row: %w", err)
-			}
+			dest = append(dest, &relevanceScore)
+		}
+		if useWindowCount {
+			dest = append(dest, &rowTotal)
+		}
+
+		if err := rows.Scan(dest...); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan address row: %w", err)
+		}
+
+		// Every row carries the same window count.
+		if useWindowCount {
+			total = rowTotal
 		}
 		addresses = append(addresses, addr)
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("error iterating address rows: %w", err)
+	}
+	// Release the rows before issuing another statement: on the fuzzy path q is
+	// a *sql.Tx, which allows only one active query at a time.
+	rows.Close()
+
+	// Two cases still need a standalone count. The unfiltered search, per the
+	// note above. And a filtered search whose OFFSET landed past the end: the
+	// window count arrives *on* the rows, so a page past the end returns none
+	// and carries no total with it. Without this, a client walking one page too
+	// far would read total 0 and conclude the result set had emptied. Zero rows
+	// at offset 0 is a genuine zero and is left alone, so the common path never
+	// pays for this.
+	if !useWindowCount || (len(addresses) == 0 && params.Offset > 0) {
+		// Only the WHERE parameters are passed. Postgres infers a parameter's
+		// type from where it is used, so handing this statement SELECT or
+		// ORDER BY args it never mentions fails to parse with "could not
+		// determine data type of parameter $1".
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM ohio_addresses %s", whereClause)
+		if err := q.QueryRow(countQuery, args[:whereArgCount]...).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("failed to get total count: %w", err)
+		}
 	}
 
 	return addresses, total, nil
