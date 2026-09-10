@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"geocoding-api/database"
 	"geocoding-api/models"
 )
 
@@ -283,7 +282,35 @@ func (s *DatasetService) GetDatasetStats() (*models.DatasetStats, error) {
 	return stats, nil
 }
 
-// ProcessGeoJSONDataset processes an uploaded GeoJSON file and imports addresses
+// geoFeature is a single GeoJSON feature. The streaming decoder holds exactly
+// one of these at a time, which is the whole point: the previous
+// implementation decoded the entire FeatureCollection into one slice, and the
+// upload path accepts bodies up to 500MB.
+type geoFeature struct {
+	Type       string                 `json:"type"`
+	Properties map[string]interface{} `json:"properties"`
+	Geometry   struct {
+		Type        string    `json:"type"`
+		Coordinates []float64 `json:"coordinates"`
+	} `json:"geometry"`
+}
+
+// addressInsertBatchSize is how many addresses are sent per INSERT. Each row
+// binds 11 parameters, so 1000 rows is 11,000 of PostgreSQL's 65,535 parameter
+// limit -- comfortable headroom, and large enough that the round trip stops
+// being the bottleneck.
+const addressInsertBatchSize = 1000
+
+// addressProgressInterval is how many imported rows pass between progress
+// writes to the datasets row. A large county file is now processed in a single
+// pass with no other operator visibility, so record_count is kept live.
+const addressProgressInterval = 25000
+
+// ProcessGeoJSONDataset processes an uploaded GeoJSON file and imports addresses.
+//
+// The file is streamed feature by feature rather than decoded whole, and rows
+// are inserted in batches. A 500k-address county extract used to mean 500k
+// round trips and a 500k-element slice resident in memory.
 func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 	dataset, err := s.GetDatasetByID(datasetID)
 	if err != nil {
@@ -316,90 +343,43 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 		reader = gzReader
 	}
 
-	// Parse GeoJSON
-	var geojson struct {
-		Type     string `json:"type"`
-		Features []struct {
-			Type       string `json:"type"`
-			Properties map[string]interface{} `json:"properties"`
-			Geometry   struct {
-				Type        string    `json:"type"`
-				Coordinates []float64 `json:"coordinates"`
-			} `json:"geometry"`
-		} `json:"features"`
-	}
+	importer := newAddressImporter(s.db)
 
-	if err := json.NewDecoder(reader).Decode(&geojson); err != nil {
-		s.UpdateDatasetStatus(datasetID, "failed", err.Error(), 0)
-		return fmt.Errorf("failed to parse GeoJSON: %w", err)
-	}
-
-	// Process features and insert into database
-	recordCount := 0
-	skippedDuplicates := 0
-	
-	for _, feature := range geojson.Features {
-		if feature.Geometry.Type != "Point" {
-			continue
+	// Stream the features array. Any parse failure part way through still
+	// flushes what was already parsed -- those features were read correctly and
+	// the old per-row implementation would have committed them -- and then
+	// marks the dataset failed.
+	streamErr := streamGeoJSONFeatures(reader, func(feature geoFeature) error {
+		address, ok := addressFromFeature(feature, dataset.County, dataset.State)
+		if !ok {
+			return nil
 		}
-
-		// Extract address components from properties
-		// Supports multiple property naming conventions:
-		// - Ohio LBRS format (HOUSENUM, ST_NAME, USPS_CITY, ZIPCODE)
-		// - Generic format (HOUSE_NUMB, STREET, CITY, ZIP)
-		// - Lowercase format (house_number, street, city, postcode)
-		props := feature.Properties
-		
-		address := models.OhioAddress{
-			Longitude: feature.Geometry.Coordinates[0],
-			Latitude:  feature.Geometry.Coordinates[1],
+		if err := importer.add(address); err != nil {
+			return err
 		}
-
-		// House Number - try multiple field names and types
-		address.HouseNumber = getStringProp(props, "HOUSENUM", "HOUSE_NUMB", "house_number", "LHN")
-		
-		// Street Name - Ohio LBRS uses ST_NAME or LSN (full street with number)
-		address.Street = getStringProp(props, "ST_NAME", "STREET", "street")
-		if address.Street == "" {
-			// Try LSN but remove the house number prefix
-			if lsn := getStringProp(props, "LSN"); lsn != "" && address.HouseNumber != "" {
-				// LSN format is "16551 STATE RTE 247" - remove the number prefix
-				address.Street = strings.TrimSpace(strings.TrimPrefix(lsn, address.HouseNumber))
+		if importer.imported >= importer.lastProgress+addressProgressInterval {
+			importer.lastProgress = importer.imported
+			if err := s.updateDatasetProgress(datasetID, importer.imported); err != nil {
+				log.Printf("Warning: failed to update progress for dataset %d: %v", datasetID, err)
 			}
 		}
-		
-		// City - USPS_CITY or MUNI for Ohio LBRS
-		address.City = getStringProp(props, "USPS_CITY", "CITY", "city", "MUNI", "COMM")
-		
-		// ZIP Code
-		address.Postcode = getStringProp(props, "ZIPCODE", "ZIP", "postcode", "postal_code")
-		
-		// Unit/Apartment
-		address.Unit = getStringProp(props, "UNITNUM", "UNIT", "unit", "UNITEXTRA")
-		
-		// District (county abbreviation like "ADA")
-		address.District = getStringProp(props, "COUNTY", "district")
+		return nil
+	})
 
-		// Set county and state from dataset metadata (full names)
-		address.County = dataset.County
-		address.Region = dataset.State
+	// Flush whatever is pending regardless of how the stream ended.
+	flushErr := importer.flush()
 
-		// Insert address into database (using existing service)
-		if address.HouseNumber != "" && address.Street != "" {
-			// Use the existing address service to insert
-			addressService := NewAddressService(database.DB)
-			if _, err := addressService.CreateAddress(&address); err != nil {
-				// Check if it's a duplicate (unique constraint violation)
-				if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
-					skippedDuplicates++
-				} else {
-					log.Printf("Warning: Failed to insert address: %v", err)
-				}
-				continue
-			}
-			recordCount++
-		}
+	if streamErr != nil {
+		s.UpdateDatasetStatus(datasetID, "failed", streamErr.Error(), importer.imported)
+		return fmt.Errorf("failed to parse GeoJSON: %w", streamErr)
 	}
+	if flushErr != nil {
+		s.UpdateDatasetStatus(datasetID, "failed", flushErr.Error(), importer.imported)
+		return fmt.Errorf("failed to insert addresses: %w", flushErr)
+	}
+
+	recordCount := importer.imported
+	skippedDuplicates := importer.skipped
 
 	// Update dataset status to completed
 	if err := s.UpdateDatasetStatus(datasetID, "completed", "", recordCount); err != nil {
@@ -414,6 +394,265 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 
 	log.Printf("Successfully processed dataset %d: %d records imported, %d duplicates skipped", datasetID, recordCount, skippedDuplicates)
 	return nil
+}
+
+// updateDatasetProgress bumps the running record count without touching status
+// or processed_at, which only the terminal transitions should set.
+func (s *DatasetService) updateDatasetProgress(datasetID, recordCount int) error {
+	_, err := s.db.Exec(
+		`UPDATE datasets SET record_count = $1, updated_at = $2 WHERE id = $3`,
+		recordCount, time.Now(), datasetID,
+	)
+	return err
+}
+
+// streamGeoJSONFeatures walks a FeatureCollection and hands each feature to fn
+// without ever holding more than one feature in memory. Top level members
+// other than "features" (type, crs, bbox) are skipped; they are small by
+// definition.
+func streamGeoJSONFeatures(reader io.Reader, fn func(geoFeature) error) error {
+	dec := json.NewDecoder(reader)
+
+	tok, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("failed to read GeoJSON: %w", err)
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("expected a GeoJSON object, got %v", tok)
+	}
+
+	sawFeatures := false
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("failed to read GeoJSON key: %w", err)
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return fmt.Errorf("expected a GeoJSON member name, got %v", keyTok)
+		}
+
+		if key != "features" {
+			// Skip this member's value without interpreting it.
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return fmt.Errorf("failed to skip GeoJSON member %q: %w", key, err)
+			}
+			continue
+		}
+
+		sawFeatures = true
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("failed to read features array: %w", err)
+		}
+		if delim, ok := tok.(json.Delim); !ok || delim != '[' {
+			return fmt.Errorf("expected features to be an array, got %v", tok)
+		}
+
+		for dec.More() {
+			var feature geoFeature
+			if err := dec.Decode(&feature); err != nil {
+				return fmt.Errorf("failed to parse feature: %w", err)
+			}
+			if err := fn(feature); err != nil {
+				return err
+			}
+		}
+
+		// Consume the closing ']'.
+		if _, err := dec.Token(); err != nil {
+			return fmt.Errorf("failed to close features array: %w", err)
+		}
+	}
+
+	if !sawFeatures {
+		return fmt.Errorf("GeoJSON has no features array")
+	}
+	return nil
+}
+
+// addressFromFeature maps one feature onto an address row, returning false when
+// the feature should be skipped. The property name fallbacks cover the formats
+// this API ingests: Ohio LBRS (HOUSENUM, ST_NAME, USPS_CITY, ZIPCODE), a
+// generic uppercase format, and lowercase OpenAddresses-style keys.
+func addressFromFeature(feature geoFeature, county, state string) (models.OhioAddress, bool) {
+	var address models.OhioAddress
+
+	if feature.Geometry.Type != "Point" || len(feature.Geometry.Coordinates) < 2 {
+		return address, false
+	}
+
+	props := feature.Properties
+	address.Longitude = feature.Geometry.Coordinates[0]
+	address.Latitude = feature.Geometry.Coordinates[1]
+
+	// House Number - try multiple field names and types
+	address.HouseNumber = getStringProp(props, "HOUSENUM", "HOUSE_NUMB", "house_number", "LHN")
+
+	// Street Name - Ohio LBRS uses ST_NAME or LSN (full street with number)
+	address.Street = getStringProp(props, "ST_NAME", "STREET", "street")
+	if address.Street == "" {
+		// Try LSN but remove the house number prefix
+		if lsn := getStringProp(props, "LSN"); lsn != "" && address.HouseNumber != "" {
+			// LSN format is "16551 STATE RTE 247" - remove the number prefix
+			address.Street = strings.TrimSpace(strings.TrimPrefix(lsn, address.HouseNumber))
+		}
+	}
+
+	// City - USPS_CITY or MUNI for Ohio LBRS
+	address.City = getStringProp(props, "USPS_CITY", "CITY", "city", "MUNI", "COMM")
+
+	// ZIP Code
+	address.Postcode = getStringProp(props, "ZIPCODE", "ZIP", "postcode", "postal_code")
+
+	// Unit/Apartment
+	address.Unit = getStringProp(props, "UNITNUM", "UNIT", "unit", "UNITEXTRA")
+
+	// District (county abbreviation like "ADA")
+	address.District = getStringProp(props, "COUNTY", "district")
+
+	// Set county and state from dataset metadata (full names)
+	address.County = county
+	address.Region = state
+
+	if address.HouseNumber == "" || address.Street == "" {
+		return address, false
+	}
+	return address, true
+}
+
+// addressHash is the deduplication key for ohio_addresses.hash. It must stay
+// byte-identical to the one AddressService.CreateAddress builds, or the same
+// address imported by the two paths would land twice.
+func addressHash(a models.OhioAddress) string {
+	return fmt.Sprintf("%s|%s|%s|%s|%s", a.HouseNumber, a.Street, a.Unit, a.City, a.Postcode)
+}
+
+// addressImporter accumulates addresses and writes them in batches.
+type addressImporter struct {
+	db    *sql.DB
+	batch []models.OhioAddress
+	// seen holds the hashes in the pending batch. A file that repeats an
+	// address within one batch must be counted as a duplicate, exactly as the
+	// old row at a time path did, and deduplicating here also keeps a single
+	// statement from conflicting with its own rows.
+	seen         map[string]struct{}
+	imported     int
+	skipped      int
+	lastProgress int
+}
+
+func newAddressImporter(db *sql.DB) *addressImporter {
+	return &addressImporter{
+		db:    db,
+		batch: make([]models.OhioAddress, 0, addressInsertBatchSize),
+		seen:  make(map[string]struct{}, addressInsertBatchSize),
+	}
+}
+
+func (ai *addressImporter) add(address models.OhioAddress) error {
+	hash := addressHash(address)
+	if _, dup := ai.seen[hash]; dup {
+		ai.skipped++
+		return nil
+	}
+	ai.seen[hash] = struct{}{}
+	ai.batch = append(ai.batch, address)
+
+	if len(ai.batch) >= addressInsertBatchSize {
+		return ai.flush()
+	}
+	return nil
+}
+
+// flush writes the pending batch. Each batch is a single statement, which
+// PostgreSQL already runs in its own implicit transaction, so an explicit BEGIN
+// would add a round trip and buy nothing. Batches commit independently on
+// purpose: a failure at row 499,000 of a 500,000 row import should not discard
+// everything that came before it, which matches how the old per-row loop behaved.
+func (ai *addressImporter) flush() error {
+	if len(ai.batch) == 0 {
+		return nil
+	}
+	batch := ai.batch
+	ai.batch = make([]models.OhioAddress, 0, addressInsertBatchSize)
+	ai.seen = make(map[string]struct{}, addressInsertBatchSize)
+
+	inserted, err := ai.insertBatch(batch)
+	if err != nil {
+		// One malformed row must not cost the other 999. The old loop logged
+		// and continued past a bad insert, so fall back to row at a time and
+		// preserve that.
+		log.Printf("Warning: batch insert of %d addresses failed (%v), retrying individually", len(batch), err)
+		inserted = 0
+		for i := range batch {
+			n, rowErr := ai.insertBatch(batch[i : i+1])
+			if rowErr != nil {
+				log.Printf("Warning: Failed to insert address: %v", rowErr)
+				continue
+			}
+			inserted += n
+		}
+	}
+
+	ai.imported += inserted
+	ai.skipped += len(batch) - inserted
+	return nil
+}
+
+// insertBatch inserts rows in one multi-value statement, skipping any address
+// whose hash is already present. ON CONFLICT is why this is a plain INSERT and
+// not COPY: COPY cannot express it, and the duplicate skipping is load bearing
+// because these county extracts overlap.
+func (ai *addressImporter) insertBatch(batch []models.OhioAddress) (int, error) {
+	if len(batch) == 0 {
+		return 0, nil
+	}
+
+	const columnsPerRow = 11
+	values := make([]string, 0, len(batch))
+	args := make([]interface{}, 0, len(batch)*columnsPerRow)
+
+	for i, a := range batch {
+		base := i * columnsPerRow
+		values = append(values, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, ST_SetSRID(ST_MakePoint($%d, $%d), 4326))",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9, base+10, base+11,
+		))
+		args = append(args,
+			addressHash(a),
+			a.HouseNumber,
+			a.Street,
+			a.Unit,
+			a.City,
+			a.District,
+			a.Region,
+			a.Postcode,
+			a.County,
+			a.Longitude,
+			a.Latitude,
+		)
+	}
+
+	query := `
+		INSERT INTO ohio_addresses (
+			hash, house_number, street, unit, city, district, region, postcode, county, geom
+		) VALUES ` + strings.Join(values, ", ") + `
+		ON CONFLICT (hash) DO NOTHING
+	`
+
+	result, err := ai.db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		// Should not happen with lib/pq, which parses the INSERT command tag.
+		return 0, fmt.Errorf("failed to read inserted row count: %w", err)
+	}
+	return int(affected), nil
 }
 
 // cleanupUploadedFile removes the uploaded file after processing
