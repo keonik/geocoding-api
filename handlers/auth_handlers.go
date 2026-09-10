@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"geocoding-api/models"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
@@ -233,7 +234,7 @@ func GetUsageHandler(c echo.Context) error {
 	}
 
 	// Also get current rate limit status
-	withinLimit, currentUsage, monthlyLimit, err := services.Auth.CheckRateLimit(userID)
+	status, err := services.Auth.CheckRateLimitStatus(userID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
 			Success: false,
@@ -241,18 +242,45 @@ func GetUsageHandler(c echo.Context) error {
 		})
 	}
 
+	// The original four keys are unchanged so the dashboard keeps working; the
+	// daily pair is added because it is enforced just as hard as the monthly
+	// one and users previously had no way to see it.
+	rateLimit := map[string]interface{}{
+		"within_limit":    status.Within,
+		"current_usage":   status.MonthlyUsage,
+		"monthly_limit":   status.MonthlyLimit,
+		"remaining":       remaining(status.MonthlyLimit, status.MonthlyUsage),
+		"monthly_usage":   status.MonthlyUsage,
+		"daily_usage":     status.DailyUsage,
+		"daily_limit":     status.DailyLimit,
+		"daily_remaining": remaining(status.DailyLimit, status.DailyUsage),
+		"plan_type":       status.PlanType,
+		"exceeded":        status.Exceeded,
+	}
+	if !status.Unlimited() {
+		rateLimit["monthly_reset"] = status.MonthlyReset.UTC().Format(time.RFC3339)
+		rateLimit["daily_reset"] = status.DailyReset.UTC().Format(time.RFC3339)
+	}
+
 	return c.JSON(http.StatusOK, GeocodeResponse{
 		Success: true,
 		Data: map[string]interface{}{
 			"usage_summary": summary,
-			"rate_limit": map[string]interface{}{
-				"within_limit":   withinLimit,
-				"current_usage":  currentUsage,
-				"monthly_limit":  monthlyLimit,
-				"remaining":      monthlyLimit - currentUsage,
-			},
+			"rate_limit":    rateLimit,
 		},
 	})
+}
+
+// remaining reports calls left in a period. An unlimited plan reports -1 rather
+// than a negative difference against the sentinel.
+func remaining(limit, used int) int {
+	if limit == models.Unlimited {
+		return models.Unlimited
+	}
+	if used >= limit {
+		return 0
+	}
+	return limit - used
 }
 
 // GetDailyUsageHandler returns daily usage statistics for a user
@@ -465,45 +493,32 @@ func DeleteAPIKeyHandler(c echo.Context) error {
 	})
 }
 
-// GetPlansHandler returns available pricing plans
+// GetPlansHandler returns available pricing plans.
+//
+// Rendered from models.PlanLimits, which is also what CheckRateLimit enforces
+// and what CreateSubscription writes. These numbers used to be typed out here
+// as literals, and they drifted from the enforced ones -- so the endpoint
+// advertised a quota the API did not honour. The response shape is unchanged.
 func GetPlansHandler(c echo.Context) error {
+	plans := make(map[string]interface{}, len(models.PlanLimits))
+	for key, plan := range models.PlanLimits {
+		plans[key] = map[string]interface{}{
+			"name":           plan.Name,
+			"monthly_limit":  plan.MonthlyLimit,
+			"daily_limit":    plan.DailyLimit,
+			"price_per_call": plan.PricePerCall,
+			"price_monthly":  plan.PriceMonthly,
+			"features":       plan.DisplayFeatures,
+		}
+	}
+
 	return c.JSON(http.StatusOK, GeocodeResponse{
 		Success: true,
 		Data: map[string]interface{}{
-			"plans": map[string]interface{}{
-				"free": map[string]interface{}{
-					"name":           "Free",
-					"monthly_limit":  3000,
-					"daily_limit":    500,
-					"price_per_call": 0,
-					"price_monthly":  0,
-					"features":       []string{"Basic geocoding", "City search", "Community support"},
-				},
-				"starter": map[string]interface{}{
-					"name":           "Starter", 
-					"monthly_limit":  30000,
-					"daily_limit":    5000,
-					"price_per_call": 0.001,
-					"price_monthly":  10,
-					"features":       []string{"All Free features", "Distance calculations", "Email support"},
-				},
-				"pro": map[string]interface{}{
-					"name":           "Pro",
-					"monthly_limit":  500000,
-					"daily_limit":    20000,
-					"price_per_call": 0.0008,
-					"price_monthly":  80,
-					"features":       []string{"All Starter features", "Bulk operations", "Priority support", "SLA"},
-				},
-				"enterprise": map[string]interface{}{
-					"name":           "Enterprise",
-					"monthly_limit":  -1,
-					"daily_limit":    -1,
-					"price_per_call": 0.0005,
-					"price_monthly":  500,
-					"features":       []string{"Unlimited usage", "All Pro features", "Custom integrations", "Dedicated support", "99.9% SLA"},
-				},
-			},
+			"plans": plans,
+			// Map iteration order is random, so hand clients an explicit
+			// cheapest-first ordering for rendering a pricing table.
+			"plan_order": models.PlanOrder,
 		},
 	})
 }

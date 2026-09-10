@@ -275,95 +275,168 @@ func (as *AuthService) ValidateAPIKey(apiKey string) (*models.User, *models.APIK
 	return &user, &key, nil
 }
 
-// CheckRateLimit verifies if user has exceeded their monthly limit
+// Scope names for RateLimitStatus.Exceeded.
+const (
+	ScopeDaily   = "daily"
+	ScopeMonthly = "monthly"
+)
+
+// RateLimitStatus is the resolved rate-limit state for one user.
+//
+// It carries both periods because both are enforced. The caller needs to know
+// *which* cap tripped: reporting a daily rejection as a monthly one shows the
+// user a usage number far below the limit they were supposedly over, which
+// reads as a bug in the API rather than as a quota they hit.
+type RateLimitStatus struct {
+	Within   bool
+	PlanType string
+
+	MonthlyUsage int
+	MonthlyLimit int // models.Unlimited for no cap
+	DailyUsage   int
+	DailyLimit   int // models.Unlimited for no cap
+
+	// Exceeded is "", ScopeDaily or ScopeMonthly. When both are over, the
+	// daily cap is reported: it is the one that clears sooner.
+	Exceeded string
+
+	// Reset boundaries come from the database, evaluated with the same
+	// CURRENT_DATE the counting queries use, so a Retry-After built from them
+	// cannot disagree with what enforcement will do a second later.
+	MonthlyReset time.Time
+	DailyReset   time.Time
+}
+
+// Unlimited reports whether the user has no cap at all (admins, enterprise).
+func (s *RateLimitStatus) Unlimited() bool {
+	return s.MonthlyLimit == models.Unlimited && s.DailyLimit == models.Unlimited
+}
+
+// Limit returns the cap that tripped, and when it resets. Only meaningful when
+// Within is false.
+func (s *RateLimitStatus) Limit() (usage int, limit int, reset time.Time) {
+	if s.Exceeded == ScopeDaily {
+		return s.DailyUsage, s.DailyLimit, s.DailyReset
+	}
+	return s.MonthlyUsage, s.MonthlyLimit, s.MonthlyReset
+}
+
+// CheckRateLimit reports whether the user is within their plan's caps.
+//
+// Retained for callers that only care about the monthly pair. New code should
+// prefer CheckRateLimitStatus, which says which cap tripped.
 func (as *AuthService) CheckRateLimit(userID int) (bool, int, int, error) {
-	// Check if user is admin - admins get unlimited usage
-	var isAdmin bool
-	var email string
-	err := database.DB.QueryRow(`SELECT is_admin, email FROM users WHERE id = $1`, userID).Scan(&isAdmin, &email)
+	status, err := as.CheckRateLimitStatus(userID)
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to get user info: %w", err)
+		return false, 0, 0, err
 	}
+	return status.Within, status.MonthlyUsage, status.MonthlyLimit, nil
+}
 
-	// Check if user is in ADMIN_EMAILS environment variable
-	adminEmails := os.Getenv("ADMIN_EMAILS")
-	isAdminEmail := false
-	if adminEmails != "" {
-		emails := strings.Split(adminEmails, ",")
-		for _, adminEmail := range emails {
-			if strings.TrimSpace(adminEmail) == email {
-				isAdminEmail = true
-				break
-			}
-		}
-	}
-
-	// Admins get unlimited usage
-	if isAdmin || isAdminEmail {
-		return true, 0, -1, nil // -1 indicates unlimited
-	}
-
-	// Get user's plan type from users table if no subscription exists
-	var monthlyLimit, dailyLimit int
-	err = database.DB.QueryRow(`
-		SELECT 
-			COALESCE(s.monthly_limit, 
-				CASE 
-					WHEN u.plan_type = 'free' THEN 3000
-					WHEN u.plan_type = 'starter' THEN 30000
-					WHEN u.plan_type = 'pro' THEN 500000
-					WHEN u.plan_type = 'enterprise' THEN -1
-					ELSE 3000
-				END
-			) as monthly_limit,
-			CASE 
-				WHEN u.plan_type = 'free' THEN 500
-				WHEN u.plan_type = 'starter' THEN 5000
-				WHEN u.plan_type = 'pro' THEN 100000
-				WHEN u.plan_type = 'enterprise' THEN -1
-				ELSE 500
-			END as daily_limit
+// CheckRateLimitStatus resolves the user's plan and current usage.
+//
+// Two queries, not four. The plan lookup and the admin check were separate
+// round trips against the same row; the monthly and daily counts were separate
+// aggregates over the same index range, and today is always inside this month,
+// so one scan with FILTER produces both. This runs on every authenticated
+// request, so the count matters.
+//
+// Limits resolve from models.PlanLimits rather than a SQL CASE. A
+// subscriptions.monthly_limit override still wins where present -- that is how
+// a negotiated custom limit is expressed -- which is only safe because
+// migration 20 rewrote the rows that held a wrong default.
+func (as *AuthService) CheckRateLimitStatus(userID int) (*RateLimitStatus, error) {
+	var (
+		isAdmin       bool
+		email         string
+		planType      string
+		limitOverride sql.NullInt64
+	)
+	err := database.DB.QueryRow(`
+		SELECT u.is_admin, u.email, u.plan_type, s.monthly_limit
 		FROM users u
 		LEFT JOIN subscriptions s ON u.id = s.user_id AND s.is_active = true
 		WHERE u.id = $1
-	`, userID).Scan(&monthlyLimit, &dailyLimit)
+	`, userID).Scan(&isAdmin, &email, &planType, &limitOverride)
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to get user plan: %w", err)
+		return nil, fmt.Errorf("failed to get user plan: %w", err)
 	}
 
-	// Count current month's usage
-	var currentUsage int
+	status := &RateLimitStatus{PlanType: planType}
+
+	// Admins get unlimited usage. Returning before the count query keeps the
+	// admin path to a single round trip.
+	if isAdmin || isAdminEmail(email) {
+		status.Within = true
+		status.MonthlyLimit = models.Unlimited
+		status.DailyLimit = models.Unlimited
+		return status, nil
+	}
+
+	plan := models.PlanFor(planType)
+	status.MonthlyLimit = plan.MonthlyLimit
+	status.DailyLimit = plan.DailyLimit
+	if limitOverride.Valid {
+		status.MonthlyLimit = int(limitOverride.Int64)
+	}
+
+	// One pass over the month's rows yields both counts: CURRENT_DATE is always
+	// inside date_trunc('month', CURRENT_DATE), so the daily count is a subset
+	// of the rows already being scanned. The two reset boundaries are constant
+	// expressions, so they ride along without touching the table; casting to
+	// timestamptz resolves them against the session TimeZone, which is the same
+	// clock the comparisons above use.
 	err = database.DB.QueryRow(`
-		SELECT COUNT(*) FROM usage_records 
-		WHERE user_id = $1 AND billable = true 
-		AND created_at >= date_trunc('month', CURRENT_DATE)
-	`, userID).Scan(&currentUsage)
+		SELECT
+			COUNT(*),
+			COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE),
+			(date_trunc('month', CURRENT_DATE) + interval '1 month')::timestamptz,
+			(CURRENT_DATE + interval '1 day')::timestamptz
+		FROM usage_records
+		WHERE user_id = $1 AND billable = true
+		  AND created_at >= date_trunc('month', CURRENT_DATE)
+	`, userID).Scan(&status.MonthlyUsage, &status.DailyUsage, &status.MonthlyReset, &status.DailyReset)
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to get usage count: %w", err)
+		return nil, fmt.Errorf("failed to get usage count: %w", err)
 	}
 
-	// Count today's usage
-	var dailyUsage int
-	err = database.DB.QueryRow(`
-		SELECT COUNT(*) FROM usage_records 
-		WHERE user_id = $1 AND billable = true 
-		AND created_at >= CURRENT_DATE
-	`, userID).Scan(&dailyUsage)
-	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to get daily usage count: %w", err)
+	status.Exceeded = exceededScope(status.MonthlyUsage, status.MonthlyLimit, status.DailyUsage, status.DailyLimit)
+	status.Within = status.Exceeded == ""
+
+	return status, nil
+}
+
+// exceededScope reports which cap a user is over, or "" for neither.
+//
+// When both are over it returns ScopeDaily: that is the cap that clears sooner,
+// so it is the more useful deadline to hand the caller. Split out from
+// CheckRateLimitStatus so the decision is testable without a database.
+func exceededScope(monthlyUsage, monthlyLimit, dailyUsage, dailyLimit int) string {
+	overDaily := dailyLimit != models.Unlimited && dailyUsage >= dailyLimit
+	if overDaily {
+		return ScopeDaily
 	}
 
-	// Enterprise plan has unlimited usage (-1 indicates no limit)
-	if monthlyLimit == -1 || dailyLimit == -1 {
-		return true, currentUsage, monthlyLimit, nil
+	overMonthly := monthlyLimit != models.Unlimited && monthlyUsage >= monthlyLimit
+	if overMonthly {
+		return ScopeMonthly
 	}
 
-	// Check both monthly and daily limits
-	withinMonthlyLimit := currentUsage < monthlyLimit
-	withinDailyLimit := dailyUsage < dailyLimit
-	withinLimit := withinMonthlyLimit && withinDailyLimit
-	
-	return withinLimit, currentUsage, monthlyLimit, nil
+	return ""
+}
+
+// isAdminEmail reports whether email is listed in ADMIN_EMAILS.
+func isAdminEmail(email string) bool {
+	adminEmails := os.Getenv("ADMIN_EMAILS")
+	if adminEmails == "" {
+		return false
+	}
+	for _, adminEmail := range strings.Split(adminEmails, ",") {
+		if strings.TrimSpace(adminEmail) == email {
+			return true
+		}
+	}
+	return false
 }
 
 // GetUserAPIKeys retrieves all API keys for a user
@@ -484,20 +557,19 @@ func (a *AuthService) DeleteAPIKey(userID, keyID int) error {
 
 // RecordUsage logs an API call for billing and analytics
 func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string, statusCode, responseTime int, ipAddress, userAgent string, billable bool) error {
-	log.Printf("Recording usage: UserID=%d, APIKeyID=%d, Endpoint=%s, Method=%s, Billable=%t", 
-		userID, apiKeyID, endpoint, method, billable)
-	
+	// Deliberately silent on success. This runs once per authenticated request,
+	// so logging the happy path put two lines in the log for every API call --
+	// log volume proportional to traffic, with nothing in it that a usage_records
+	// query could not answer better.
 	_, err := database.DB.Exec(`
 		INSERT INTO usage_records (user_id, api_key_id, endpoint, method, status_code, response_time_ms, ip_address, user_agent, billable, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 	`, userID, apiKeyID, endpoint, method, statusCode, responseTime, ipAddress, userAgent, billable)
-	
+
 	if err != nil {
-		log.Printf("Failed to record usage: %v", err)
-	} else {
-		log.Printf("Successfully recorded usage for user %d", userID)
+		log.Printf("Failed to record usage for user %d (endpoint=%s): %v", userID, endpoint, err)
 	}
-	
+
 	return err
 }
 
