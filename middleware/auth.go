@@ -9,11 +9,22 @@ import (
 	"time"
 
 	"geocoding-api/handlers"
-	"geocoding-api/models"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
 )
+
+// rateLimitStatusKey is the echo context key under which APIKeyAuth publishes
+// the *services.RateLimitStatus it computed, for UsageHeader to reuse.
+const rateLimitStatusKey = "rate_limit_status"
+
+// scopeLabel renders a limit scope for the human-readable error string.
+func scopeLabel(scope string) string {
+	if scope == services.ScopeDaily {
+		return "Daily"
+	}
+	return "Monthly"
+}
 
 // APIKeyAuth middleware validates API keys and enforces rate limits
 func APIKeyAuth() echo.MiddlewareFunc {
@@ -74,16 +85,18 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				})
 			}
 
-			// Check rate limits
-			withinLimit, currentUsage, monthlyLimit, err := services.Auth.CheckRateLimit(user.ID)
+			// Check rate limits. The result is stashed on the context below so
+			// UsageHeader can build its headers from it instead of asking again.
+			status, err := services.Auth.CheckRateLimitStatus(user.ID)
 			if err != nil {
 				return c.JSON(http.StatusInternalServerError, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "Failed to check rate limit",
 				})
 			}
+			c.Set(rateLimitStatusKey, status)
 
-			if !withinLimit {
+			if !status.Within {
 				// Record over-limit usage (non-billable)
 				overLimitEndpoint := getEndpointName(path)
 				method := c.Request().Method
@@ -102,14 +115,39 @@ func APIKeyAuth() echo.MiddlewareFunc {
 					}
 				}()
 				
+				// Report the cap that actually tripped. Saying "monthly" for a
+				// daily rejection showed the user a usage count well under the
+				// limit they were told they had exceeded.
+				scopeUsage, scopeLimit, reset := status.Limit()
+				scope := status.Exceeded
+
+				retryAfter := int(time.Until(reset).Seconds())
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				c.Response().Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+				c.Response().Header().Set("X-RateLimit-Scope", scope)
+
 				return c.JSON(http.StatusTooManyRequests, handlers.GeocodeResponse{
 					Success: false,
-					Error:   "Monthly API limit exceeded",
+					Error:   scopeLabel(scope) + " API limit exceeded",
 					Data: map[string]interface{}{
-						"current_usage":  currentUsage,
-						"monthly_limit":  monthlyLimit,
-						"plan_type":      user.PlanType,
-						"upgrade_info":   "Consider upgrading your plan for higher limits",
+						// current_usage and monthly_limit keep their original
+						// names and now describe the cap that was hit, so an
+						// existing client still reads a coherent pair.
+						"current_usage": scopeUsage,
+						"monthly_limit": scopeLimit,
+						"limit":         scopeLimit,
+						"limit_scope":   scope,
+						"monthly_usage": status.MonthlyUsage,
+						"monthly_cap":   status.MonthlyLimit,
+						"daily_usage":   status.DailyUsage,
+						"daily_cap":     status.DailyLimit,
+						"resets_at":     reset.UTC().Format(time.RFC3339),
+						"retry_after":   retryAfter,
+						"plan_type":     user.PlanType,
+						"upgrade_info":  "Consider upgrading your plan for higher limits",
 					},
 				})
 			}
@@ -238,20 +276,36 @@ func RequireUserAuth() echo.MiddlewareFunc {
 	}
 }
 
-// UsageHeader middleware adds usage info to response headers
+// UsageHeader middleware adds usage info to response headers.
+//
+// It reads the RateLimitStatus that APIKeyAuth already computed and left on the
+// context. It used to call CheckRateLimit a second time for exactly these three
+// headers, which repeated the plan lookup and both usage aggregates on every
+// single request -- doubling the rate-limit cost of the API for three integers
+// that were already in hand.
+//
+// If the status is absent the headers are simply omitted. That happens only
+// when this middleware runs without APIKeyAuth ahead of it, which no route does;
+// re-querying as a fallback would quietly reintroduce the cost this removes.
 func UsageHeader() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			err := next(c)
 
-			// Add usage info to headers if user is authenticated
-			if user, ok := c.Get("user").(*models.User); ok {
-				// Get current usage for the user
-				if _, currentUsage, monthlyLimit, err := services.Auth.CheckRateLimit(user.ID); err == nil {
-					c.Response().Header().Set("X-API-Usage-Current", strconv.Itoa(currentUsage))
-					c.Response().Header().Set("X-API-Usage-Limit", strconv.Itoa(monthlyLimit))
-					c.Response().Header().Set("X-API-Plan", user.PlanType)
-				}
+			status, ok := c.Get(rateLimitStatusKey).(*services.RateLimitStatus)
+			if !ok {
+				return err
+			}
+
+			c.Response().Header().Set("X-API-Usage-Current", strconv.Itoa(status.MonthlyUsage))
+			c.Response().Header().Set("X-API-Usage-Limit", strconv.Itoa(status.MonthlyLimit))
+			c.Response().Header().Set("X-API-Usage-Daily", strconv.Itoa(status.DailyUsage))
+			c.Response().Header().Set("X-API-Usage-Daily-Limit", strconv.Itoa(status.DailyLimit))
+			if status.PlanType != "" {
+				c.Response().Header().Set("X-API-Plan", status.PlanType)
+			}
+			if !status.Unlimited() {
+				c.Response().Header().Set("X-RateLimit-Reset", strconv.FormatInt(status.DailyReset.Unix(), 10))
 			}
 
 			return err

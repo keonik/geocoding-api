@@ -137,6 +137,12 @@ func RunMigrations() error {
 			Up:          addSimplifiedBoundaryGeometry,
 			Down:        removeSimplifiedBoundaryGeometry,
 		},
+		{
+			Version:     20,
+			Description: "Repair subscription monthly limits written from the wrong plan table",
+			Up:          RepairSubscriptionLimits,
+			Down:        RestoreLegacySubscriptionLimits,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1293,6 +1299,91 @@ func removeSimplifiedBoundaryGeometry() error {
 	for _, stmt := range statements {
 		if _, err := DB.Exec(stmt); err != nil {
 			return fmt.Errorf("failed to drop simplified boundary geometry: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// legacyPlanMonthlyLimits are the monthly limits models.PlanLimits used to
+// carry. Every one of them was wrong, and RegisterUser wrote them into a
+// subscriptions row for each new user.
+//
+// The map is spelled out here rather than imported so that editing the plan
+// table later cannot retroactively change what this migration matches. A
+// migration has to mean the same thing every time it runs.
+var legacyPlanMonthlyLimits = map[string]int{
+	"free":       100000,
+	"starter":    10000,
+	"pro":        100000,
+	"enterprise": 1000000,
+}
+
+// correctedPlanMonthlyLimits are the values those rows should have held: the
+// numbers /api/v1/auth/plans has always advertised.
+var correctedPlanMonthlyLimits = map[string]int{
+	"free":       3000,
+	"starter":    30000,
+	"pro":        500000,
+	"enterprise": -1,
+}
+
+// RepairSubscriptionLimits fixes subscription rows carrying a wrong default.
+//
+// CheckRateLimit resolves a user's monthly cap as COALESCE(subscription
+// override, plan default). RegisterUser creates a subscription for every new
+// user, and subscriptions.is_active defaults to true, so that override is
+// always present and always won -- meaning the plan table was never actually
+// what got enforced. With the table now wrong, a free account advertised at
+// 3,000 calls/month was enforced at 100,000.
+//
+// The update is deliberately keyed on (plan_type, exact legacy value). A row
+// holding any other number was either already correct or is a genuinely
+// negotiated custom limit, and must survive untouched -- which is what keeps
+// honouring the override safe at all.
+func RepairSubscriptionLimits() error {
+	for planType, legacy := range legacyPlanMonthlyLimits {
+		corrected, ok := correctedPlanMonthlyLimits[planType]
+		if !ok {
+			continue
+		}
+
+		res, err := DB.Exec(`
+			UPDATE subscriptions
+			SET monthly_limit = $1, updated_at = NOW()
+			WHERE plan_type = $2 AND monthly_limit = $3
+		`, corrected, planType, legacy)
+		if err != nil {
+			return fmt.Errorf("failed to repair %s subscription limits: %w", planType, err)
+		}
+
+		if n, err := res.RowsAffected(); err == nil && n > 0 {
+			log.Printf("Migration 20: reset %d %s subscription(s) from %d to %d", n, planType, legacy, corrected)
+		}
+	}
+
+	return nil
+}
+
+// RestoreLegacySubscriptionLimits puts the wrong values back.
+//
+// This is the best available inverse, not an exact one: a row that legitimately
+// held the corrected value before the Up ran is indistinguishable from one the
+// Up rewrote, so rolling back over-reverts. That is the right trade for a
+// down-migration whose only purpose is to unblock a rollback.
+func RestoreLegacySubscriptionLimits() error {
+	for planType, legacy := range legacyPlanMonthlyLimits {
+		corrected, ok := correctedPlanMonthlyLimits[planType]
+		if !ok {
+			continue
+		}
+
+		if _, err := DB.Exec(`
+			UPDATE subscriptions
+			SET monthly_limit = $1, updated_at = NOW()
+			WHERE plan_type = $2 AND monthly_limit = $3
+		`, legacy, planType, corrected); err != nil {
+			return fmt.Errorf("failed to restore %s subscription limits: %w", planType, err)
 		}
 	}
 

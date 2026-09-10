@@ -141,30 +141,103 @@ func (ja *JSONArray) Scan(value interface{}) error {
 	return json.Unmarshal(bytes, ja)
 }
 
-// Plan types and limits
-var PlanLimits = map[string]struct {
+// Plan describes one pricing tier. This is the single source of truth for plan
+// limits: the enforcement path (AuthService.CheckRateLimit), the public pricing
+// endpoint (GetPlansHandler) and subscription creation all resolve from
+// PlanLimits rather than carrying their own copy.
+//
+// Three copies used to exist and they disagreed. The damage was not
+// theoretical: RegisterUser creates a subscription row for every new user using
+// the numbers here, subscriptions.is_active defaults to true, and
+// CheckRateLimit COALESCEd that row ahead of its own defaults -- so a "free"
+// plan advertised at 3,000 calls/month was enforced at the 100,000 this table
+// used to claim. Migration 20 repairs the rows already written. Keep this table
+// and the enforcement path together; do not reintroduce a second set of numbers.
+type Plan struct {
+	// Key is the plan_type value stored in users.plan_type and
+	// subscriptions.plan_type.
+	Key string
+	// Name is the human label shown on the pricing endpoint.
+	Name string
+	// MonthlyLimit and DailyLimit are billable calls per period, or Unlimited.
+	// Both are enforced; whichever trips first wins.
 	MonthlyLimit int
-	PricePerCall float64 // in cents
-	Features     []string
-}{
+	DailyLimit   int
+	// PricePerCall is in cents. PriceMonthly is in dollars.
+	PricePerCall float64
+	PriceMonthly float64
+	// Features are permission scopes, matched against an API key's permissions
+	// by HasPermission. DisplayFeatures is marketing copy for the pricing page
+	// -- deliberately separate, they are not the same vocabulary.
+	Features        []string
+	DisplayFeatures []string
+}
+
+// Unlimited is the sentinel MonthlyLimit/DailyLimit value meaning "no cap".
+// It is -1 because that is what the API has always returned for enterprise.
+const Unlimited = -1
+
+// PlanOrder lists plan keys cheapest first, so callers can render the pricing
+// table deterministically instead of ranging over a map.
+var PlanOrder = []string{"free", "starter", "pro", "enterprise"}
+
+// PlanLimits holds every plan. Values match what GetPlansHandler advertises;
+// that is the public contract and the enforcement path must not quietly differ.
+var PlanLimits = map[string]Plan{
 	"free": {
-		MonthlyLimit: 100000,
-		PricePerCall: 0,
-		Features:     []string{"geocode", "search"},
+		Key:             "free",
+		Name:            "Free",
+		MonthlyLimit:    3000,
+		DailyLimit:      500,
+		PricePerCall:    0,
+		PriceMonthly:    0,
+		Features:        []string{"geocode", "search"},
+		DisplayFeatures: []string{"Basic geocoding", "City search", "Community support"},
 	},
 	"starter": {
-		MonthlyLimit: 10000,
-		PricePerCall: 0.001, // $0.001 per call
-		Features:     []string{"geocode", "search", "distance"},
+		Key:             "starter",
+		Name:            "Starter",
+		MonthlyLimit:    30000,
+		DailyLimit:      5000,
+		PricePerCall:    0.001, // $0.001 per call
+		PriceMonthly:    10,
+		Features:        []string{"geocode", "search", "distance"},
+		DisplayFeatures: []string{"All Free features", "Distance calculations", "Email support"},
 	},
 	"pro": {
-		MonthlyLimit: 100000,
-		PricePerCall: 0.0008,
-		Features:     []string{"geocode", "search", "distance", "bulk"},
+		Key:          "pro",
+		Name:         "Pro",
+		MonthlyLimit: 500000,
+		// 20,000/day is what the pricing endpoint has always advertised. The
+		// enforcement CASE said 100,000, which let a pro key burn the whole
+		// 500,000 monthly allowance in five days and made the daily cap
+		// useless as a burst guard. The advertised number wins.
+		DailyLimit:      20000,
+		PricePerCall:    0.0008,
+		PriceMonthly:    80,
+		Features:        []string{"geocode", "search", "distance", "bulk"},
+		DisplayFeatures: []string{"All Starter features", "Bulk operations", "Priority support", "SLA"},
 	},
 	"enterprise": {
-		MonthlyLimit: 1000000,
-		PricePerCall: 0.0005,
-		Features:     []string{"geocode", "search", "distance", "bulk", "priority"},
+		Key:             "enterprise",
+		Name:            "Enterprise",
+		MonthlyLimit:    Unlimited,
+		DailyLimit:      Unlimited,
+		PricePerCall:    0.0005,
+		PriceMonthly:    500,
+		Features:        []string{"geocode", "search", "distance", "bulk", "priority"},
+		DisplayFeatures: []string{"Unlimited usage", "All Pro features", "Custom integrations", "Dedicated support", "99.9% SLA"},
 	},
+}
+
+// PlanFor resolves a plan_type to its plan, falling back to free for an
+// unrecognised value. The SQL CASE this replaced ended in ELSE 3000 -- the free
+// monthly limit -- so an unknown plan_type has always been treated as free.
+// That behaviour is preserved deliberately: failing open would hand an
+// unlimited allowance to anyone with a typo in their plan_type.
+func PlanFor(planType string) Plan {
+	if p, ok := PlanLimits[planType]; ok {
+		return p
+	}
+	return PlanLimits["free"]
 }
