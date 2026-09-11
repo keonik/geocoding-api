@@ -110,6 +110,12 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	var selectFields []string
 	argIndex := 1
 	hasRelevanceScore := false
+	hasFuzzySimilarity := false
+	// Where the predicate's own parameters landed, so relevance can be scored
+	// on exactly what matched rather than on a parallel expression that is
+	// free to disagree with it.
+	tsQueryArg := 0
+	var fuzzyWordArgs []int
 
 	// queryWords outlives this block. The relevance score it feeds lives in the
 	// SELECT clause, and its parameters have to be numbered after every WHERE
@@ -150,11 +156,13 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 				for _, word := range queryWords {
 					conditions = append(conditions, fmt.Sprintf("$%d <%% full_address", argIndex))
 					args = append(args, word)
+					fuzzyWordArgs = append(fuzzyWordArgs, argIndex)
 					argIndex++
 				}
 			} else {
 				conditions = append(conditions, fmt.Sprintf("fts @@ to_tsquery('simple', $%d)", argIndex))
 				args = append(args, buildPrefixTSQuery(queryWords))
+				tsQueryArg = argIndex
 				argIndex++
 			}
 		}
@@ -209,34 +217,52 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	// to parse with "could not determine data type of parameter $1".
 	whereArgCount := len(args)
 
-	// Build relevance score for ranking results. These CASE arms are evaluated
-	// only for rows the index already matched, so the ILIKEs here cost nothing
-	// like they did in the WHERE clause.
-	if len(queryWords) > 0 {
-		var scoreComponents []string
-
-		for _, word := range queryWords {
-			wordPattern := "%" + word + "%"
-
-			// Score: full_address match gets highest priority, then specific fields
-			scoreComponents = append(scoreComponents, fmt.Sprintf(`
-				CASE 
-					WHEN full_address ILIKE $%d THEN 150
-					WHEN street ILIKE $%d THEN 100
-					WHEN (house_number || ' ' || street) ILIKE $%d THEN 90
-					WHEN house_number ILIKE $%d THEN 80
-					WHEN city ILIKE $%d THEN 60
-					WHEN postcode ILIKE $%d THEN 50
-					WHEN county ILIKE $%d THEN 30
-					ELSE 0
-				END`, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex, argIndex))
-
-			args = append(args, wordPattern)
-			argIndex++
-		}
-
-		selectFields = append(selectFields, "("+strings.Join(scoreComponents, " + ")+") as relevance_score")
+	// Relevance.
+	//
+	// This was a sum of CASE arms over ILIKE, and it was inert. The first arm
+	// tests `full_address ILIKE '%word%'` for 150, which is the maximum, and
+	// full_address already contains house number, street, unit, city, region
+	// and postcode. The prefix predicate runs over
+	// to_tsvector('simple', full_address), so every row it admits has every
+	// query word inside full_address: the 150 arm always fired, the lower arms
+	// were unreachable, and the score was the constant 150 x len(queryWords)
+	// for every row. Confirmed against seeded data -- exactly one distinct
+	// value across every hit. ORDER BY relevance_score DESC therefore sorted
+	// nothing and fell through to alphabetical, and any confidence derived
+	// from it was always 1.0.
+	//
+	// ts_rank_cd ranks on the same tsvector and the same tsquery the predicate
+	// used, so the score cannot disagree with what matched -- which also
+	// removes a second defect: the CASE interpolated the *raw* word while the
+	// predicate used the *sanitized* one, so a query with trailing punctuation
+	// scored 0 on a row it had correctly matched. Normalisation flag 32
+	// divides the rank by itself plus one, bounding it to 0..1 with no
+	// hand-maintained maximum to drift out of sync.
+	if len(queryWords) > 0 && tsQueryArg > 0 {
+		selectFields = append(selectFields,
+			fmt.Sprintf("ts_rank_cd(fts, to_tsquery('simple', $%d), 32) as relevance_score", tsQueryArg))
 		hasRelevanceScore = true
+	}
+
+	// The fuzzy predicate applies `word <% full_address` to each word
+	// independently, so the score has to aggregate the same way. Scoring the
+	// joined phrase instead looks for one contiguous ordered extent, and would
+	// report a confidence below the very threshold that admitted the row
+	// whenever the matched words sit apart or out of order.
+	//
+	// LEAST is the right aggregate for an AND: a row is only as trustworthy as
+	// its weakest matching word.
+	if len(fuzzyWordArgs) > 0 {
+		parts := make([]string, 0, len(fuzzyWordArgs))
+		for _, argPos := range fuzzyWordArgs {
+			parts = append(parts, fmt.Sprintf("word_similarity($%d, full_address)", argPos))
+		}
+		expr := parts[0]
+		if len(parts) > 1 {
+			expr = "LEAST(" + strings.Join(parts, ", ") + ")"
+		}
+		selectFields = append(selectFields, expr+" as fuzzy_similarity")
+		hasFuzzySimilarity = true
 	}
 
 	// Ordering. Distance ordering takes lat/lng as fresh parameters, numbered
@@ -263,6 +289,12 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 			) ASC, id`, argIndex, argIndex+1)
 		orderByArgs = append(orderByArgs, params.Lng, params.Lat)
 		argIndex += 2
+	} else if hasFuzzySimilarity {
+		// Fuzzy rows score 0 on relevance_score by construction, so ordering by
+		// it put the alphabetically-first county on top while the reported
+		// confidence rose and fell arbitrarily down the list. Order by the
+		// number actually being reported, so results[0] is the closest match.
+		orderBy = "ORDER BY fuzzy_similarity DESC, county, city, street, house_number, id"
 	} else if hasRelevanceScore {
 		// Order by relevance score (highest first)
 		orderBy = "ORDER BY relevance_score DESC, county, city, street, house_number, id"
@@ -337,7 +369,8 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	var addresses []models.OhioAddress
 	for rows.Next() {
 		var addr models.OhioAddress
-		var relevanceScore *int // May or may not be present
+		var relevanceScore *float64 // ts_rank_cd, already bounded 0..1
+		var fuzzySimilarity *float64
 		var rowTotal int
 
 		// Scan targets are assembled in the same order the SELECT list was
@@ -351,6 +384,9 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		if hasRelevanceScore {
 			dest = append(dest, &relevanceScore)
 		}
+		if hasFuzzySimilarity {
+			dest = append(dest, &fuzzySimilarity)
+		}
 		if useWindowCount {
 			dest = append(dest, &rowTotal)
 		}
@@ -363,6 +399,7 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		if useWindowCount {
 			total = rowTotal
 		}
+		addr.Match = buildMatch(fuzzy, params.Query, len(queryWords), relevanceScore, fuzzySimilarity)
 		addresses = append(addresses, addr)
 	}
 
@@ -1114,4 +1151,48 @@ func buildPrefixTSQuery(words []string) string {
 		}
 	}
 	return strings.Join(terms, " & ")
+}
+
+// buildMatch turns what the query already computed into something a caller can
+// act on.
+func buildMatch(fuzzy bool, queryText string, queryWords int, score, similarity *float64) *models.AddressMatch {
+	if queryWords == 0 {
+		// A query was supplied but every word was dropped as too short to
+		// yield a usable prefix term, so no text predicate was applied at all
+		// and these rows matched nothing in particular. Calling that "filter"
+		// would tell a caller they were looking at a deliberate structured
+		// result and invite them to trust it.
+		if strings.TrimSpace(queryText) != "" {
+			return &models.AddressMatch{Tier: models.MatchTierNone}
+		}
+		// Structured filters only. There is no text to have matched well or
+		// badly, so a confidence here would be invented.
+		return &models.AddressMatch{Tier: models.MatchTierFilter}
+	}
+
+	if fuzzy {
+		match := &models.AddressMatch{Tier: models.MatchTierFuzzy}
+		if similarity != nil {
+			c := clamp01(*similarity)
+			match.Confidence = &c
+		}
+		return match
+	}
+
+	match := &models.AddressMatch{Tier: models.MatchTierPrefix}
+	if score != nil {
+		c := clamp01(*score)
+		match.Confidence = &c
+	}
+	return match
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }

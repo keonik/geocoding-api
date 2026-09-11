@@ -1887,10 +1887,42 @@ components:
           type: integer
           example: 1
 
+    AddressMatch:
+      type: object
+      description: >-
+        Why a row was returned and how good the hit is. Present on results from
+        /addresses; absent on a lookup by id, where there is nothing to have
+        matched.
+      properties:
+        tier:
+          type: string
+          enum: [prefix, fuzzy, filter, none]
+          description: >-
+            Which pass produced the row. `prefix` - the full-text prefix index
+            matched every query word. `fuzzy` - only the trigram fallback
+            matched, so the query was misspelled or truncated. `filter` - no
+            text query; the row matched structured filters alone. `none` - a
+            text query was supplied but yielded no usable search terms, so
+            nothing was matched on.
+          example: prefix
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: >-
+            How good the hit is, within its tier. Absent for `filter` and
+            `none`, where there is no text to score against. Not comparable
+            across tiers: a fuzzy 0.9 is a strong typo match, not a better
+            answer than a prefix 0.7.
+          example: 0.0476
+
     OhioAddress:
       type: object
       description: Complete Ohio address information with geographic coordinates
       properties:
+        match:
+          $ref: '#/components/schemas/AddressMatch'
         id:
           type: integer
           description: Unique address identifier

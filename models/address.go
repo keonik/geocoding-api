@@ -20,7 +20,46 @@ type OhioAddress struct {
 	Latitude    float64   `json:"latitude" db:"latitude"`
 	Longitude   float64   `json:"longitude" db:"longitude"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+
+	// Match describes why this row was returned. Populated by the /addresses
+	// search path; absent on a lookup by id, where there is nothing to have
+	// matched, and absent on /addresses/search, which runs a different set of
+	// passes that do not yet report a tier.
+	Match *AddressMatch `json:"match,omitempty"`
 }
+
+// AddressMatch tells a caller how good a hit is, not just that it is a hit.
+//
+// Search already knew all of this -- which pass produced the row, and how well
+// it scored -- and threw it away, returning a flat list in which a typo rescue
+// that barely cleared the similarity threshold is indistinguishable from an
+// address that matched every word exactly. A caller matching addresses
+// automatically has to decide whether to accept a result, and that decision
+// needs this.
+type AddressMatch struct {
+	// Tier is which pass produced the row:
+	//
+	//	prefix  the full-text prefix index matched every query word
+	//	fuzzy   only the trigram fallback matched, so the query was misspelled
+	//	        or truncated
+	//	filter  no text query; the row matched structured filters alone
+	//	none    a text query was supplied but yielded no usable search terms,
+	//	        so nothing was matched on and these rows mean little
+	Tier string `json:"tier"`
+
+	// Confidence is 0..1 within the tier, and is absent when there is no text
+	// query to score against. It is not comparable across tiers: a fuzzy 0.9
+	// is a strong typo match, not a better answer than a prefix 0.7.
+	Confidence *float64 `json:"confidence,omitempty"`
+}
+
+// Match tiers.
+const (
+	MatchTierPrefix = "prefix"
+	MatchTierFuzzy  = "fuzzy"
+	MatchTierFilter = "filter"
+	MatchTierNone   = "none"
+)
 
 // AddressSearchParams represents search parameters for address queries
 type AddressSearchParams struct {
