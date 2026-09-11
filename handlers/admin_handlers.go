@@ -247,6 +247,34 @@ func UpdateUserAdminHandler(c echo.Context) error {
 }
 
 // GetSystemStatusHandler returns system health information
+// RebuildUsageCountersHandler recomputes the rate-limit counters from
+// usage_records for the current day and month.
+//
+// The counters are derived data: RecordUsage writes the audit row first and
+// then increments, so a counter can fall behind if that second write fails.
+// Nothing else ever recalculates it, which would make the drift permanent and
+// let a user quietly exceed their plan. This is the way back to the source of
+// truth, and without an endpoint it was unreachable.
+//
+// Admin-only, and safe to call at any time: it replaces the current periods
+// outright rather than adjusting them, and never writes usage_records.
+func RebuildUsageCountersHandler(c echo.Context) error {
+	if err := services.Auth.RebuildUsageCounters(); err != nil {
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
+			Success: false,
+			Error:   "Failed to rebuild usage counters",
+		})
+	}
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"rebuilt": []string{"day", "month"},
+			"message": "Usage counters recomputed from usage_records for the current day and month",
+		},
+	})
+}
+
 func GetSystemStatusHandler(c echo.Context) error {
 	status, err := services.Auth.GetSystemStatus()
 	if err != nil {

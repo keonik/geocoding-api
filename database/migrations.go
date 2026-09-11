@@ -149,6 +149,12 @@ func RunMigrations() error {
 			Up:          addZipCodeGeography,
 			Down:        removeZipCodeGeography,
 		},
+		{
+			Version:     22,
+			Description: "Add usage counters so rate limiting stops aggregating usage_records",
+			Up:          addUsageCounters,
+			Down:        removeUsageCounters,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1454,5 +1460,93 @@ func removeZipCodeGeography() error {
 		}
 	}
 
+	return nil
+}
+
+// addUsageCounters creates the running totals the rate limiter reads.
+//
+// Enforcement used to COUNT(*) over usage_records for the current month on
+// every authenticated request. That cost grows with the month: a user at
+// 500,000 calls is asking Postgres to walk 500,000 index entries to answer
+// "how many calls has this user made", once per request, all month, and the
+// answer is wrong a millisecond later anyway.
+//
+// A counter row is an index seek. usage_records stays exactly as it is -- it
+// is the audit and analytics log, and every usage endpoint still reads it.
+// This table is only the hot number.
+//
+// period_start is a date, and the two kinds are stored in one table rather
+// than two so a single upsert can maintain both.
+func addUsageCounters() error {
+	// One transaction, not four autocommit statements.
+	//
+	// CREATE TABLE committing on its own leaves a window where the table
+	// exists and is empty -- and enforcement reads it. Every user would read
+	// zero and collect a second full allowance, which is precisely what the
+	// backfill below exists to prevent. The failure case is worse: if a
+	// backfill errors, RunMigrations aborts without marking version 22
+	// applied, but the empty table persists, so limits stay disabled until
+	// some later boot succeeds.
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin usage counter migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS usage_counters (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			period_kind VARCHAR(5) NOT NULL CHECK (period_kind IN ('day', 'month')),
+			period_start DATE NOT NULL,
+			count BIGINT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (user_id, period_kind, period_start)
+		)`,
+		// Backfill the periods enforcement actually reads. Without this every
+		// user's month silently restarts at zero on deploy, handing out a
+		// second full allowance to anyone who had already spent theirs.
+		`INSERT INTO usage_counters (user_id, period_kind, period_start, count)
+		 SELECT user_id, 'month', date_trunc('month', CURRENT_DATE)::date, COUNT(*)
+		 FROM usage_records
+		 WHERE billable = true AND user_id IS NOT NULL
+		   AND created_at >= date_trunc('month', CURRENT_DATE)
+		 GROUP BY user_id
+		 ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
+		   SET count = EXCLUDED.count, updated_at = NOW()`,
+		`INSERT INTO usage_counters (user_id, period_kind, period_start, count)
+		 SELECT user_id, 'day', CURRENT_DATE, COUNT(*)
+		 FROM usage_records
+		 WHERE billable = true AND user_id IS NOT NULL
+		   AND created_at >= CURRENT_DATE
+		 GROUP BY user_id
+		 ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
+		   SET count = EXCLUDED.count, updated_at = NOW()`,
+		// Old periods are dead weight the moment the clock rolls over; nothing
+		// reads them, and usage_records holds the durable history. This index
+		// serves the purge in RebuildUsageCounters.
+		`CREATE INDEX IF NOT EXISTS idx_usage_counters_period_start
+			ON usage_counters(period_start)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to add usage counters: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit usage counter migration: %w", err)
+	}
+
+	log.Println("Migration 22: usage_counters created and backfilled for the current day and month")
+	return nil
+}
+
+// removeUsageCounters drops the table. usage_records is untouched by both
+// directions, so a rollback loses no history -- the counters rebuild from it.
+func removeUsageCounters() error {
+	if _, err := DB.Exec(`DROP TABLE IF EXISTS usage_counters`); err != nil {
+		return fmt.Errorf("failed to drop usage counters: %w", err)
+	}
 	return nil
 }
