@@ -38,6 +38,7 @@ func setupMultiStateDB(t *testing.T, keyedOnRegion bool) *sql.DB {
 
 	stmts := []string{
 		"CREATE EXTENSION IF NOT EXISTS postgis",
+		"CREATE EXTENSION IF NOT EXISTS pg_trgm",
 		fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", multiStateSchema),
 		fmt.Sprintf("CREATE SCHEMA %s", multiStateSchema),
 		fmt.Sprintf("SET search_path TO %s, public", multiStateSchema),
@@ -56,7 +57,15 @@ func setupMultiStateDB(t *testing.T, keyedOnRegion bool) *sql.DB {
 		stmts = append(stmts, "CREATE UNIQUE INDEX ON ohio_addresses (hash, region)",
 			"ALTER TABLE ohio_addresses ADD CONSTRAINT ohio_addresses_region_not_blank CHECK (region <> '')")
 	}
-	stmts = append(stmts, "CREATE INDEX ON ohio_addresses (region)")
+	stmts = append(stmts,
+		"CREATE INDEX ON ohio_addresses (region)",
+		// Text search runs against the generated tsvector, so a fixture without
+		// it cannot exercise a query combined with the territory filters.
+		`ALTER TABLE ohio_addresses ADD COLUMN fts tsvector
+			GENERATED ALWAYS AS (to_tsvector('simple', coalesce(full_address, ''))) STORED`,
+		"CREATE INDEX ON ohio_addresses USING gin (fts)",
+		"CREATE INDEX ON ohio_addresses USING gin (full_address gin_trgm_ops)",
+	)
 
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -286,4 +295,61 @@ func TestBlankRegionIsRejected(t *testing.T) {
 	if err == nil {
 		t.Error("an empty region was accepted; every stateless row would share one uniqueness bucket")
 	}
+}
+
+// State and territory filters arrived on separate branches and first met in a
+// merge. They share the hand-numbered placeholder sequence -- the bbox consumes
+// four positions -- so a mistake there binds the wrong value to the wrong
+// column and returns plausible rows from the wrong place.
+func TestStateAndBBoxComposeCorrectly(t *testing.T) {
+	db := setupMultiStateDB(t, true)
+	svc := NewAddressService(db)
+
+	// Same coordinates, two states, so only the state filter can separate them.
+	for _, row := range []struct{ house, county, region string }{
+		{"1", "Franklin", "OH"},
+		{"2", "Franklin", "OH"},
+		{"3", "Sangamon", "IL"},
+	} {
+		if _, err := insertAddress(db, row.house, "Main Street", "", "Springfield", "", row.county, row.region); err != nil {
+			t.Fatalf("seed %s: %v", row.region, err)
+		}
+	}
+
+	box := &models.BoundingBox{MinLng: -83.1, MinLat: 39.9, MaxLng: -82.9, MaxLat: 40.1}
+
+	_, boxOnly, err := svc.SearchAddresses(models.AddressSearchParams{BBox: box, Limit: 50})
+	if err != nil {
+		t.Fatalf("bbox only: %v", err)
+	}
+	if boxOnly != 3 {
+		t.Fatalf("bbox alone returned %d, want all 3 seeded rows", boxOnly)
+	}
+
+	rows, combined, err := svc.SearchAddresses(models.AddressSearchParams{
+		BBox: box, State: "OH", Limit: 50,
+	})
+	if err != nil {
+		t.Fatalf("bbox + state: %v", err)
+	}
+	if combined != 2 {
+		t.Errorf("bbox + state=OH returned %d, want 2; the placeholders may be misaligned", combined)
+	}
+	for _, r := range rows {
+		if r.Region != "OH" {
+			t.Errorf("%s is in %s despite state=OH", r.FullAddress, r.Region)
+		}
+	}
+
+	// And with a text query on top, which adds placeholders of its own.
+	_, withQuery, err := svc.SearchAddresses(models.AddressSearchParams{
+		BBox: box, State: "OH", Query: "Main", Limit: 50,
+	})
+	if err != nil {
+		t.Fatalf("bbox + state + query: %v", err)
+	}
+	if withQuery != 2 {
+		t.Errorf("bbox + state + query returned %d, want 2", withQuery)
+	}
+	t.Logf("bbox %d, +state %d, +query %d", boxOnly, combined, withQuery)
 }
