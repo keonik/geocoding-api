@@ -21,8 +21,10 @@ type OhioAddress struct {
 	Longitude   float64   `json:"longitude" db:"longitude"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 
-	// Match describes why this row was returned. Populated by search, absent
-	// on a direct lookup by id, where there is nothing to have matched.
+	// Match describes why this row was returned. Populated by the /addresses
+	// search path; absent on a lookup by id, where there is nothing to have
+	// matched, and absent on /addresses/search, which runs a different set of
+	// passes that do not yet report a tier.
 	Match *AddressMatch `json:"match,omitempty"`
 }
 
@@ -41,6 +43,8 @@ type AddressMatch struct {
 	//	fuzzy   only the trigram fallback matched, so the query was misspelled
 	//	        or truncated
 	//	filter  no text query; the row matched structured filters alone
+	//	none    a text query was supplied but yielded no usable search terms,
+	//	        so nothing was matched on and these rows mean little
 	Tier string `json:"tier"`
 
 	// Confidence is 0..1 within the tier, and is absent when there is no text
@@ -54,6 +58,7 @@ const (
 	MatchTierPrefix = "prefix"
 	MatchTierFuzzy  = "fuzzy"
 	MatchTierFilter = "filter"
+	MatchTierNone   = "none"
 )
 
 // AddressSearchParams represents search parameters for address queries
