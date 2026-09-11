@@ -296,6 +296,11 @@ func main() {
 	protected.Use(middleware.APIKeyAuth())
 	protected.Use(middleware.UsageHeader())
 
+	// What data the service actually holds. Answering this without it means
+	// querying a state and inferring from an empty result, which is
+	// indistinguishable from a broken query.
+	protected.GET("/coverage", handlers.GetCoverageHandler)
+
 	// Geocoding endpoints
 	protected.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
 	protected.GET("/search", handlers.SearchZipCodesHandler)
