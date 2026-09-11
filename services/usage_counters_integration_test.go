@@ -3,6 +3,7 @@ package services
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -23,34 +24,50 @@ func setupCounterDB(t *testing.T) *sql.DB {
 		t.Skip("PROBE_DSN not set")
 	}
 
-	db, err := sql.Open("postgres", dsn)
+	admin, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	// search_path is per-connection. The concurrency test below needs more
-	// than one connection, so the path is set on the database role instead of
-	// pinning the pool to a single connection.
-	if err := db.Ping(); err != nil {
+	// Closed in t.Cleanup, not deferred: a defer here runs when this function
+	// returns, which is before any registered cleanup, so the cleanup would
+	// find the handle already closed and silently fail to drop the schema.
+	if err := admin.Ping(); err != nil {
+		admin.Close()
 		t.Skipf("probe database unreachable: %v", err)
 	}
 
-	stmts := []string{
+	for _, stmt := range []string{
 		fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", counterSchema),
 		fmt.Sprintf("CREATE SCHEMA %s", counterSchema),
-		fmt.Sprintf("ALTER ROLE CURRENT_USER SET search_path TO %s, public", counterSchema),
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+	} {
+		if _, err := admin.Exec(stmt); err != nil {
 			t.Fatalf("setup failed on %.60q: %v", stmt, err)
 		}
 	}
-	db.Close()
 
-	// Reconnect so every pooled connection picks up the new search_path.
-	db, err = sql.Open("postgres", dsn)
+	// search_path travels in the connection string, so every connection the
+	// pool opens gets it and nothing outside this test is affected.
+	//
+	// The obvious alternative, ALTER ROLE ... SET search_path, is a trap: it
+	// is a persistent cluster-wide setting on the role, so it changes every
+	// future connection in every database -- the real application included --
+	// and a t.Fatalf before the reset runs leaves it that way for good.
+	// Pinning the pool to one connection is the other way, but the
+	// concurrency test below needs several.
+	scopedDSN, err := withSearchPathOption(dsn, counterSchema)
 	if err != nil {
-		t.Fatalf("reopen: %v", err)
+		t.Fatalf("build scoped dsn: %v", err)
 	}
+
+	db, err := sql.Open("postgres", scopedDSN)
+	if err != nil {
+		t.Fatalf("open scoped: %v", err)
+	}
+	// Bounded so the fan-out below cannot exhaust the server's connection
+	// slots. A "too many clients" failure inside RecordUsage is only logged,
+	// so it would surface as a bogus "increments were lost" failure pointing
+	// at a concurrency bug that is not there.
+	db.SetMaxOpenConns(10)
 
 	schema := []string{
 		`CREATE TABLE users (
@@ -106,11 +123,11 @@ func setupCounterDB(t *testing.T) *sql.DB {
 	database.DB = db
 	t.Cleanup(func() {
 		database.DB = prev
-		db.Exec("ALTER ROLE CURRENT_USER RESET search_path")
-		if _, err := db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", counterSchema)); err != nil {
+		db.Close()
+		if _, err := admin.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", counterSchema)); err != nil {
 			t.Logf("cleanup: %v", err)
 		}
-		db.Close()
+		admin.Close()
 	})
 
 	return db
@@ -289,5 +306,122 @@ func TestRebuildIsReachableFromTheAdminRoute(t *testing.T) {
 	idx := strings.Index(adminSection, `admin.POST("/usage-counters/rebuild"`)
 	if idx < 0 {
 		t.Fatal("rebuild route is not registered on the admin group")
+	}
+}
+
+// withSearchPathOption adds a libpq "options" parameter setting search_path,
+// so the schema scoping rides on each connection rather than on the role.
+func withSearchPathOption(dsn, schema string) (string, error) {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("options", fmt.Sprintf("-c search_path=%s,public", schema))
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// Migrations run asynchronously and the server serves immediately, so between
+// a deploy and migration 22 landing, usage_counters does not exist -- while
+// every authenticated request runs this query. Without a fallback the entire
+// metered API 500s for the length of the migration chain.
+func TestRateLimitSurvivesMissingCounterTable(t *testing.T) {
+	db := setupCounterDB(t)
+	userID := probeUserID(t, db)
+
+	for i := 0; i < 4; i++ {
+		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+
+	// Rewind to the pre-migration world.
+	if _, err := db.Exec("DROP TABLE usage_counters"); err != nil {
+		t.Fatalf("drop counters: %v", err)
+	}
+
+	status, err := Auth.CheckRateLimitStatus(userID)
+	if err != nil {
+		t.Fatalf("rate limit check failed with no counter table: %v", err)
+	}
+	// The fallback reads usage_records, which still holds all four calls.
+	if status.MonthlyUsage != 4 || status.DailyUsage != 4 {
+		t.Errorf("fallback reported month=%d day=%d, want 4/4", status.MonthlyUsage, status.DailyUsage)
+	}
+	if !status.Within {
+		t.Error("four calls is inside the free plan; request should not be rejected")
+	}
+}
+
+// An upsert-only rebuild can raise a counter but never lower one: a stale row
+// whose user has no billable records this period produces no row in the
+// SELECT, so ON CONFLICT never fires. That is exactly the case an operator
+// runs the rebuild for -- someone locked out at a limit they never reached.
+func TestRebuildCorrectsAnOverCountDownToZero(t *testing.T) {
+	db := setupCounterDB(t)
+	userID := probeUserID(t, db)
+
+	// A counter claiming usage that usage_records does not support.
+	if _, err := db.Exec(`
+		INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
+		VALUES ($1, 'month', date_trunc('month', CURRENT_DATE)::date, 99999, NOW()),
+		       ($1, 'day', CURRENT_DATE, 99999, NOW())
+	`, userID); err != nil {
+		t.Fatalf("seed over-count: %v", err)
+	}
+
+	status, err := Auth.CheckRateLimitStatus(userID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Within {
+		t.Fatal("setup failed: user should be locked out by the bogus counter")
+	}
+
+	if err := Auth.RebuildUsageCounters(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	if got := counterValue(t, db, userID, "month"); got != 0 {
+		t.Errorf("month counter = %d after rebuild, want 0 -- the rebuild cannot correct downwards", got)
+	}
+	status, err = Auth.CheckRateLimitStatus(userID)
+	if err != nil {
+		t.Fatalf("status after rebuild: %v", err)
+	}
+	if !status.Within {
+		t.Error("user is still locked out after a rebuild that should have cleared the bogus count")
+	}
+}
+
+// Nothing reads a period once the clock passes it, and usage_records keeps the
+// history. Without a purge the table grows by a row per user per active day
+// forever.
+func TestRebuildPrunesStalePeriods(t *testing.T) {
+	db := setupCounterDB(t)
+	userID := probeUserID(t, db)
+
+	if _, err := db.Exec(`
+		INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
+		VALUES ($1, 'month', (date_trunc('month', CURRENT_DATE) - interval '2 months')::date, 500, NOW()),
+		       ($1, 'day', CURRENT_DATE - 45, 20, NOW())
+	`, userID); err != nil {
+		t.Fatalf("seed old periods: %v", err)
+	}
+
+	if err := Auth.RebuildUsageCounters(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+
+	var stale int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM usage_counters
+		WHERE period_start < date_trunc('month', CURRENT_DATE)::date AND user_id = $1
+	`, userID).Scan(&stale); err != nil {
+		t.Fatalf("count stale: %v", err)
+	}
+	if stale != 0 {
+		t.Errorf("%d stale counter row(s) survived the rebuild", stale)
 	}
 }

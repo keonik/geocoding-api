@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"testing"
+	"time"
 
 	"geocoding-api/database"
 	"geocoding-api/models"
@@ -369,8 +370,19 @@ func TestUsageCountsAreScopedToTheUser(t *testing.T) {
 		t.Fatalf("CheckRateLimitStatus failed: %v", err)
 	}
 
-	if status.DailyUsage != 7 {
-		t.Errorf("daily usage = %d, want 7", status.DailyUsage)
+	// On the first of a month, date_trunc('month', CURRENT_DATE) IS today, so
+	// the row seeded as "earlier this month" also lands inside today and the
+	// daily count is 8 rather than 7. That is correct behaviour, not a bug --
+	// but asserting a bare 7 turns this test into a time bomb that fails one
+	// day in thirty.
+	firstOfMonth := time.Now().Day() == 1
+	wantDaily := 7
+	if firstOfMonth {
+		wantDaily = 8
+	}
+
+	if status.DailyUsage != wantDaily {
+		t.Errorf("daily usage = %d, want %d (first of month: %t)", status.DailyUsage, wantDaily, firstOfMonth)
 	}
 	if status.MonthlyUsage != 8 {
 		t.Errorf("monthly usage = %d, want 8 (7 today plus 1 earlier this month)", status.MonthlyUsage)

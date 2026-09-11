@@ -1478,6 +1478,21 @@ func removeZipCodeGeography() error {
 // period_start is a date, and the two kinds are stored in one table rather
 // than two so a single upsert can maintain both.
 func addUsageCounters() error {
+	// One transaction, not four autocommit statements.
+	//
+	// CREATE TABLE committing on its own leaves a window where the table
+	// exists and is empty -- and enforcement reads it. Every user would read
+	// zero and collect a second full allowance, which is precisely what the
+	// backfill below exists to prevent. The failure case is worse: if a
+	// backfill errors, RunMigrations aborts without marking version 22
+	// applied, but the empty table persists, so limits stay disabled until
+	// some later boot succeeds.
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin usage counter migration: %w", err)
+	}
+	defer tx.Rollback()
+
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS usage_counters (
 			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1493,27 +1508,34 @@ func addUsageCounters() error {
 		`INSERT INTO usage_counters (user_id, period_kind, period_start, count)
 		 SELECT user_id, 'month', date_trunc('month', CURRENT_DATE)::date, COUNT(*)
 		 FROM usage_records
-		 WHERE billable = true AND created_at >= date_trunc('month', CURRENT_DATE)
+		 WHERE billable = true AND user_id IS NOT NULL
+		   AND created_at >= date_trunc('month', CURRENT_DATE)
 		 GROUP BY user_id
 		 ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
 		   SET count = EXCLUDED.count, updated_at = NOW()`,
 		`INSERT INTO usage_counters (user_id, period_kind, period_start, count)
 		 SELECT user_id, 'day', CURRENT_DATE, COUNT(*)
 		 FROM usage_records
-		 WHERE billable = true AND created_at >= CURRENT_DATE
+		 WHERE billable = true AND user_id IS NOT NULL
+		   AND created_at >= CURRENT_DATE
 		 GROUP BY user_id
 		 ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
 		   SET count = EXCLUDED.count, updated_at = NOW()`,
 		// Old periods are dead weight the moment the clock rolls over; nothing
-		// reads them, and usage_records holds the durable history.
+		// reads them, and usage_records holds the durable history. This index
+		// serves the purge in RebuildUsageCounters.
 		`CREATE INDEX IF NOT EXISTS idx_usage_counters_period_start
 			ON usage_counters(period_start)`,
 	}
 
 	for _, stmt := range statements {
-		if _, err := DB.Exec(stmt); err != nil {
+		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("failed to add usage counters: %w", err)
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit usage counter migration: %w", err)
 	}
 
 	log.Println("Migration 22: usage_counters created and backfilled for the current day and month")

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -393,21 +394,25 @@ func (as *AuthService) CheckRateLimitStatus(userID int) (*RateLimitStatus, error
 	// who has not called this month. The reset boundaries stay in SQL so they
 	// resolve against the same clock the period_start values were written
 	// with.
-	err = database.DB.QueryRow(`
-		SELECT
-			COALESCE(MAX(count) FILTER (WHERE period_kind = 'month'), 0),
-			COALESCE(MAX(count) FILTER (WHERE period_kind = 'day'), 0),
-			(date_trunc('month', CURRENT_DATE) + interval '1 month')::timestamptz,
-			(CURRENT_DATE + interval '1 day')::timestamptz
-		FROM usage_counters
-		WHERE user_id = $1
-		  AND (
-			(period_kind = 'month' AND period_start = date_trunc('month', CURRENT_DATE)::date)
-			OR (period_kind = 'day' AND period_start = CURRENT_DATE)
-		  )
-	`, userID).Scan(&status.MonthlyUsage, &status.DailyUsage, &status.MonthlyReset, &status.DailyReset)
+	err = database.DB.QueryRow(counterUsageQuery, userID).
+		Scan(&status.MonthlyUsage, &status.DailyUsage, &status.MonthlyReset, &status.DailyReset)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get usage count: %w", err)
+		if !isUndefinedTable(err) {
+			return nil, fmt.Errorf("failed to get usage count: %w", err)
+		}
+		// usage_counters does not exist yet. Migrations run asynchronously by
+		// default (main.go) and the server serves immediately, so between a
+		// deploy and migration 22 landing this table is absent -- and every
+		// authenticated request runs this query. Failing here would 500 the
+		// entire metered API for the length of the migration chain.
+		//
+		// Fall back to the aggregate this replaced. Same numbers, the old
+		// cost, for the minute or two it is needed.
+		err = database.DB.QueryRow(aggregateUsageQuery, userID).
+			Scan(&status.MonthlyUsage, &status.DailyUsage, &status.MonthlyReset, &status.DailyReset)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get usage count: %w", err)
+		}
 	}
 
 	status.Exceeded = exceededScope(status.MonthlyUsage, status.MonthlyLimit, status.DailyUsage, status.DailyLimit)
@@ -628,29 +633,89 @@ func (as *AuthService) incrementUsageCounters(userID int) error {
 // Safe to run at any time: it replaces the current periods outright rather
 // than adjusting them, and usage_records is never written by this path.
 func (as *AuthService) RebuildUsageCounters() error {
+	tx, err := database.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin usage counter rebuild: %w", err)
+	}
+	defer tx.Rollback()
+
 	statements := []string{
+		// Clear the current periods first. An upsert alone can only correct a
+		// counter that is too low: a stale row whose user has no billable
+		// records in this period produces no row in the SELECT, so ON CONFLICT
+		// never fires and the wrong value survives. That is the exact case an
+		// operator runs this for -- a user locked out at a limit they did not
+		// reach -- and it would have silently done nothing.
+		`DELETE FROM usage_counters
+		 WHERE (period_kind = 'month' AND period_start = date_trunc('month', CURRENT_DATE)::date)
+		    OR (period_kind = 'day' AND period_start = CURRENT_DATE)`,
 		`INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
 		 SELECT user_id, 'month', date_trunc('month', CURRENT_DATE)::date, COUNT(*), NOW()
 		 FROM usage_records
-		 WHERE billable = true AND created_at >= date_trunc('month', CURRENT_DATE)
-		 GROUP BY user_id
-		 ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
-		   SET count = EXCLUDED.count, updated_at = NOW()`,
+		 WHERE billable = true AND user_id IS NOT NULL
+		   AND created_at >= date_trunc('month', CURRENT_DATE)
+		 GROUP BY user_id`,
 		`INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
 		 SELECT user_id, 'day', CURRENT_DATE, COUNT(*), NOW()
 		 FROM usage_records
-		 WHERE billable = true AND created_at >= CURRENT_DATE
-		 GROUP BY user_id
-		 ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
-		   SET count = EXCLUDED.count, updated_at = NOW()`,
+		 WHERE billable = true AND user_id IS NOT NULL
+		   AND created_at >= CURRENT_DATE
+		 GROUP BY user_id`,
+		// Nothing reads a period once the clock has rolled past it, and
+		// usage_records holds the durable history. Without this the table grows
+		// by a row per user per active day forever and the period_start index
+		// is pure upkeep on the hot upsert path.
+		`DELETE FROM usage_counters
+		 WHERE period_start < date_trunc('month', CURRENT_DATE)::date`,
 	}
 
 	for _, stmt := range statements {
-		if _, err := database.DB.Exec(stmt); err != nil {
+		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("failed to rebuild usage counters: %w", err)
 		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit usage counter rebuild: %w", err)
+	}
 	return nil
+}
+
+// counterUsageQuery reads the two counter rows enforcement needs.
+const counterUsageQuery = `
+	SELECT
+		COALESCE(MAX(count) FILTER (WHERE period_kind = 'month'), 0),
+		COALESCE(MAX(count) FILTER (WHERE period_kind = 'day'), 0),
+		(date_trunc('month', CURRENT_DATE) + interval '1 month')::timestamptz,
+		(CURRENT_DATE + interval '1 day')::timestamptz
+	FROM usage_counters
+	WHERE user_id = $1
+	  AND (
+		(period_kind = 'month' AND period_start = date_trunc('month', CURRENT_DATE)::date)
+		OR (period_kind = 'day' AND period_start = CURRENT_DATE)
+	  )`
+
+// aggregateUsageQuery is the pre-counter implementation, kept as the fallback
+// for the window before migration 22 has run. It must keep returning exactly
+// what counterUsageQuery does.
+const aggregateUsageQuery = `
+	SELECT
+		COUNT(*),
+		COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE),
+		(date_trunc('month', CURRENT_DATE) + interval '1 month')::timestamptz,
+		(CURRENT_DATE + interval '1 day')::timestamptz
+	FROM usage_records
+	WHERE user_id = $1 AND billable = true
+	  AND created_at >= date_trunc('month', CURRENT_DATE)`
+
+// isUndefinedTable reports whether err is Postgres 42P01, raised when a
+// referenced relation does not exist.
+func isUndefinedTable(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "42P01"
+	}
+	return false
 }
 
 // IsUserAdmin checks if a user has admin privileges
