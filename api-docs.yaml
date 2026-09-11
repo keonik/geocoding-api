@@ -555,6 +555,28 @@ paths:
             type: number
             format: double
             example: -82.9988
+        - name: bbox
+          in: query
+          required: false
+          description: >-
+            Restrict results to a rectangle, given as minLng,minLat,maxLng,maxLat.
+            Longitude first, matching GeoJSON and every mapping library, so a map
+            viewport can be passed straight through. A reversed or malformed box
+            is rejected with 400 rather than silently widening the search.
+          schema:
+            type: string
+          example: "-83.1,39.9,-82.9,40.1"
+        - name: polygon
+          in: query
+          required: false
+          description: >-
+            Restrict results to an arbitrary GeoJSON Polygon, for territories a
+            rectangle cannot express - a sales area, a delivery zone, a canvassing
+            route. The ring must be closed, with the last position repeating the
+            first.
+          schema:
+            type: string
+          example: '{"type":"Polygon","coordinates":[[[-83.1,39.9],[-82.9,39.9],[-82.9,40.1],[-83.1,40.1],[-83.1,39.9]]]}'
         - name: radius
           in: query
           required: false

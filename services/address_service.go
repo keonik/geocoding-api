@@ -168,6 +168,27 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		}
 	}
 
+	// Bounding box.
+	if params.BBox != nil {
+		conditions = append(conditions, fmt.Sprintf(BBoxPredicateSQL,
+			argIndex, argIndex+1, argIndex+2, argIndex+3))
+		args = append(args, params.BBox.MinLng, params.BBox.MinLat, params.BBox.MaxLng, params.BBox.MaxLat)
+		argIndex += 4
+	}
+
+	// Arbitrary polygon. ST_Intersects is index-assisted: the planner uses &&
+	// against the GIST index to shortlist candidates, then tests each one
+	// exactly. A territory is rarely a rectangle, and approximating one with a
+	// bbox pulls in everything in the corners.
+	//
+	// ST_GeomFromGeoJSON raises on malformed input, so the shape is validated
+	// in the handler and never reaches here unchecked.
+	if params.Polygon != "" {
+		conditions = append(conditions, fmt.Sprintf(PolygonPredicateSQL, argIndex))
+		args = append(args, params.Polygon)
+		argIndex++
+	}
+
 	// County filter
 	if params.County != "" {
 		conditions = append(conditions, fmt.Sprintf("county ILIKE $%d", argIndex))
@@ -1196,3 +1217,22 @@ func clamp01(v float64) float64 {
 	}
 	return v
 }
+
+// BBoxPredicateSQL and PolygonPredicateSQL are the spatial filters, exported so
+// a test can EXPLAIN the same text the builder emits. Asserting against a
+// hand-copied duplicate would keep passing after the real predicate changed to
+// a non-indexable shape, which is the regression the assertion exists to catch.
+//
+// ST_Intersects rather than the && operator, deliberately. && compares BOX2DF
+// values, which are float4 and rounded outward -- at Ohio longitudes one ULP is
+// about 0.7 m, so && returns points up to that far OUTSIDE the rectangle.
+// Verified: a point at lng -82.8999995 against a box ending at -82.9 gives
+// `&& = true`, `ST_Intersects = false`. A client tiling a territory into
+// adjacent boxes would double-count every address within 0.7 m of a shared
+// edge. ST_Intersects still uses the GIST index to shortlist, then tests each
+// candidate exactly, which is what county_service.go already does for the same
+// job.
+const (
+	BBoxPredicateSQL    = "ST_Intersects(geom, ST_MakeEnvelope($%d, $%d, $%d, $%d, 4326))"
+	PolygonPredicateSQL = "ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($%d), 4326))"
+)

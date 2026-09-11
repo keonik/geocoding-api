@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
-	"geocoding-api/models"
-	"geocoding-api/services"
+	"math"
 	"net/http"
 	"strconv"
+
+	"geocoding-api/models"
+	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
 )
@@ -36,6 +39,33 @@ func SearchOhioAddressesHandler(c echo.Context) error {
 		if val, err := strconv.ParseFloat(radius, 64); err == nil {
 			params.Radius = val
 		}
+	}
+
+	// Territory filters. Unlike the numeric parameters above, a malformed
+	// value here is reported rather than ignored: silently dropping a bbox
+	// widens the search to the whole state, and a caller asking for one
+	// neighbourhood would get 50 arbitrary rows back and no indication why.
+	if raw := c.QueryParam("bbox"); raw != "" {
+		box, err := models.ParseBBox(raw)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+				"example": "bbox=-83.1,39.9,-82.9,40.1",
+			})
+		}
+		params.BBox = box
+	}
+
+	if raw := c.QueryParam("polygon"); raw != "" {
+		if err := validateGeoJSONPolygon(raw); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+				"example": `polygon={"type":"Polygon","coordinates":[[[-83.1,39.9],[-82.9,39.9],[-82.9,40.1],[-83.1,40.1],[-83.1,39.9]]]}`,
+			})
+		}
+		params.Polygon = raw
 	}
 	if limit := c.QueryParam("limit"); limit != "" {
 		if val, err := strconv.Atoi(limit); err == nil {
@@ -79,6 +109,15 @@ func SearchOhioAddressesHandler(c echo.Context) error {
 		if params.Radius > 0 {
 			filters["radius_km"] = params.Radius
 		}
+	}
+	if params.BBox != nil {
+		filters["bbox"] = params.BBox
+	}
+	if params.Polygon != "" {
+		// Echoed as a flag, not as the shape. A territory polygon can run to
+		// hundreds of vertices, and repeating it would dwarf the results the
+		// caller asked for.
+		filters["polygon"] = true
 	}
 
 	return c.JSON(http.StatusOK, models.AddressSearchResponse{
@@ -189,3 +228,97 @@ func FullTextSearchAddressesHandler(c echo.Context) error {
 
 	return c.JSON(http.StatusOK, response)
 }
+
+// validateGeoJSONPolygon checks the shape before it reaches PostGIS.
+//
+// ST_GeomFromGeoJSON raises on malformed input, which would surface as a 500
+// on a request that is simply wrong -- a caller's typo should not look like a
+// server fault. Checking here also keeps the error specific: "not a Polygon"
+// is actionable, "failed to search addresses" is not.
+func validateGeoJSONPolygon(raw string) error {
+	// Read the type before the coordinates. Decoding both at once makes a
+	// Point fail on its coordinates -- "cannot unmarshal number into
+	// .coordinates.0 of type [][]float64" -- which tells the caller nothing
+	// about the actual problem, that they sent the wrong geometry.
+	var header struct {
+		Type        string          `json:"type"`
+		Coordinates json.RawMessage `json:"coordinates"`
+	}
+	if err := json.Unmarshal([]byte(raw), &header); err != nil {
+		return fmt.Errorf("polygon is not valid GeoJSON: %v", err)
+	}
+
+	switch header.Type {
+	case "Polygon":
+	case "":
+		return fmt.Errorf(`polygon is missing its "type" field; expected {"type":"Polygon","coordinates":[...]}`)
+	default:
+		return fmt.Errorf("polygon type is %q; only Polygon is supported", header.Type)
+	}
+
+	var shape struct {
+		Coordinates [][][]float64
+	}
+	if err := json.Unmarshal(header.Coordinates, &shape.Coordinates); err != nil {
+		return fmt.Errorf("polygon coordinates are not an array of rings: %v", err)
+	}
+
+	if len(shape.Coordinates) == 0 {
+		return fmt.Errorf("polygon has no rings")
+	}
+
+	// Every ring, not just the exterior one. A Polygon whose first ring is
+	// well-formed but whose hole is short or unclosed would otherwise pass
+	// here and be rejected by GEOS inside ST_Intersects -- surfacing as a 500
+	// on a request that is merely wrong, which is the outcome this function
+	// exists to prevent.
+	total := 0
+	for r, ring := range shape.Coordinates {
+		where := "exterior ring"
+		if r > 0 {
+			where = fmt.Sprintf("hole %d", r)
+		}
+
+		if len(ring) < 4 {
+			return fmt.Errorf("%s needs at least 4 positions (the last repeating the first), got %d", where, len(ring))
+		}
+		total += len(ring)
+
+		first, last := ring[0], ring[len(ring)-1]
+		if len(first) < 2 || len(last) < 2 {
+			return fmt.Errorf("each position in the %s needs at least a longitude and a latitude", where)
+		}
+		if first[0] != last[0] || first[1] != last[1] {
+			return fmt.Errorf("%s is not closed: the last position must repeat the first", where)
+		}
+
+		for i, pos := range ring {
+			if len(pos) < 2 {
+				return fmt.Errorf("%s position %d is missing a coordinate", where, i)
+			}
+			if math.IsNaN(pos[0]) || math.IsNaN(pos[1]) || math.IsInf(pos[0], 0) || math.IsInf(pos[1], 0) {
+				return fmt.Errorf("%s position %d is not a finite coordinate", where, i)
+			}
+			if pos[0] < -180 || pos[0] > 180 {
+				return fmt.Errorf("%s position %d has longitude %g outside -180..180 (GeoJSON is longitude first)", where, i, pos[0])
+			}
+			if pos[1] < -90 || pos[1] > 90 {
+				return fmt.Errorf("%s position %d has latitude %g outside -90..90 (GeoJSON is longitude first)", where, i, pos[1])
+			}
+		}
+	}
+
+	// An exact point-in-polygon test runs per candidate row, so cost scales
+	// with vertices as well as with rows. A shape traced off a map can carry
+	// tens of thousands of them; bounding it keeps one request from costing
+	// seconds.
+	if total > maxPolygonVertices {
+		return fmt.Errorf("polygon has %d positions, more than the %d allowed; simplify the shape first",
+			total, maxPolygonVertices)
+	}
+
+	return nil
+}
+
+// maxPolygonVertices bounds how detailed a territory may be.
+const maxPolygonVertices = 1000
