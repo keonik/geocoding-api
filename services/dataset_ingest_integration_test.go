@@ -124,6 +124,15 @@ func setupIngestSchema(t *testing.T, db *sql.DB) {
 		// state, so a global unique constraint silently dropped a second
 		// state's rows and reported them as duplicates.
 		"CREATE UNIQUE INDEX ON ohio_addresses (hash, region)",
+		// NOT NULL does not stop an empty string, and '' would put every
+		// stateless row in one bucket. Without the CHECK here, that case passes
+		// in the suite and fails in production.
+		"ALTER TABLE ohio_addresses ADD CONSTRAINT ohio_addresses_region_not_blank CHECK (region <> '')",
+		// ProcessGeoJSONDataset refuses to run until migrations have reached
+		// the version whose index its ON CONFLICT needs, so the fixture has to
+		// carry the same record production does.
+		"CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW())",
+		"INSERT INTO schema_migrations (version) VALUES (23) ON CONFLICT DO NOTHING",
 		`CREATE OR REPLACE FUNCTION update_full_address()
 		RETURNS TRIGGER AS $$
 		BEGIN

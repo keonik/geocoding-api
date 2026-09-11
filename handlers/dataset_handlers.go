@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"geocoding-api/utils"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -56,6 +57,14 @@ func UploadDatasetHandler(c echo.Context) error {
 	// Get form values
 	name := c.FormValue("name")
 	state := c.FormValue("state")
+	normalizedState, stateErr := validateStateCode(state)
+	if stateErr != nil {
+		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+			Success: false,
+			Error:   stateErr.Error(),
+		})
+	}
+	state = normalizedState
 	county := c.FormValue("county")
 
 	if name == "" || state == "" || county == "" {
@@ -149,6 +158,14 @@ func UploadMultipleHandler(c echo.Context) error {
 
 	// Get form values
 	state := c.FormValue("state")
+	normalizedState, stateErr := validateStateCode(state)
+	if stateErr != nil {
+		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+			Success: false,
+			Error:   stateErr.Error(),
+		})
+	}
+	state = normalizedState
 	fmt.Printf("[BulkUpload] State: %s\n", state)
 
 	if state == "" {
@@ -322,6 +339,14 @@ func UploadMultipleStreamHandler(c echo.Context) error {
 
 	// Get form values
 	state := c.FormValue("state")
+	normalizedState, stateErr := validateStateCode(state)
+	if stateErr != nil {
+		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+			Success: false,
+			Error:   stateErr.Error(),
+		})
+	}
+	state = normalizedState
 	if state == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
 			"success": false,
@@ -831,4 +856,24 @@ func GetDatasetStatsHandler(c echo.Context) error {
 		"success": true,
 		"data":    stats,
 	})
+}
+
+// validateStateCode rejects anything that is not a real two-letter US state
+// code, and returns the canonical upper-case form.
+//
+// region is half the address uniqueness key as of migration 23. An operator
+// typing "HO" instead of "OH" now creates a separate dedup bucket: the import
+// succeeds green, and re-uploading the same counties under the correct code
+// inserts a second full copy of every row rather than being deduplicated.
+// Before that migration the global hash absorbed the typo; now it cannot, so
+// the code has to be checked rather than merely upper-cased.
+func validateStateCode(raw string) (string, error) {
+	code := strings.ToUpper(strings.TrimSpace(raw))
+	if code == "" {
+		return "", fmt.Errorf("state is required")
+	}
+	if !utils.IsUSStateCode(code) {
+		return "", fmt.Errorf("state must be a two-letter US state code, got %q", raw)
+	}
+	return code, nil
 }

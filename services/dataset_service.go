@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"geocoding-api/database"
 	"io"
 	"log"
 	"os"
@@ -323,6 +324,14 @@ const addressProgressInterval = 25000
 // are inserted in batches. A 500k-address county extract used to mean 500k
 // round trips and a 500k-element slice resident in memory.
 func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
+	// The batched insert below uses ON CONFLICT (hash, region), whose index
+	// migration 23 creates. Migrations run asynchronously, so without this a
+	// deploy-window import fails every batch and marks the dataset failed --
+	// indistinguishable from a corrupt file.
+	if err := database.RequireSchemaVersion(s.db, database.SchemaVersionRegionUniqueness); err != nil {
+		return fmt.Errorf("cannot import addresses yet: %w", err)
+	}
+
 	dataset, err := s.GetDatasetByID(datasetID)
 	if err != nil {
 		return fmt.Errorf("failed to get dataset: %w", err)

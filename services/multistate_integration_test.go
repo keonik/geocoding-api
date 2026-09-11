@@ -53,7 +53,8 @@ func setupMultiStateDB(t *testing.T, keyedOnRegion bool) *sql.DB {
 		)`, unique),
 	}
 	if keyedOnRegion {
-		stmts = append(stmts, "CREATE UNIQUE INDEX ON ohio_addresses (hash, region)")
+		stmts = append(stmts, "CREATE UNIQUE INDEX ON ohio_addresses (hash, region)",
+			"ALTER TABLE ohio_addresses ADD CONSTRAINT ohio_addresses_region_not_blank CHECK (region <> '')")
 	}
 	stmts = append(stmts, "CREATE INDEX ON ohio_addresses (region)")
 
@@ -228,5 +229,61 @@ func TestStateFilterIsCaseInsensitive(t *testing.T) {
 		if total != 1 {
 			t.Errorf("state %q returned %d rows, want 1", code, total)
 		}
+	}
+}
+
+// The geocoding path parsed a state out of the query and threw it away. Once a
+// second state is loaded, "100 Main St, Springfield, IL" matched the Ohio row
+// on street and city and came back at full confidence -- the exact collision
+// this whole change exists to prevent, on the endpoint that matters most.
+func TestGeocodingRespectsTheStateInTheQuery(t *testing.T) {
+	db := setupMultiStateDB(t, true)
+	svc := NewAddressService(db)
+
+	if _, err := insertAddress(db, "100", "Main Street", "", "Springfield", "45503", "Clark", "OH"); err != nil {
+		t.Fatalf("seed OH: %v", err)
+	}
+	if _, err := insertAddress(db, "100", "Main Street", "", "Springfield", "62701", "Sangamon", "IL"); err != nil {
+		t.Fatalf("seed IL: %v", err)
+	}
+
+	result, err := svc.FullTextSearchAddresses("100 Main St, Springfield, IL", 10)
+	if err != nil {
+		t.Fatalf("geocode: %v", err)
+	}
+	if len(result.Addresses) == 0 {
+		t.Fatal("no match for an address that exists")
+	}
+	for _, a := range result.Addresses {
+		if a.Region != "IL" {
+			t.Errorf("query named IL but %s in %s came back", a.FullAddress, a.Region)
+		}
+	}
+	t.Logf("query named IL, got %d row(s), all in IL", len(result.Addresses))
+
+	// And the same query for Ohio must return the Ohio row, not the Illinois
+	// one -- the filter has to select, not merely exclude.
+	result, err = svc.FullTextSearchAddresses("100 Main St, Springfield, OH", 10)
+	if err != nil {
+		t.Fatalf("geocode OH: %v", err)
+	}
+	for _, a := range result.Addresses {
+		if a.Region != "OH" {
+			t.Errorf("query named OH but %s in %s came back", a.FullAddress, a.Region)
+		}
+	}
+}
+
+// A blank region would put every stateless row into one uniqueness bucket,
+// reintroducing the collision for any dataset uploaded without a state.
+func TestBlankRegionIsRejected(t *testing.T) {
+	db := setupMultiStateDB(t, true)
+
+	_, err := db.Exec(`
+		INSERT INTO ohio_addresses (hash, house_number, street, unit, city, district, region, postcode, county, geom)
+		VALUES ('blank','1','Main Street','','Columbus','','','43004','Franklin', ST_SetSRID(ST_MakePoint(-83.0,40.0),4326))
+	`)
+	if err == nil {
+		t.Error("an empty region was accepted; every stateless row would share one uniqueness bucket")
 	}
 }

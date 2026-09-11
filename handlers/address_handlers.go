@@ -6,6 +6,7 @@ import (
 	"geocoding-api/services"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 )
@@ -16,7 +17,19 @@ func SearchOhioAddressesHandler(c echo.Context) error {
 
 	// Manually parse query parameters (Echo's Bind doesn't always work for query params)
 	params.Query = c.QueryParam("query")
-	params.State = c.QueryParam("state")
+	if raw := strings.TrimSpace(c.QueryParam("state")); raw != "" {
+		// Without this, ?state=Ohio and ?state=%20 both return an empty page
+		// with no explanation, because neither matches a two-letter region.
+		code, err := validateStateCode(raw)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]interface{}{
+				"success": false,
+				"error":   err.Error(),
+				"example": "state=OH",
+			})
+		}
+		params.State = code
+	}
 	params.County = c.QueryParam("county")
 	params.City = c.QueryParam("city")
 	params.Postcode = c.QueryParam("postcode")
