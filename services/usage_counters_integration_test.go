@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -259,5 +260,34 @@ func TestRebuildCorrectsDrift(t *testing.T) {
 	}
 	if got := counterValue(t, db, userID, "day"); got != 5 {
 		t.Errorf("after rebuild day counter = %d, want 5", got)
+	}
+}
+
+// The rebuild is only a safety net if something can actually call it. It was
+// unreachable when first written -- exported, tested, and wired to nothing --
+// which would have left counter drift permanent in production.
+func TestRebuildIsReachableFromTheAdminRoute(t *testing.T) {
+	routes, err := os.ReadFile("../main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if !strings.Contains(string(routes), "handlers.RebuildUsageCountersHandler") {
+		t.Error("RebuildUsageCounters has no route; counter drift would be uncorrectable")
+	}
+
+	handler, err := os.ReadFile("../handlers/admin_handlers.go")
+	if err != nil {
+		t.Fatalf("read admin_handlers.go: %v", err)
+	}
+	if !strings.Contains(string(handler), "func RebuildUsageCountersHandler") {
+		t.Error("the route names a handler that does not exist")
+	}
+
+	// It must sit on the admin group. Rebuilding recomputes every user's
+	// counters, so an ordinary caller must not be able to trigger it.
+	adminSection := string(routes)
+	idx := strings.Index(adminSection, `admin.POST("/usage-counters/rebuild"`)
+	if idx < 0 {
+		t.Fatal("rebuild route is not registered on the admin group")
 	}
 }
