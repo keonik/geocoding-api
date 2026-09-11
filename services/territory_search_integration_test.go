@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -90,14 +91,37 @@ func TestPolygonExcludesWhatItsBoundingBoxWouldInclude(t *testing.T) {
 	if polyTotal == 0 {
 		t.Fatal("the band follows the fixture's diagonal and should contain its points")
 	}
-	if polyTotal >= boxTotal {
-		t.Errorf("polygon returned %d and its bounding box %d; the polygon is not narrowing anything",
-			polyTotal, boxTotal)
-	}
+
+	// Assert on what the polygon excluded, not on a total that happens to be
+	// one smaller. The band's true bounding box is slightly wider than `box`,
+	// so it picks up a diagonal point `box` misses -- comparing totals cleared
+	// by a single row, and any fixture change would have flipped it into a
+	// failure claiming the polygon was not narrowing anything when it was.
+	var offLine int
 	for _, r := range rows {
 		if r.Street == "Off Line Road" {
+			offLine++
 			t.Errorf("%s sits off the band and should have been excluded", r.FullAddress)
 		}
+	}
+
+	// The two seeded points are inside the rectangle by construction, so the
+	// rectangle must return them and the band must not.
+	boxRows, _, err := svc.SearchAddresses(models.AddressSearchParams{BBox: box, Limit: 500})
+	if err != nil {
+		t.Fatalf("bbox rows: %v", err)
+	}
+	var offLineInBox int
+	for _, r := range boxRows {
+		if r.Street == "Off Line Road" {
+			offLineInBox++
+		}
+	}
+	if offLineInBox != 2 {
+		t.Errorf("the rectangle returned %d off-diagonal points, want 2 -- the fixture no longer sets up the contrast", offLineInBox)
+	}
+	if offLine != 0 {
+		t.Errorf("the polygon returned %d off-diagonal points, want 0", offLine)
 	}
 }
 
@@ -191,12 +215,20 @@ func TestTerritorySearchCanUseTheSpatialIndex(t *testing.T) {
 	}
 	defer db.Exec("SET enable_seqscan = on")
 
+	// Built from the same constants the query builder uses, so changing the
+	// predicate to a non-indexable shape fails here instead of quietly passing
+	// against a stale hand-copied duplicate.
+	bbox := fmt.Sprintf(strings.NewReplacer("$%d", "%s").Replace(BBoxPredicateSQL),
+		"-84.1", "39.0", "-84.0", "39.1")
+	polygon := fmt.Sprintf(strings.NewReplacer("$%d", "%s").Replace(PolygonPredicateSQL),
+		`'{"type":"Polygon","coordinates":[[[-84.1,39.0],[-84.0,39.0],[-84.0,39.1],[-84.1,39.1],[-84.1,39.0]]]}'`)
+
 	for _, tc := range []struct {
 		name  string
 		where string
 	}{
-		{"bbox", "geom && ST_MakeEnvelope(-84.1, 39.0, -84.0, 39.1, 4326)"},
-		{"polygon", `ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON('{"type":"Polygon","coordinates":[[[-84.1,39.0],[-84.0,39.0],[-84.0,39.1],[-84.1,39.1],[-84.1,39.0]]]}'), 4326))`},
+		{"bbox", bbox},
+		{"polygon", polygon},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rows, err := db.Query("EXPLAIN SELECT id FROM ohio_addresses WHERE " + tc.where)
@@ -221,5 +253,64 @@ func TestTerritorySearchCanUseTheSpatialIndex(t *testing.T) {
 			}
 			t.Logf("%s plan: %s", tc.name, strings.TrimSpace(plan.String()))
 		})
+	}
+}
+
+// NaN passes every range comparison, because comparisons against NaN are all
+// false. Before this was caught, bbox=NaN,39.9,-82.9,40.1 parsed cleanly and
+// flowed into ST_MakeEnvelope -- an empty 200 or a 500, which is the exact
+// silent failure the validation exists to prevent.
+func TestBBoxRejectsNonFiniteValues(t *testing.T) {
+	for _, raw := range []string{
+		"NaN,39.9,-82.9,40.1",
+		"-83.1,nan,-82.9,40.1",
+		"Inf,39.9,-82.9,40.1",
+		"-83.1,39.9,-Inf,40.1",
+	} {
+		if box, err := models.ParseBBox(raw); err == nil {
+			t.Errorf("%q was accepted as %+v; it slips past every range check", raw, box)
+		}
+	}
+}
+
+// Exact containment matters for anyone tiling a territory into adjacent boxes:
+// the && operator compares float4 bounding boxes rounded outward, so it
+// returns points up to ~0.7m outside the rectangle and every address near a
+// shared edge lands in both tiles.
+func TestAdjacentBoxesDoNotDoubleCount(t *testing.T) {
+	db := setupCountTestDB(t)
+	svc := NewAddressService(db)
+
+	// A point placed a hair outside the western box's eastern edge.
+	if _, err := db.Exec(`
+		INSERT INTO ohio_addresses (hash, house_number, street, unit, city, district, region, postcode, county, geom, full_address)
+		VALUES ('edge-point', '9', 'Edge Road', '', 'Columbus', 'FRA', 'OH', '43004', 'Franklin',
+		        ST_SetSRID(ST_MakePoint(-83.0999995, 39.5), 4326), '9 Edge Road, Columbus, OH 43004')
+	`); err != nil {
+		t.Fatalf("seed edge point: %v", err)
+	}
+
+	west := &models.BoundingBox{MinLng: -83.2, MinLat: 39.4, MaxLng: -83.1, MaxLat: 39.6}
+	east := &models.BoundingBox{MinLng: -83.1, MinLat: 39.4, MaxLng: -83.0, MaxLat: 39.6}
+
+	count := func(box *models.BoundingBox) int {
+		rows, _, err := svc.SearchAddresses(models.AddressSearchParams{BBox: box, Limit: 500})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		n := 0
+		for _, r := range rows {
+			if r.Hash == "edge-point" {
+				n++
+			}
+		}
+		return n
+	}
+
+	inWest, inEast := count(west), count(east)
+	t.Logf("edge point appears in west=%d east=%d", inWest, inEast)
+	if inWest+inEast != 1 {
+		t.Errorf("the point on the shared edge appears %d times across two adjacent boxes, want exactly 1",
+			inWest+inEast)
 	}
 }

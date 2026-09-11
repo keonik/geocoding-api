@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -126,6 +127,20 @@ func ParseBBox(raw string) (*BoundingBox, error) {
 			return nil, fmt.Errorf("bbox value %d is not a number: %q", i+1, strings.TrimSpace(p))
 		}
 		vals[i] = v
+	}
+
+	// ParseFloat accepts "NaN" and "Inf", and every comparison against NaN is
+	// false -- so all three checks below pass and the value flows into
+	// ST_MakeEnvelope, producing either an empty 200 or a PostGIS error. That
+	// is exactly the silent-empty-result failure this validation exists to
+	// stop, so it has to be rejected before the range checks, not by them.
+	for i, v := range vals {
+		if math.IsNaN(v) {
+			return nil, fmt.Errorf("bbox value %d is NaN", i+1)
+		}
+		if math.IsInf(v, 0) {
+			return nil, fmt.Errorf("bbox value %d is infinite", i+1)
+		}
 	}
 
 	box := &BoundingBox{MinLng: vals[0], MinLat: vals[1], MaxLng: vals[2], MaxLat: vals[3]}
