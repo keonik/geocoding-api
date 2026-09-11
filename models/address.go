@@ -1,6 +1,10 @@
 package models
 
 import (
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -75,8 +79,18 @@ type AddressSearchParams struct {
 	Lat      float64 `json:"lat" form:"lat"`           // Latitude for proximity search
 	Lng      float64 `json:"lng" form:"lng"`           // Longitude for proximity search
 	Radius   float64 `json:"radius" form:"radius"`     // Radius in kilometers for proximity search
-	Limit    int     `json:"limit" form:"limit"`       // Number of results to return (default: 50, max: 500)
-	Offset   int     `json:"offset" form:"offset"`     // Offset for pagination
+
+	// BBox restricts results to a rectangle, as minLng,minLat,maxLng,maxLat --
+	// the order every mapping library emits, so a caller can pass a viewport
+	// straight through without reordering it.
+	BBox *BoundingBox `json:"bbox" form:"bbox"`
+
+	// Polygon restricts results to an arbitrary shape, given as GeoJSON. A
+	// radius is a circle and a bbox is a rectangle; a sales territory, a
+	// delivery zone or a canvassing walk is neither.
+	Polygon string `json:"polygon" form:"polygon"`
+	Limit   int    `json:"limit" form:"limit"`   // Number of results to return (default: 50, max: 500)
+	Offset  int    `json:"offset" form:"offset"` // Offset for pagination
 }
 
 // AddressSearchResponse represents the response for address search
@@ -88,4 +102,62 @@ type AddressSearchResponse struct {
 	Error   string         `json:"error,omitempty"`
 	Query   string         `json:"query,omitempty"`
 	Filters map[string]any `json:"filters,omitempty"`
+}
+
+// BoundingBox is a rectangle in WGS84 degrees.
+type BoundingBox struct {
+	MinLng float64 `json:"min_lng"`
+	MinLat float64 `json:"min_lat"`
+	MaxLng float64 `json:"max_lng"`
+	MaxLat float64 `json:"max_lat"`
+}
+
+// ParseBBox reads "minLng,minLat,maxLng,maxLat".
+//
+// Ordering is longitude-first because that is what GeoJSON, Leaflet, MapLibre
+// and PostGIS all use. Latitude-first is the common mistake and it is silent:
+// a swapped pair inside Ohio's range still parses and just returns nothing, so
+// the bounds are validated rather than trusted.
+func ParseBBox(raw string) (*BoundingBox, error) {
+	parts := strings.Split(raw, ",")
+	if len(parts) != 4 {
+		return nil, fmt.Errorf("bbox needs 4 comma-separated values (minLng,minLat,maxLng,maxLat), got %d", len(parts))
+	}
+
+	vals := make([]float64, 4)
+	for i, p := range parts {
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return nil, fmt.Errorf("bbox value %d is not a number: %q", i+1, strings.TrimSpace(p))
+		}
+		vals[i] = v
+	}
+
+	// ParseFloat accepts "NaN" and "Inf", and every comparison against NaN is
+	// false -- so all three checks below pass and the value flows into
+	// ST_MakeEnvelope, producing either an empty 200 or a PostGIS error. That
+	// is exactly the silent-empty-result failure this validation exists to
+	// stop, so it has to be rejected before the range checks, not by them.
+	for i, v := range vals {
+		if math.IsNaN(v) {
+			return nil, fmt.Errorf("bbox value %d is NaN", i+1)
+		}
+		if math.IsInf(v, 0) {
+			return nil, fmt.Errorf("bbox value %d is infinite", i+1)
+		}
+	}
+
+	box := &BoundingBox{MinLng: vals[0], MinLat: vals[1], MaxLng: vals[2], MaxLat: vals[3]}
+
+	if box.MinLng < -180 || box.MaxLng > 180 || box.MinLat < -90 || box.MaxLat > 90 {
+		return nil, fmt.Errorf("bbox is outside valid coordinate ranges (longitude -180..180, latitude -90..90)")
+	}
+	if box.MinLng >= box.MaxLng {
+		return nil, fmt.Errorf("bbox min longitude (%g) must be less than max longitude (%g); values are minLng,minLat,maxLng,maxLat", box.MinLng, box.MaxLng)
+	}
+	if box.MinLat >= box.MaxLat {
+		return nil, fmt.Errorf("bbox min latitude (%g) must be less than max latitude (%g); values are minLng,minLat,maxLng,maxLat", box.MinLat, box.MaxLat)
+	}
+
+	return box, nil
 }
