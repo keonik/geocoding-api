@@ -380,21 +380,31 @@ func (as *AuthService) CheckRateLimitStatus(userID int) (*RateLimitStatus, error
 		status.MonthlyLimit = int(limitOverride.Int64)
 	}
 
-	// One pass over the month's rows yields both counts: CURRENT_DATE is always
-	// inside date_trunc('month', CURRENT_DATE), so the daily count is a subset
-	// of the rows already being scanned. The two reset boundaries are constant
-	// expressions, so they ride along without touching the table; casting to
-	// timestamptz resolves them against the session TimeZone, which is the same
-	// clock the comparisons above use.
+	// Two primary-key lookups against usage_counters, not an aggregate over
+	// usage_records.
+	//
+	// The aggregate this replaced walked every billable row the user had
+	// generated since the first of the month -- on every authenticated
+	// request, growing all month, to produce a number that is stale the
+	// instant it is read. A counter row is a seek whose cost does not move.
+	//
+	// A missing row means no billable calls in that period yet, which is a
+	// zero rather than an error: COALESCE over the aggregate handles the user
+	// who has not called this month. The reset boundaries stay in SQL so they
+	// resolve against the same clock the period_start values were written
+	// with.
 	err = database.DB.QueryRow(`
 		SELECT
-			COUNT(*),
-			COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE),
+			COALESCE(MAX(count) FILTER (WHERE period_kind = 'month'), 0),
+			COALESCE(MAX(count) FILTER (WHERE period_kind = 'day'), 0),
 			(date_trunc('month', CURRENT_DATE) + interval '1 month')::timestamptz,
 			(CURRENT_DATE + interval '1 day')::timestamptz
-		FROM usage_records
-		WHERE user_id = $1 AND billable = true
-		  AND created_at >= date_trunc('month', CURRENT_DATE)
+		FROM usage_counters
+		WHERE user_id = $1
+		  AND (
+			(period_kind = 'month' AND period_start = date_trunc('month', CURRENT_DATE)::date)
+			OR (period_kind = 'day' AND period_start = CURRENT_DATE)
+		  )
 	`, userID).Scan(&status.MonthlyUsage, &status.DailyUsage, &status.MonthlyReset, &status.DailyReset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get usage count: %w", err)
@@ -568,9 +578,79 @@ func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string
 
 	if err != nil {
 		log.Printf("Failed to record usage for user %d (endpoint=%s): %v", userID, endpoint, err)
+		return err
 	}
 
+	// Only billable calls move the counters, matching what the aggregate they
+	// replaced counted. A request rejected for being over the limit is
+	// recorded for the audit trail but must not push the user further over.
+	if !billable {
+		return nil
+	}
+
+	if err := as.incrementUsageCounters(userID); err != nil {
+		// The audit row is already written, which is the durable record, so a
+		// counter failure is logged rather than returned -- failing here would
+		// make the caller think the call went unrecorded. It does mean the
+		// counter can drift below the true count; RebuildUsageCounters exists
+		// to correct that.
+		log.Printf("Failed to increment usage counters for user %d: %v", userID, err)
+	}
+
+	return nil
+}
+
+// incrementUsageCounters bumps the day and month totals in one statement.
+//
+// Both rows are touched by a single INSERT ... ON CONFLICT so the write is one
+// round trip, and the increment happens inside the database rather than as a
+// read-modify-write, so concurrent requests cannot lose counts against each
+// other.
+func (as *AuthService) incrementUsageCounters(userID int) error {
+	_, err := database.DB.Exec(`
+		INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
+		VALUES
+			($1, 'month', date_trunc('month', CURRENT_DATE)::date, 1, NOW()),
+			($1, 'day', CURRENT_DATE, 1, NOW())
+		ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
+		  SET count = usage_counters.count + 1, updated_at = NOW()
+	`, userID)
 	return err
+}
+
+// RebuildUsageCounters recomputes the current day and month from usage_records.
+//
+// The counters are derived data, so there has to be a way back to the source
+// of truth. A counter can drift low if the database rejects an increment after
+// the audit row lands, and any drift is otherwise permanent -- nothing else
+// ever recalculates it.
+//
+// Safe to run at any time: it replaces the current periods outright rather
+// than adjusting them, and usage_records is never written by this path.
+func (as *AuthService) RebuildUsageCounters() error {
+	statements := []string{
+		`INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
+		 SELECT user_id, 'month', date_trunc('month', CURRENT_DATE)::date, COUNT(*), NOW()
+		 FROM usage_records
+		 WHERE billable = true AND created_at >= date_trunc('month', CURRENT_DATE)
+		 GROUP BY user_id
+		 ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
+		   SET count = EXCLUDED.count, updated_at = NOW()`,
+		`INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
+		 SELECT user_id, 'day', CURRENT_DATE, COUNT(*), NOW()
+		 FROM usage_records
+		 WHERE billable = true AND created_at >= CURRENT_DATE
+		 GROUP BY user_id
+		 ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
+		   SET count = EXCLUDED.count, updated_at = NOW()`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := database.DB.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to rebuild usage counters: %w", err)
+		}
+	}
+	return nil
 }
 
 // IsUserAdmin checks if a user has admin privileges

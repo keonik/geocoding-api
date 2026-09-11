@@ -71,6 +71,17 @@ func setupRateLimitSchema(t *testing.T) func() {
 			billable BOOLEAN DEFAULT true,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// Enforcement reads the counters rather than aggregating
+		// usage_records (migration 22). These tests assert on limits, not
+		// usage, so the table only has to exist -- an absent row is zero.
+		`CREATE TABLE usage_counters (
+			user_id INTEGER NOT NULL,
+			period_kind VARCHAR(5) NOT NULL,
+			period_start DATE NOT NULL,
+			count BIGINT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (user_id, period_kind, period_start)
+		)`,
 	}
 	for _, stmt := range schema {
 		if _, err := db.Exec(stmt); err != nil {
@@ -128,6 +139,22 @@ func seedUsage(t *testing.T, userID, billableCalls int) {
 	)
 	if err != nil {
 		t.Fatalf("failed to seed usage: %v", err)
+	}
+
+	syncCounters(t)
+}
+
+// syncCounters derives usage_counters from the seeded usage_records.
+//
+// Enforcement reads the counters now (migration 22), so writing audit rows
+// alone no longer moves a limit. Deriving them through the production rebuild
+// keeps these tests asserting on real behaviour rather than on numbers the
+// fixture wrote by hand -- and means a rebuild that stopped agreeing with the
+// records would fail here.
+func syncCounters(t *testing.T) {
+	t.Helper()
+	if err := Auth.RebuildUsageCounters(); err != nil {
+		t.Fatalf("failed to rebuild usage counters: %v", err)
 	}
 }
 
@@ -332,6 +359,10 @@ func TestUsageCountsAreScopedToTheUser(t *testing.T) {
 	); err != nil {
 		t.Fatalf("failed to seed non-billable usage: %v", err)
 	}
+
+	// These rows were written straight to the audit log, so the counters have
+	// to be derived again before enforcement will see them.
+	syncCounters(t)
 
 	status, err := Auth.CheckRateLimitStatus(mine)
 	if err != nil {
