@@ -168,6 +168,32 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		}
 	}
 
+	// Bounding box. ST_MakeEnvelope builds the rectangle; && is the indexed
+	// bbox overlap operator, which for point geometry is exact containment --
+	// a point either is inside the rectangle or is not, so no recheck is
+	// needed and the GIST index on geom does all the work.
+	if params.BBox != nil {
+		conditions = append(conditions, fmt.Sprintf(
+			"geom && ST_MakeEnvelope($%d, $%d, $%d, $%d, 4326)",
+			argIndex, argIndex+1, argIndex+2, argIndex+3))
+		args = append(args, params.BBox.MinLng, params.BBox.MinLat, params.BBox.MaxLng, params.BBox.MaxLat)
+		argIndex += 4
+	}
+
+	// Arbitrary polygon. ST_Intersects is index-assisted: the planner uses &&
+	// against the GIST index to shortlist candidates, then tests each one
+	// exactly. A territory is rarely a rectangle, and approximating one with a
+	// bbox pulls in everything in the corners.
+	//
+	// ST_GeomFromGeoJSON raises on malformed input, so the shape is validated
+	// in the handler and never reaches here unchecked.
+	if params.Polygon != "" {
+		conditions = append(conditions, fmt.Sprintf(
+			"ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($%d), 4326))", argIndex))
+		args = append(args, params.Polygon)
+		argIndex++
+	}
+
 	// County filter
 	if params.County != "" {
 		conditions = append(conditions, fmt.Sprintf("county ILIKE $%d", argIndex))
