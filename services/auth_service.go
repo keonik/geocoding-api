@@ -1406,6 +1406,15 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 		"admin":     "admin",
 	}
 
+	// Coverage is service metadata -- which states hold data -- and returns no
+	// address, ZIP or boundary content. Gating it on a scope would 403 every
+	// key already issued, since none of them carry a "coverage" permission,
+	// and the endpoint exists precisely so a caller can find out what to ask
+	// for before asking. A valid key is still required.
+	if endpoint == "coverage" {
+		return true
+	}
+
 	requiredPermission, exists := permissionMap[endpoint]
 	if !exists {
 		return false // Unknown endpoint

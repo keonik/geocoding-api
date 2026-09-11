@@ -199,6 +199,9 @@ func APIKeyAuth() echo.MiddlewareFunc {
 
 // getEndpointName extracts the endpoint name from the path for categorization
 func getEndpointName(path string) string {
+	if strings.Contains(path, "/coverage") {
+		return "coverage"
+	}
 	if strings.Contains(path, "/geocode/") {
 		return "geocode"
 	}
