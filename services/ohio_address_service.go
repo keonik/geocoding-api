@@ -314,7 +314,7 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 		INSERT INTO ohio_addresses (
 			hash, house_number, street, unit, city, district, region, postcode, county, geom
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ST_SetSRID(ST_MakePoint($10, $11), 4326))
-		ON CONFLICT (hash) DO NOTHING
+		ON CONFLICT (hash, region) DO NOTHING
 	`)
 	if err != nil {
 		return 0, fmt.Errorf("failed to prepare statement: %w", err)

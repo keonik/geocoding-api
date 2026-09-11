@@ -168,6 +168,14 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		}
 	}
 
+	// State filter. Exact match on the indexed region column, upper-cased so a
+	// caller passing "oh" is not silently told there is no data.
+	if params.State != "" {
+		conditions = append(conditions, fmt.Sprintf("region = UPPER($%d)", argIndex))
+		args = append(args, strings.TrimSpace(params.State))
+		argIndex++
+	}
+
 	// County filter
 	if params.County != "" {
 		conditions = append(conditions, fmt.Sprintf("county ILIKE $%d", argIndex))

@@ -155,6 +155,12 @@ func RunMigrations() error {
 			Up:          addUsageCounters,
 			Down:        removeUsageCounters,
 		},
+		{
+			Version:     23,
+			Description: "Key address uniqueness on (hash, region) so a second state can be loaded",
+			Up:          addRegionToAddressUniqueness,
+			Down:        revertRegionAddressUniqueness,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1547,6 +1553,105 @@ func addUsageCounters() error {
 func removeUsageCounters() error {
 	if _, err := DB.Exec(`DROP TABLE IF EXISTS usage_counters`); err != nil {
 		return fmt.Errorf("failed to drop usage counters: %w", err)
+	}
+	return nil
+}
+
+// addRegionToAddressUniqueness makes the address dedup key state-aware.
+//
+// ohio_addresses.hash is HouseNumber|Street|Unit|City|Postcode and the column
+// is UNIQUE. No state anywhere in it. With a postcode present that mostly does
+// not matter -- US ZIPs are state-specific, so they disentangle the key -- but
+// ingestion only requires a house number and a street, and county GeoJSON
+// extracts frequently ship without a ZIP column. For those rows the key
+// collapses to house number, street, unit and city, and city names collide
+// across states constantly: Springfield, Columbus, Franklin.
+//
+// The failure is silent and looks like success. A colliding row is rejected by
+// the unique constraint, the importer counts it as a duplicate, and a load that
+// quietly discarded half a state reports "N records imported, M duplicates
+// skipped" and completes green.
+//
+// The fix is the uniqueness key, not the hash contents. Recomputing every hash
+// would rewrite all ~6M rows; keying on (hash, region) is one index build and
+// means exactly the same thing.
+//
+// COST. The unique index build takes a SHARE lock: reads continue, writes wait.
+// On ~6M rows expect tens of seconds. Writes here are imports, which are
+// deliberate admin actions, so this is scheduled rather than concurrent -- and
+// CREATE INDEX CONCURRENTLY cannot run inside the transaction the rest of this
+// migration needs.
+func addRegionToAddressUniqueness() error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin address uniqueness migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	statements := []string{
+		// Every row currently in this table is Ohio. A NULL or empty region
+		// would defeat the new key outright: NULLs are distinct in a unique
+		// index, so those rows could duplicate without limit.
+		`UPDATE ohio_addresses SET region = 'OH' WHERE region IS NULL OR region = ''`,
+
+		// 'oh' and 'OH' are different values to a unique index, so a lowercase
+		// upload would reintroduce exactly the duplicates this is closing.
+		`UPDATE ohio_addresses SET region = UPPER(region) WHERE region <> UPPER(region)`,
+
+		// No DEFAULT on purpose. A default would silently label a future
+		// non-Ohio import as Ohio, which is the same class of quiet data
+		// corruption being fixed here -- better that a bad import fails loudly.
+		`ALTER TABLE ohio_addresses ALTER COLUMN region SET NOT NULL`,
+
+		// NOT NULL does not stop an empty string, and '' would put every
+		// stateless row into one shared bucket -- reintroducing exactly the
+		// collision this migration closes, for any dataset uploaded without a
+		// state. A CHECK makes that import fail loudly instead.
+		`ALTER TABLE ohio_addresses DROP CONSTRAINT IF EXISTS ohio_addresses_region_not_blank`,
+		`ALTER TABLE ohio_addresses ADD CONSTRAINT ohio_addresses_region_not_blank CHECK (region <> '')`,
+
+		`ALTER TABLE ohio_addresses DROP CONSTRAINT IF EXISTS ohio_addresses_hash_key`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ohio_addresses_hash_region
+			ON ohio_addresses (hash, region)`,
+
+		// Searching or filtering by state is unusable without this, and it is
+		// the other half of what multi-state support needs.
+		`CREATE INDEX IF NOT EXISTS idx_ohio_addresses_region ON ohio_addresses (region)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to key address uniqueness on region: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit address uniqueness migration: %w", err)
+	}
+
+	log.Println("Migration 23: address uniqueness is now (hash, region); a second state can be loaded")
+	return nil
+}
+
+// revertRegionAddressUniqueness restores the global unique hash.
+//
+// This can fail, legitimately: once a second state is loaded there are rows
+// sharing a hash across regions, and no single-column unique constraint can
+// hold them. That is the migration telling you the rollback would destroy
+// data, and it is the correct outcome -- the fix is to roll forward.
+func revertRegionAddressUniqueness() error {
+	statements := []string{
+		`DROP INDEX IF EXISTS idx_ohio_addresses_region`,
+		`DROP INDEX IF EXISTS idx_ohio_addresses_hash_region`,
+		`ALTER TABLE ohio_addresses DROP CONSTRAINT IF EXISTS ohio_addresses_region_not_blank`,
+		`ALTER TABLE ohio_addresses ALTER COLUMN region DROP NOT NULL`,
+		`ALTER TABLE ohio_addresses ADD CONSTRAINT ohio_addresses_hash_key UNIQUE (hash)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := DB.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to restore the global unique hash (rows from more than one state may share a hash): %w", err)
+		}
 	}
 	return nil
 }

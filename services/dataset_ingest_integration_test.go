@@ -107,19 +107,23 @@ func setupIngestSchema(t *testing.T, db *sql.DB) {
 	stmts := []string{
 		`CREATE TABLE ohio_addresses (
 			id BIGSERIAL PRIMARY KEY,
-			hash VARCHAR(255) UNIQUE NOT NULL,
+			hash VARCHAR(255) NOT NULL,
 			house_number VARCHAR(50),
 			street VARCHAR(255),
 			unit VARCHAR(50),
 			city VARCHAR(255),
 			district VARCHAR(10),
-			region VARCHAR(2),
+			region VARCHAR(2) NOT NULL,
 			postcode VARCHAR(10),
 			county VARCHAR(255),
 			geom GEOMETRY(POINT, 4326) NOT NULL,
 			full_address TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// Uniqueness is (hash, region) as of migration 23: the hash carries no
+		// state, so a global unique constraint silently dropped a second
+		// state's rows and reported them as duplicates.
+		"CREATE UNIQUE INDEX ON ohio_addresses (hash, region)",
 		`CREATE OR REPLACE FUNCTION update_full_address()
 		RETURNS TRIGGER AS $$
 		BEGIN

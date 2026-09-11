@@ -16,6 +16,7 @@ func SearchOhioAddressesHandler(c echo.Context) error {
 
 	// Manually parse query parameters (Echo's Bind doesn't always work for query params)
 	params.Query = c.QueryParam("query")
+	params.State = c.QueryParam("state")
 	params.County = c.QueryParam("county")
 	params.City = c.QueryParam("city")
 	params.Postcode = c.QueryParam("postcode")
@@ -59,6 +60,9 @@ func SearchOhioAddressesHandler(c echo.Context) error {
 
 	// Prepare filters for response
 	filters := make(map[string]any)
+	if params.State != "" {
+		filters["state"] = params.State
+	}
 	if params.County != "" {
 		filters["county"] = params.County
 	}

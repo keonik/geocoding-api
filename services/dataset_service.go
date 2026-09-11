@@ -553,7 +553,10 @@ func addressFromFeature(feature geoFeature, county, state string) (models.OhioAd
 
 	// Set county and state from dataset metadata (full names)
 	address.County = county
-	address.Region = state
+	// Upper-cased because the uniqueness key is (hash, region): 'oh' and 'OH'
+	// are distinct values to the index, so a lowercase upload would reintroduce
+	// the cross-state duplicates migration 23 closed.
+	address.Region = strings.ToUpper(strings.TrimSpace(state))
 
 	if address.HouseNumber == "" || address.Street == "" {
 		return address, false
@@ -710,7 +713,7 @@ func (ai *addressImporter) insertBatch(batch []models.OhioAddress) (int, error) 
 		INSERT INTO ohio_addresses (
 			hash, house_number, street, unit, city, district, region, postcode, county, geom
 		) VALUES ` + strings.Join(values, ", ") + `
-		ON CONFLICT (hash) DO NOTHING
+		ON CONFLICT (hash, region) DO NOTHING
 	`
 
 	result, err := ai.db.Exec(query, args...)

@@ -63,7 +63,11 @@ const (
 
 // AddressSearchParams represents search parameters for address queries
 type AddressSearchParams struct {
-	Query    string  `json:"query" form:"query"`       // General search query
+	Query string `json:"query" form:"query"` // General search query
+	// State is the two-letter code. Filtering by county alone is unsafe once
+	// more than one state is loaded: roughly two dozen states have a Franklin
+	// County, and a county filter without a state silently mixes them.
+	State    string  `json:"state" form:"state"`
 	County   string  `json:"county" form:"county"`     // Filter by county
 	City     string  `json:"city" form:"city"`         // Filter by city
 	Postcode string  `json:"postcode" form:"postcode"` // Filter by postal code
