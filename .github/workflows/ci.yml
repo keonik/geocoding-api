@@ -42,6 +42,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Nothing was checking this, and it had rotted badly: echo carried an
+      # encoded-slash bug exposing static files, golang-jwt v3 an unfixable
+      # memory-exhaustion bug, x/net the HTTP/2 CONTINUATION flood. All three
+      # were reachable from this code, and all three sat there for months
+      # because a version number does not announce itself.
+      - name: Vulnerabilities
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
       # Tests that need Postgres skip themselves when nothing is listening, so
       # this stays fast without a service container. The integration probes
       # additionally require PROBE_DSN and are skipped here by design.

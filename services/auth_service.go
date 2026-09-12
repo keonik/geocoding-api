@@ -15,7 +15,7 @@ import (
 	"geocoding-api/database"
 	"geocoding-api/models"
 
-	"github.com/golang-jwt/jwt"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -23,12 +23,21 @@ import (
 // AuthService handles authentication and API key management
 type AuthService struct{}
 
-// JWTClaims represents the JWT token claims
+// JWTClaims represents the JWT token claims.
+//
+// RegisteredClaims rather than v3's StandardClaims: golang-jwt v3 is
+// unmaintained and carries GO-2025-3553 (memory exhaustion parsing headers)
+// with no fix available, so the only way out was v5.
+//
+// The wire format is unchanged. RegisteredClaims marshals the same "exp" and
+// "iat" JSON fields StandardClaims did -- it differs only in holding them as
+// NumericDate rather than int64 -- so tokens signed before this upgrade keep
+// validating and nobody is logged out by the deploy.
 type JWTClaims struct {
 	UserID  int    `json:"user_id"`
 	Email   string `json:"email"`
 	IsAdmin bool   `json:"is_admin"`
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 }
 
 // GenerateJWT creates a new JWT token for a user
@@ -44,9 +53,9 @@ func (as *AuthService) GenerateJWT(user *models.User) (string, error) {
 		UserID:  user.ID,
 		Email:   user.Email,
 		IsAdmin: user.IsAdmin,
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: time.Now().Add(24 * time.Hour).Unix(), // Token expires in 24 hours
-			IssuedAt:  time.Now().Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)), // Token expires in 24 hours
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
 
@@ -71,13 +80,16 @@ func (as *AuthService) ValidateJWT(tokenString string) (*JWTClaims, error) {
 	}
 
 	// Parse token
+	// WithValidMethods makes the algorithm check an enforced parse option
+	// rather than only a test inside the keyfunc. v5 also validates exp and iat
+	// by default, which v3 did not do unless asked.
 	token, err := jwt.ParseWithClaims(tokenString, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return []byte(secret), nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 
 	if err != nil {
 		return nil, err
