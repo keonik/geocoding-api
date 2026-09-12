@@ -168,6 +168,14 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		}
 	}
 
+	// State filter. Exact match on the indexed region column, upper-cased so a
+	// caller passing "oh" is not silently told there is no data.
+	if state := strings.ToUpper(strings.TrimSpace(params.State)); state != "" {
+		conditions = append(conditions, fmt.Sprintf("region = $%d", argIndex))
+		args = append(args, state)
+		argIndex++
+	}
+
 	// Bounding box.
 	if params.BBox != nil {
 		conditions = append(conditions, fmt.Sprintf(BBoxPredicateSQL,
@@ -769,6 +777,18 @@ func (s *AddressService) searchByComponents(parsed *utils.ParsedAddress, limit i
 		argNum++
 	}
 
+	// The parser extracts a state and this path discarded it. Once a second
+	// state is loaded, geocoding "100 Main St, Springfield, IL" matches the
+	// Ohio row on street and city and returns it at full confidence -- exactly
+	// the cross-state collision this schema change exists to prevent, on the
+	// endpoint that matters most.
+	stateArg := 0
+	if parsed.State != "" {
+		stateArg = argNum
+		args = append(args, strings.ToUpper(strings.TrimSpace(parsed.State)))
+		argNum++
+	}
+
 	zipArg := 0
 	if parsed.Zip != "" {
 		zipArg = argNum
@@ -795,11 +815,19 @@ func (s *AddressService) searchByComponents(parsed *utils.ParsedAddress, limit i
 		if len(exclusions) > 0 {
 			exclusionClause = " AND " + strings.Join(exclusions, " AND ")
 		}
+		// State is an anchor on every tier, not a tier of its own. What relaxes
+		// as the tiers widen is street-level detail; the state a caller named
+		// never relaxes, or a query for Springfield IL eventually matches
+		// Springfield OH and reports it as a hit.
+		stateClause := ""
+		if stateArg > 0 {
+			stateClause = fmt.Sprintf(" AND region = $%d", stateArg)
+		}
 		tierCTEs = append(tierCTEs, fmt.Sprintf(`%s AS (
 			SELECT %s, %d as tier FROM ohio_addresses
-			WHERE %s%s
+			WHERE %s%s%s
 			LIMIT %d
-		)`, tierName, selectFields, tierNum, whereClause, exclusionClause, limit))
+		)`, tierName, selectFields, tierNum, whereClause, stateClause, exclusionClause, limit))
 		tierSelects = append(tierSelects, fmt.Sprintf("SELECT * FROM %s", tierName))
 		exclusions = append(exclusions, fmt.Sprintf("id NOT IN (SELECT id FROM %s)", tierName))
 		if isExact {

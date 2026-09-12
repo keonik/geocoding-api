@@ -525,6 +525,17 @@ paths:
           schema:
             type: string
             example: "Columbus"
+        - name: state
+          in: query
+          required: false
+          description: >-
+            Two-letter state code. County names collide across states - roughly
+            two dozen have a Franklin County - so a county filter without a state
+            is ambiguous once more than one state is loaded. Case-insensitive.
+          schema:
+            type: string
+            maxLength: 2
+          example: OH
         - name: county
           in: query
           required: false

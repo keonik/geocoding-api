@@ -314,7 +314,7 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 		INSERT INTO ohio_addresses (
 			hash, house_number, street, unit, city, district, region, postcode, county, geom
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ST_SetSRID(ST_MakePoint($10, $11), 4326))
-		ON CONFLICT (hash) DO NOTHING
+		ON CONFLICT (hash, region) DO NOTHING
 	`)
 	if err != nil {
 		return 0, fmt.Errorf("failed to prepare statement: %w", err)
@@ -340,10 +340,18 @@ func loadCountyAddresses(county, filePath string) (int, error) {
 		streetName := getStringProperty(props, "street", "ST_NAME", "StreetName", "street_name", "STREETNAME", "LSN")
 		unit := getStringProperty(props, "unit", "UNITNUM", "Unit", "UNIT")
 		city := getStringProperty(props, "city", "USPS_CITY", "City", "CITY", "MUNI")
-		state := getStringProperty(props, "region", "STATE", "State", "state", "REGION")
-		// Truncate state to 2 characters to match database schema VARCHAR(2)
-		if len(state) > 2 {
-			state = state[:2]
+		// region is the dedup key's second column as of migration 23, so it has
+		// to be normalised the same way the dataset importer does. Truncating
+		// blindly was wrong on both counts: "Ohio" became "Oh", a different
+		// uniqueness bucket from "OH" and invisible to a region = UPPER($1)
+		// filter, and an extract with no state property yielded "", which the
+		// region_not_blank CHECK now rejects on every row -- and since that
+		// error text is not "duplicate key", the loop below would log a warning
+		// per row and return 0 inserted with a nil error, reporting a total
+		// failure as success.
+		state := normalizeStateCode(getStringProperty(props, "region", "STATE", "State", "state", "REGION"))
+		if state == "" {
+			state = fallbackState
 		}
 		zipCode := getStringProperty(props, "postcode", "ZIPCODE", "ZipCode", "zip_code", "POSTCODE")
 		// Use existing hash if available (OpenAddresses format), otherwise generate one
@@ -448,4 +456,37 @@ func decompressIfNeeded(geojsonPath string) error {
 
 	log.Printf("Successfully decompressed %s", filepath.Base(geojsonPath))
 	return nil
+}
+
+// fallbackState is used when an extract carries no state property at all.
+//
+// Every dataset this loader has ever been pointed at is Ohio, and the
+// alternative is an empty region, which the region_not_blank CHECK rejects on
+// every row. Named rather than inlined so the assumption is findable when a
+// second state is loaded through this path.
+const fallbackState = "OH"
+
+// normalizeStateCode upper-cases a state value and accepts it only if it is a
+// real two-letter code.
+//
+// "Ohio" must not become "Oh": region is half the uniqueness key, so a mangled
+// value is a separate dedup bucket and a silent duplicate set.
+func normalizeStateCode(raw string) string {
+	trimmed := strings.ToUpper(strings.TrimSpace(raw))
+	if utils.IsUSStateCode(trimmed) {
+		return trimmed
+	}
+	if full, ok := stateNameToCode[trimmed]; ok {
+		return full
+	}
+	return ""
+}
+
+// stateNameToCode covers the full-name spellings OpenAddresses extracts use.
+// Deliberately small: an unrecognised value returns "" and falls back rather
+// than being truncated into something that looks plausible and is not.
+var stateNameToCode = map[string]string{
+	"OHIO": "OH", "INDIANA": "IN", "MICHIGAN": "MI",
+	"KENTUCKY": "KY", "PENNSYLVANIA": "PA", "WEST VIRGINIA": "WV",
+	"ILLINOIS": "IL",
 }

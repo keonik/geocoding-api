@@ -155,6 +155,12 @@ func RunMigrations() error {
 			Up:          addUsageCounters,
 			Down:        removeUsageCounters,
 		},
+		{
+			Version:     23,
+			Description: "Key address uniqueness on (hash, region) so a second state can be loaded",
+			Up:          addRegionToAddressUniqueness,
+			Down:        revertRegionAddressUniqueness,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1550,3 +1556,194 @@ func removeUsageCounters() error {
 	}
 	return nil
 }
+
+// addRegionToAddressUniqueness makes the address dedup key state-aware.
+//
+// ohio_addresses.hash is HouseNumber|Street|Unit|City|Postcode and the column
+// is UNIQUE. No state anywhere in it. With a postcode present that mostly does
+// not matter -- US ZIPs are state-specific, so they disentangle the key -- but
+// ingestion only requires a house number and a street, and county GeoJSON
+// extracts frequently ship without a ZIP column. For those rows the key
+// collapses to house number, street, unit and city, and city names collide
+// across states constantly: Springfield, Columbus, Franklin.
+//
+// The failure is silent and looks like success. A colliding row is rejected by
+// the unique constraint, the importer counts it as a duplicate, and a load that
+// quietly discarded half a state reports "N records imported, M duplicates
+// skipped" and completes green.
+//
+// The fix is the uniqueness key, not the hash contents. Recomputing every hash
+// would rewrite all ~6M rows; keying on (hash, region) is one index build and
+// means exactly the same thing.
+//
+// LOCKING. Statement order here is load-bearing. ALTER TABLE ... SET NOT NULL,
+// ADD CONSTRAINT and DROP CONSTRAINT each take ACCESS EXCLUSIVE, which blocks
+// reads as well as writes, and a lock once taken is held until the transaction
+// commits. Taking one before the index build would block every /search and
+// /geocode query for the whole build -- and migrations run asynchronously while
+// the server is already serving. So the two index builds (SHARE: reads and
+// other readers fine, writers wait) come first, and everything needing ACCESS
+// EXCLUSIVE is last, where it holds that lock only for its own validation scan.
+func addRegionToAddressUniqueness() error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin address uniqueness migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	// The backfill below stamps 'OH' onto every blank region, which is only
+	// correct because everything loaded so far is Ohio. That is an assumption,
+	// and a wrong one would be permanent and invisible -- so verify it rather
+	// than trust it.
+	var foreign string
+	// COALESCE because string_agg over no rows is NULL, and the empty-table
+	// case -- a fresh install -- is the common one.
+	err = tx.QueryRow(`
+		SELECT COALESCE(string_agg(DISTINCT region, ', '), '')
+		FROM ohio_addresses
+		WHERE region IS NOT NULL AND region <> '' AND UPPER(region) <> 'OH'
+	`).Scan(&foreign)
+	if err != nil {
+		return fmt.Errorf("failed to check existing regions: %w", err)
+	}
+	if foreign != "" {
+		return fmt.Errorf("refusing to backfill blank regions to OH: rows already exist for %s, "+
+			"so a blank region cannot be assumed to be Ohio", foreign)
+	}
+
+	statements := []string{
+		// One pass, not two. Each full-table UPDATE rewrites every tuple,
+		// roughly doubling the table until vacuum and generating WAL to match.
+		`UPDATE ohio_addresses
+		 SET region = 'OH'
+		 WHERE region IS NULL OR region = '' OR region <> 'OH'`,
+
+		// SHARE lock: readers unaffected.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ohio_addresses_hash_region
+			ON ohio_addresses (hash, region)`,
+		`CREATE INDEX IF NOT EXISTS idx_ohio_addresses_region ON ohio_addresses (region)`,
+
+		// From here on, ACCESS EXCLUSIVE. Kept last and kept short.
+		`ALTER TABLE ohio_addresses DROP CONSTRAINT IF EXISTS ohio_addresses_hash_key`,
+		`ALTER TABLE ohio_addresses ALTER COLUMN region SET NOT NULL`,
+		`ALTER TABLE ohio_addresses DROP CONSTRAINT IF EXISTS ohio_addresses_region_not_blank`,
+		`ALTER TABLE ohio_addresses ADD CONSTRAINT ohio_addresses_region_not_blank CHECK (region <> '')`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to key address uniqueness on region: %w", err)
+		}
+	}
+
+	// DROP CONSTRAINT IF EXISTS is a no-op when the constraint carries some
+	// other name. That would leave a live global unique hash beside the new
+	// key, the migration would commit, and this function would log that a
+	// second state can be loaded while the second state was still being
+	// rejected as duplicates -- the exact silent loss being fixed. Assert.
+	var remaining string
+	err = tx.QueryRow(`
+		SELECT COALESCE(string_agg(conname, ', '), '')
+		FROM pg_constraint
+		WHERE conrelid = 'ohio_addresses'::regclass
+		  AND contype = 'u'
+		  AND array_length(conkey, 1) = 1
+		  AND conkey[1] = (
+			SELECT attnum FROM pg_attribute
+			WHERE attrelid = 'ohio_addresses'::regclass AND attname = 'hash'
+		  )
+	`).Scan(&remaining)
+	if err != nil {
+		return fmt.Errorf("failed to verify the global unique hash was dropped: %w", err)
+	}
+	if remaining != "" {
+		return fmt.Errorf("a single-column unique constraint on hash still exists (%s); "+
+			"a second state would still be rejected as duplicates", remaining)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit address uniqueness migration: %w", err)
+	}
+
+	log.Println("Migration 23: address uniqueness is now (hash, region); a second state can be loaded")
+	return nil
+}
+
+// revertRegionAddressUniqueness restores the global unique hash.
+//
+// This can fail, legitimately: once a second state is loaded there are rows
+// sharing a hash across regions, and no single-column unique constraint can
+// hold them. That is the migration telling you the rollback would destroy
+// data, and it is the correct outcome -- the fix is to roll forward.
+//
+// Which is exactly why it runs in a transaction. Without one, the composite
+// key and the CHECK are dropped before the ADD CONSTRAINT fails, leaving the
+// table with no uniqueness at all -- every ON CONFLICT (hash, region) in the
+// ingest paths then errors with 42P10 and deduplication is off entirely. The
+// documented "correct outcome" has to be a clean no-op, not a half-dropped
+// schema.
+func revertRegionAddressUniqueness() error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin address uniqueness rollback: %w", err)
+	}
+	defer tx.Rollback()
+
+	statements := []string{
+		`DROP INDEX IF EXISTS idx_ohio_addresses_region`,
+		`DROP INDEX IF EXISTS idx_ohio_addresses_hash_region`,
+		`ALTER TABLE ohio_addresses DROP CONSTRAINT IF EXISTS ohio_addresses_region_not_blank`,
+		`ALTER TABLE ohio_addresses ALTER COLUMN region DROP NOT NULL`,
+		`ALTER TABLE ohio_addresses ADD CONSTRAINT ohio_addresses_hash_key UNIQUE (hash)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to restore the global unique hash, rolled back with the "+
+				"composite key intact (rows from more than one state may share a hash): %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// RequireSchemaVersion reports an error unless migrations have reached version.
+//
+// Migrations run asynchronously by default and the server serves immediately,
+// so between a deploy and a migration landing there is a window where code that
+// needs new schema is live and the schema is not. Read paths can degrade -- the
+// radius search falls back to an unindexed query, the rate limiter falls back
+// to the aggregate -- but a write path that needs a constraint cannot: an
+// import whose ON CONFLICT target does not exist yet fails every batch and
+// marks the dataset failed, which looks like corrupt input rather than a
+// transient deploy state.
+//
+// Call this at the top of such a path so the answer is "migrations pending"
+// instead.
+// The db is passed rather than read from the package global because callers
+// hold their own handle -- DatasetService reads its dataset row through s.db,
+// and checking the schema on a different connection than the one the work runs
+// on is how a service ends up validating one database and writing to another.
+func RequireSchemaVersion(db *sql.DB, version int) error {
+	if db == nil {
+		db = DB
+	}
+	if db == nil {
+		return fmt.Errorf("no database connection available to check the schema version")
+	}
+
+	var applied sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&applied); err != nil {
+		return fmt.Errorf("cannot determine schema version: %w", err)
+	}
+	if int(applied.Int64) >= version {
+		return nil
+	}
+	return fmt.Errorf("database schema is at version %d and this operation needs %d; "+
+		"migrations are still running -- check /health and retry", applied.Int64, version)
+}
+
+// SchemaVersionRegionUniqueness is migration 23, which keys address uniqueness
+// on (hash, region). Every ingest path's ON CONFLICT depends on the index it
+// creates.
+const SchemaVersionRegionUniqueness = 23

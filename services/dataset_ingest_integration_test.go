@@ -107,19 +107,32 @@ func setupIngestSchema(t *testing.T, db *sql.DB) {
 	stmts := []string{
 		`CREATE TABLE ohio_addresses (
 			id BIGSERIAL PRIMARY KEY,
-			hash VARCHAR(255) UNIQUE NOT NULL,
+			hash VARCHAR(255) NOT NULL,
 			house_number VARCHAR(50),
 			street VARCHAR(255),
 			unit VARCHAR(50),
 			city VARCHAR(255),
 			district VARCHAR(10),
-			region VARCHAR(2),
+			region VARCHAR(2) NOT NULL,
 			postcode VARCHAR(10),
 			county VARCHAR(255),
 			geom GEOMETRY(POINT, 4326) NOT NULL,
 			full_address TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// Uniqueness is (hash, region) as of migration 23: the hash carries no
+		// state, so a global unique constraint silently dropped a second
+		// state's rows and reported them as duplicates.
+		"CREATE UNIQUE INDEX ON ohio_addresses (hash, region)",
+		// NOT NULL does not stop an empty string, and '' would put every
+		// stateless row in one bucket. Without the CHECK here, that case passes
+		// in the suite and fails in production.
+		"ALTER TABLE ohio_addresses ADD CONSTRAINT ohio_addresses_region_not_blank CHECK (region <> '')",
+		// ProcessGeoJSONDataset refuses to run until migrations have reached
+		// the version whose index its ON CONFLICT needs, so the fixture has to
+		// carry the same record production does.
+		"CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW())",
+		"INSERT INTO schema_migrations (version) VALUES (23) ON CONFLICT DO NOTHING",
 		`CREATE OR REPLACE FUNCTION update_full_address()
 		RETURNS TRIGGER AS $$
 		BEGIN
