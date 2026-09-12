@@ -16,7 +16,7 @@ COPY frontend/ ./
 RUN bun run build
 
 # Backend build stage
-FROM golang:1.24-alpine AS backend-builder
+FROM golang:1.26-alpine AS backend-builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
