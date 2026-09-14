@@ -614,3 +614,80 @@ func TestShorelineAddressesAttributeToTheNearestState(t *testing.T) {
 		}
 	}
 }
+
+// Two of the three rows production could not place held coordinates like
+// (1416737.65, 811329.71) -- Ohio State Plane South in US survey feet, loaded
+// without ever being reprojected. A longitude cannot exceed 180, so those are
+// unambiguously not degrees.
+//
+// The repair is only applied where it demonstrably works: the reprojected point
+// must land inside the polygon of the county the row already claims. That check
+// is what separates a repair from a guess -- Ohio North and both zones in
+// metres put these same points in Michigan, Maine and Quebec.
+func TestStatePlaneCoordinatesAreRepairedOnlyWhenVerified(t *testing.T) {
+	db := setupMultiStateDB(t, false)
+
+	if _, err := db.Exec(`
+		CREATE TABLE ohio_counties (
+			id BIGSERIAL PRIMARY KEY,
+			county_name VARCHAR(255) NOT NULL,
+			bounds_geometry GEOMETRY(MULTIPOLYGON, 4326)
+		)`); err != nil {
+		t.Fatalf("create ohio_counties: %v", err)
+	}
+	// A box around Darke County, and one around a county the second row does
+	// not claim, so a wrong-county match cannot pass.
+	if _, err := db.Exec(`
+		INSERT INTO ohio_counties (county_name, bounds_geometry) VALUES
+		 ('Darke',  ST_Multi(ST_MakeEnvelope(-84.9,40.0,-84.3,40.4,4326))),
+		 ('Lucas',  ST_Multi(ST_MakeEnvelope(-84.0,41.5,-83.4,41.8,4326)))
+	`); err != nil {
+		t.Fatalf("seed counties: %v", err)
+	}
+
+	// Same State Plane coordinates; one claims Darke (correct), one claims
+	// Lucas (wrong -- reprojection lands in Darke, not Lucas).
+	for _, c := range []struct{ hash, county string }{
+		{"sp-right", "Darke"},
+		{"sp-wrong", "Lucas"},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO ohio_addresses (hash, house_number, street, unit, city, district, region, postcode, county, geom, full_address)
+			VALUES ($1,'1','Main Street','','Greenville','','','',$2,
+			        ST_SetSRID(ST_MakePoint(1416737.6505, 811329.7090),4326),'1 Main Street')
+		`, c.hash, c.county); err != nil {
+			t.Fatalf("seed %s: %v", c.hash, err)
+		}
+	}
+
+	if _, err := db.Exec(`
+		UPDATE ohio_addresses a
+		SET geom = ST_Transform(ST_SetSRID(ST_MakePoint(ST_X(a.geom), ST_Y(a.geom)), 3735), 4326)
+		FROM ohio_counties c
+		WHERE (ABS(ST_X(a.geom)) > 180 OR ABS(ST_Y(a.geom)) > 90)
+		  AND c.bounds_geometry IS NOT NULL
+		  AND c.county_name ILIKE a.county
+		  AND ST_Contains(c.bounds_geometry,
+		        ST_Transform(ST_SetSRID(ST_MakePoint(ST_X(a.geom), ST_Y(a.geom)), 3735), 4326))
+	`); err != nil {
+		t.Fatalf("reproject: %v", err)
+	}
+
+	var lng, lat float64
+	if err := db.QueryRow(`SELECT ST_X(geom), ST_Y(geom) FROM ohio_addresses WHERE hash = 'sp-right'`).Scan(&lng, &lat); err != nil {
+		t.Fatalf("read repaired row: %v", err)
+	}
+	if lng < -85 || lng > -84 || lat < 40 || lat > 40.5 {
+		t.Errorf("repaired row is at (%.4f, %.4f), which is not in Darke County", lng, lat)
+	}
+
+	// The row whose county does not corroborate the reprojection must be left
+	// alone rather than moved somewhere plausible-looking.
+	if err := db.QueryRow(`SELECT ST_X(geom), ST_Y(geom) FROM ohio_addresses WHERE hash = 'sp-wrong'`).Scan(&lng, &lat); err != nil {
+		t.Fatalf("read uncorroborated row: %v", err)
+	}
+	if lng < 180 {
+		t.Errorf("a row whose county does not corroborate the reprojection was rewritten to (%.4f, %.4f); "+
+			"the county check is what makes this a repair rather than a guess", lng, lat)
+	}
+}

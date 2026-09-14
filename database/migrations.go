@@ -1646,7 +1646,38 @@ func addRegionToAddressUniqueness() error {
 				"load state boundaries first", blanks)
 		}
 
+		// Before attributing anything, repair coordinates that are not WGS84.
+		//
+		// Three rows in production could not be placed. Two held values like
+		// (1416737.65, 811329.71) -- Ohio State Plane South in US survey feet,
+		// loaded without ever being reprojected. A longitude cannot exceed 180,
+		// so these are unambiguously not degrees.
+		//
+		// The reprojection is only applied where it demonstrably fixes the row:
+		// the result must land inside the polygon of the county the row already
+		// claims to be in. That check is what makes this a repair rather than a
+		// guess -- EPSG:3735 was chosen because it is the only candidate that
+		// satisfies it, with Ohio North, and both zones in metres, all landing
+		// in Michigan, Maine or Quebec.
 		res, err := tx.Exec(`
+			UPDATE ohio_addresses a
+			SET geom = ST_Transform(ST_SetSRID(ST_MakePoint(ST_X(a.geom), ST_Y(a.geom)), 3735), 4326)
+			FROM ohio_counties c
+			WHERE (ABS(ST_X(a.geom)) > 180 OR ABS(ST_Y(a.geom)) > 90)
+			  AND c.bounds_geometry IS NOT NULL
+			  AND c.county_name ILIKE a.county
+			  AND ST_Contains(
+				c.bounds_geometry,
+				ST_Transform(ST_SetSRID(ST_MakePoint(ST_X(a.geom), ST_Y(a.geom)), 3735), 4326))
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to reproject state plane coordinates: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("Migration 23: reprojected %d row(s) from Ohio State Plane into WGS84", n)
+		}
+
+		res, err = tx.Exec(`
 			UPDATE ohio_addresses a
 			SET region = s.state_abbr
 			FROM us_states s
@@ -1692,6 +1723,31 @@ func addRegionToAddressUniqueness() error {
 		if n, _ := res.RowsAffected(); n > 0 {
 			log.Printf("Migration 23: attributed %d further row(s) from the nearest boundary within %.0fm",
 				n, shorelineToleranceMeters)
+		}
+
+		// Last resort: the county the row already claims.
+		//
+		// A row can have unusable coordinates and still say where it is. The
+		// remaining production row sits at (-0.0001, 0.0001) -- Null Island,
+		// the placeholder a missing coordinate becomes -- while naming a real
+		// Ohio county. ohio_counties holds only Ohio counties, so a name match
+		// there is evidence of the state even when the point is worthless.
+		//
+		// The bad coordinate is not hidden by this: it still shows up under
+		// outside_us_bounds on /admin/data-quality, which is where a wrong
+		// location belongs rather than blocking a uniqueness migration.
+		res, err = tx.Exec(`
+			UPDATE ohio_addresses a
+			SET region = 'OH'
+			FROM ohio_counties c
+			WHERE (a.region IS NULL OR a.region = '')
+			  AND c.county_name ILIKE a.county
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to attribute blank regions from county names: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("Migration 23: attributed %d row(s) from their Ohio county name despite unusable coordinates", n)
 		}
 
 		// Whatever is left is a genuine coordinate error, not a missing state.
