@@ -1619,12 +1619,61 @@ func addRegionToAddressUniqueness() error {
 		return fmt.Errorf("failed to count blank regions: %w", err)
 	}
 
-	if blanks > 0 && foreign != "" {
-		return fmt.Errorf("%d row(s) have no region while rows also exist for %s: "+
-			"a blank cannot be assumed to be Ohio, so set them explicitly before migrating", blanks, foreign)
-	}
 	if foreign != "" {
 		log.Printf("Migration 23: regions besides OH already present (%s); leaving them as they are", foreign)
+	}
+
+	// Blank regions are attributed from the coordinates, not guessed.
+	//
+	// Production had 985,634 of them -- about 17% of the table -- alongside
+	// rows for nine other regions. Stamping those 'OH' because the dataset is
+	// "the Ohio one" is the same mistake as the backfill this replaced, just
+	// quieter: border-county extracts genuinely contain Indiana, Pennsylvania
+	// and Michigan addresses, and a mislabel is permanent and invisible.
+	//
+	// us_states already holds TIGER boundaries behind a GIST index -- it is
+	// what /states/lookup answers from -- so each row can be asked where it
+	// actually is. Evidence instead of assumption.
+	if blanks > 0 {
+		var haveBoundaries bool
+		if err := tx.QueryRow(`
+			SELECT EXISTS(SELECT 1 FROM us_states WHERE geometry IS NOT NULL)
+		`).Scan(&haveBoundaries); err != nil {
+			return fmt.Errorf("failed to check for state boundaries: %w", err)
+		}
+		if !haveBoundaries {
+			return fmt.Errorf("%d row(s) have no region and us_states holds no geometry to attribute them from; "+
+				"load state boundaries first", blanks)
+		}
+
+		res, err := tx.Exec(`
+			UPDATE ohio_addresses a
+			SET region = s.state_abbr
+			FROM us_states s
+			WHERE (a.region IS NULL OR a.region = '')
+			  AND s.geometry IS NOT NULL
+			  AND ST_Contains(s.geometry, a.geom)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to attribute blank regions from coordinates: %w", err)
+		}
+		attributed, _ := res.RowsAffected()
+		log.Printf("Migration 23: attributed %d of %d blank region(s) from their coordinates", attributed, blanks)
+
+		// Whatever is left sits outside every state boundary, which means the
+		// coordinates are wrong rather than the region being missing. Naming
+		// the count beats inventing a state for them.
+		var stranded int
+		if err := tx.QueryRow(`
+			SELECT COUNT(*) FROM ohio_addresses WHERE region IS NULL OR region = ''
+		`).Scan(&stranded); err != nil {
+			return fmt.Errorf("failed to recount blank regions: %w", err)
+		}
+		if stranded > 0 {
+			return fmt.Errorf("%d row(s) still have no region after attribution: their coordinates fall outside "+
+				"every US state boundary, so the location is wrong rather than the state missing. "+
+				"Fix or delete them, then re-run", stranded)
+		}
 	}
 
 	// Upper-casing merges 'oh' into 'OH'. That cannot produce a duplicate
@@ -1634,23 +1683,16 @@ func addRegionToAddressUniqueness() error {
 	// construct the collision and being refused by the old constraint.
 
 	statements := []string{
-		// Two statements, and they are NOT interchangeable. Collapsing them
-		// into one `SET region = 'OH' WHERE ... OR region <> 'OH'` -- which an
-		// earlier revision of this migration did, to save a table rewrite --
-		// relabels every Indiana, Pennsylvania and Michigan row as Ohio.
-		// Permanently, and with nothing in the logs to say so.
-		//
-		// Case normalisation only touches rows whose case differs, and the
-		// backfill only touches blanks. Both are narrow: the WHERE clauses
-		// keep them off the ~5.8M rows that are already correct, so neither is
-		// the full-table rewrite the single statement appeared to avoid.
+		// Case only. Blank regions were attributed from coordinates above, and
+		// an earlier revision of this migration wrote
+		// `SET region = 'OH' WHERE ... OR region <> 'OH'` here -- one statement
+		// instead of two, to save a table rewrite -- which relabels every
+		// Indiana, Pennsylvania and Michigan row as Ohio. Permanently, and with
+		// nothing in the logs to say so. The WHERE clause below touches only
+		// rows whose case actually differs.
 		`UPDATE ohio_addresses
 		 SET region = UPPER(region)
 		 WHERE region IS NOT NULL AND region <> UPPER(region)`,
-
-		`UPDATE ohio_addresses
-		 SET region = 'OH'
-		 WHERE region IS NULL OR region = ''`,
 
 		// SHARE lock: readers unaffected.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ohio_addresses_hash_region
