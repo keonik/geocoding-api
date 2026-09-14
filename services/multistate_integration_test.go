@@ -440,3 +440,92 @@ func TestOldKeyMakesNormalisationCollisionsImpossible(t *testing.T) {
 		t.Error("two rows shared a hash under the old constraint; a collision after normalisation would be possible")
 	}
 }
+
+// Production had 985,634 rows with no state at all -- about 17% of the table --
+// alongside rows for nine other regions. Stamping those 'OH' because it is "the
+// Ohio dataset" is the same mistake as the backfill that had to be reverted,
+// just quieter: border-county extracts genuinely contain Indiana, Pennsylvania
+// and Michigan addresses, and a mislabel is permanent and invisible.
+//
+// They are attributed from their coordinates instead, against the TIGER
+// boundaries us_states already holds.
+func TestBlankRegionsAreAttributedFromCoordinates(t *testing.T) {
+	// The pre-migration fixture: attribution runs before the region CHECK is
+	// added, so blanks have to be possible here or the test has nothing to
+	// attribute and skips itself into uselessness.
+	db := setupMultiStateDB(t, false)
+
+	if _, err := db.Exec(`
+		CREATE TABLE us_states (
+			id BIGSERIAL PRIMARY KEY,
+			state_fips VARCHAR(2) NOT NULL UNIQUE,
+			state_abbr VARCHAR(2) NOT NULL UNIQUE,
+			state_name VARCHAR(255) NOT NULL UNIQUE,
+			geometry GEOMETRY(MULTIPOLYGON, 4326)
+		)`); err != nil {
+		t.Fatalf("create us_states: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO us_states (state_fips, state_abbr, state_name, geometry) VALUES
+		 ('39','OH','Ohio',    ST_Multi(ST_MakeEnvelope(-85.0,38.4,-80.5,42.0,4326))),
+		 ('18','IN','Indiana', ST_Multi(ST_MakeEnvelope(-88.1,37.8,-85.0,41.8,4326)))
+	`); err != nil {
+		t.Fatalf("seed boundaries: %v", err)
+	}
+
+	// One blank in Ohio, one blank in Indiana. A single stamp cannot be right
+	// for both.
+	for _, row := range []struct {
+		hash, city string
+		lng, lat   float64
+	}{
+		{"blank-oh", "Columbus", -83.0, 40.0},
+		{"blank-in", "Fort Wayne", -85.5, 41.1},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO ohio_addresses (hash, house_number, street, unit, city, district, region, postcode, county, geom, full_address)
+			VALUES ($1,'1','Main Street','',$2,'','XX','','Unknown',
+			        ST_SetSRID(ST_MakePoint($3,$4),4326),'1 Main Street')
+		`, row.hash, row.city, row.lng, row.lat); err != nil {
+			t.Fatalf("seed %s: %v", row.hash, err)
+		}
+	}
+	// Blank them out. The column is NOT NULL before migration 23, so '' is the
+	// blank that actually occurs -- and is what production held 985,634 of.
+	if _, err := db.Exec(`UPDATE ohio_addresses SET region = '' WHERE hash LIKE 'blank-%'`); err != nil {
+		t.Fatalf("could not blank the regions the test depends on: %v", err)
+	}
+
+	// The attribution the migration performs.
+	if _, err := db.Exec(`
+		UPDATE ohio_addresses a
+		SET region = s.state_abbr
+		FROM us_states s
+		WHERE (a.region IS NULL OR a.region = '')
+		  AND s.geometry IS NOT NULL
+		  AND ST_Contains(s.geometry, a.geom)
+	`); err != nil {
+		t.Fatalf("attribute: %v", err)
+	}
+
+	got := map[string]string{}
+	rows, err := db.Query(`SELECT hash, region FROM ohio_addresses WHERE hash LIKE 'blank-%'`)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h, r string
+		if err := rows.Scan(&h, &r); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[h] = r
+	}
+
+	if got["blank-oh"] != "OH" {
+		t.Errorf("the Columbus row was attributed %q, want OH", got["blank-oh"])
+	}
+	if got["blank-in"] != "IN" {
+		t.Errorf("the Fort Wayne row was attributed %q, want IN -- stamping every blank OH is the bug this replaces", got["blank-in"])
+	}
+}
