@@ -353,3 +353,90 @@ func TestStateAndBBoxComposeCorrectly(t *testing.T) {
 	}
 	t.Logf("bbox %d, +state %d, +query %d", boxOnly, combined, withQuery)
 }
+
+// Production is not single-state and never was. Coverage reports Indiana (249),
+// Pennsylvania (170) and Michigan (59) rows alongside Ohio, plus a lowercase
+// 'oh' and several junk codes from the legacy loader truncating a state name to
+// two characters.
+//
+// An earlier revision of migration 23 backfilled with
+// `SET region = 'OH' WHERE region IS NULL OR region = ” OR region <> 'OH'`,
+// collapsing two statements into one to save a table rewrite. Against that data
+// it relabels every out-of-state row as Ohio, permanently and silently. This
+// pins the behaviour the migration must have instead.
+func TestRegionNormalisationLeavesOtherStatesAlone(t *testing.T) {
+	db := setupMultiStateDB(t, true)
+
+	seed := []struct{ house, county, region string }{
+		{"1", "Franklin", "OH"},
+		{"2", "Allen", "IN"},
+		{"3", "Erie", "PA"},
+		{"4", "Wayne", "MI"},
+	}
+	for _, r := range seed {
+		if _, err := insertAddress(db, r.house, "Main Street", "", "Springfield", "", r.county, r.region); err != nil {
+			t.Fatalf("seed %s: %v", r.region, err)
+		}
+	}
+
+	// What the migration does to regions, in the order it does it.
+	if _, err := db.Exec(`UPDATE ohio_addresses SET region = UPPER(region)
+		WHERE region IS NOT NULL AND region <> UPPER(region)`); err != nil {
+		t.Fatalf("normalise case: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE ohio_addresses SET region = 'OH'
+		WHERE region IS NULL OR region = ''`); err != nil {
+		t.Fatalf("backfill blanks: %v", err)
+	}
+
+	rows, err := db.Query(`SELECT region, COUNT(*) FROM ohio_addresses GROUP BY region ORDER BY region`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	got := map[string]int{}
+	for rows.Next() {
+		var region string
+		var n int
+		if err := rows.Scan(&region, &n); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[region] = n
+	}
+
+	for _, want := range []string{"OH", "IN", "PA", "MI"} {
+		if got[want] != 1 {
+			t.Errorf("region %s has %d rows, want 1 -- out-of-state data was relabelled", want, got[want])
+		}
+	}
+	if len(got) != 4 {
+		t.Errorf("got %d distinct regions (%v), want 4", len(got), got)
+	}
+}
+
+// The old constraint makes hash unique on its own, so no two rows share a hash
+// in any region -- which is why normalising case cannot create a duplicate
+// (hash, region) pair, and why migration 23 needs no collision pre-check.
+func TestOldKeyMakesNormalisationCollisionsImpossible(t *testing.T) {
+	db := setupMultiStateDB(t, false)
+
+	hash := "1|Main Street||Springfield|"
+	insert := func(region string) error {
+		_, err := db.Exec(`
+			INSERT INTO ohio_addresses (hash, house_number, street, unit, city, district, region, postcode, county, geom, full_address)
+			VALUES ($1,'1','Main Street','','Springfield','',$2,'','Franklin',
+			        ST_SetSRID(ST_MakePoint(-83.0,40.0),4326),'1 Main Street, Springfield')
+		`, hash, region)
+		return err
+	}
+
+	if err := insert("OH"); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	// Same hash, different case. If this were possible, upper-casing would
+	// merge the two and break the unique index build.
+	if err := insert("oh"); err == nil {
+		t.Error("two rows shared a hash under the old constraint; a collision after normalisation would be possible")
+	}
+}
