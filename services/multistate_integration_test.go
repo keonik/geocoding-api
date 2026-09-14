@@ -529,3 +529,88 @@ func TestBlankRegionsAreAttributedFromCoordinates(t *testing.T) {
 		t.Errorf("the Fort Wayne row was attributed %q, want IN -- stamping every blank OH is the bug this replaces", got["blank-in"])
 	}
 }
+
+// TIGER state polygons stop at the waterline, so a legitimate lakefront or
+// island address can sit outside every state boundary by a few metres while
+// being unambiguously in that state. Production had exactly three rows that
+// ST_Contains could not place.
+//
+// The tolerance has to be wide enough for the waterline and far narrower than
+// the distance to another state, so it can never move an address across a
+// border.
+func TestShorelineAddressesAttributeToTheNearestState(t *testing.T) {
+	db := setupMultiStateDB(t, false)
+
+	if _, err := db.Exec(`
+		CREATE TABLE us_states (
+			id BIGSERIAL PRIMARY KEY,
+			state_fips VARCHAR(2) NOT NULL UNIQUE,
+			state_abbr VARCHAR(2) NOT NULL UNIQUE,
+			state_name VARCHAR(255) NOT NULL UNIQUE,
+			geometry GEOMETRY(MULTIPOLYGON, 4326)
+		)`); err != nil {
+		t.Fatalf("create us_states: %v", err)
+	}
+	// Ohio's northern edge at 41.7; Lake Erie is above it.
+	if _, err := db.Exec(`
+		INSERT INTO us_states (state_fips, state_abbr, state_name, geometry)
+		VALUES ('39','OH','Ohio', ST_Multi(ST_MakeEnvelope(-85.0,38.4,-80.5,41.7,4326)))
+	`); err != nil {
+		t.Fatalf("seed boundary: %v", err)
+	}
+
+	cases := []struct {
+		hash      string
+		lng, lat  float64
+		wantState string
+		why       string
+	}{
+		{"on-land", -83.0, 40.0, "OH", "well inside the boundary"},
+		{"shoreline", -82.7, 41.7020, "OH", "about 220m offshore, still Ohio"},
+		{"at-sea", -40.0, 35.0, "", "mid-Atlantic, a real coordinate error"},
+	}
+	for _, c := range cases {
+		if _, err := db.Exec(`
+			INSERT INTO ohio_addresses (hash, house_number, street, unit, city, district, region, postcode, county, geom, full_address)
+			VALUES ($1,'1','Main Street','','Somewhere','','','','Unknown',
+			        ST_SetSRID(ST_MakePoint($2,$3),4326),'1 Main Street')
+		`, c.hash, c.lng, c.lat); err != nil {
+			t.Fatalf("seed %s: %v", c.hash, err)
+		}
+	}
+
+	// Both attribution passes, in the order the migration runs them.
+	if _, err := db.Exec(`
+		UPDATE ohio_addresses a SET region = s.state_abbr
+		FROM us_states s
+		WHERE (a.region IS NULL OR a.region = '')
+		  AND s.geometry IS NOT NULL AND ST_Contains(s.geometry, a.geom)`); err != nil {
+		t.Fatalf("contains pass: %v", err)
+	}
+	if _, err := db.Exec(`
+		UPDATE ohio_addresses a SET region = nearest.state_abbr
+		FROM (
+			SELECT blank.id, s.state_abbr
+			FROM ohio_addresses blank
+			CROSS JOIN LATERAL (
+				SELECT s2.state_abbr, s2.geometry FROM us_states s2
+				WHERE s2.geometry IS NOT NULL
+				ORDER BY s2.geometry <-> blank.geom LIMIT 1
+			) s
+			WHERE (blank.region IS NULL OR blank.region = '')
+			  AND ST_DWithin(blank.geom::geography, s.geometry::geography, 500)
+		) nearest
+		WHERE a.id = nearest.id`); err != nil {
+		t.Fatalf("nearest pass: %v", err)
+	}
+
+	for _, c := range cases {
+		var got string
+		if err := db.QueryRow(`SELECT region FROM ohio_addresses WHERE hash = $1`, c.hash).Scan(&got); err != nil {
+			t.Fatalf("read %s: %v", c.hash, err)
+		}
+		if got != c.wantState {
+			t.Errorf("%s (%s): region = %q, want %q", c.hash, c.why, got, c.wantState)
+		}
+	}
+}

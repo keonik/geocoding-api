@@ -1660,19 +1660,76 @@ func addRegionToAddressUniqueness() error {
 		attributed, _ := res.RowsAffected()
 		log.Printf("Migration 23: attributed %d of %d blank region(s) from their coordinates", attributed, blanks)
 
-		// Whatever is left sits outside every state boundary, which means the
-		// coordinates are wrong rather than the region being missing. Naming
-		// the count beats inventing a state for them.
-		var stranded int
-		if err := tx.QueryRow(`
-			SELECT COUNT(*) FROM ohio_addresses WHERE region IS NULL OR region = ''
-		`).Scan(&stranded); err != nil {
-			return fmt.Errorf("failed to recount blank regions: %w", err)
+		// A second pass for points that sit just outside a boundary.
+		//
+		// TIGER state polygons are land only, so a legitimate lakefront or
+		// coastal address -- Lake Erie shoreline, an island, a pier -- can fall
+		// outside every one of them by a few metres while being unambiguously
+		// in that state. Falling back to the nearest boundary within a short
+		// distance attributes those correctly; anything further away is a real
+		// coordinate error and is left for the check below.
+		res, err = tx.Exec(`
+			UPDATE ohio_addresses a
+			SET region = nearest.state_abbr
+			FROM (
+				SELECT blank.id, s.state_abbr
+				FROM ohio_addresses blank
+				CROSS JOIN LATERAL (
+					SELECT s2.state_abbr, s2.geometry
+					FROM us_states s2
+					WHERE s2.geometry IS NOT NULL
+					ORDER BY s2.geometry <-> blank.geom
+					LIMIT 1
+				) s
+				WHERE (blank.region IS NULL OR blank.region = '')
+				  AND ST_DWithin(blank.geom::geography, s.geometry::geography, $1)
+			) nearest
+			WHERE a.id = nearest.id
+		`, shorelineToleranceMeters)
+		if err != nil {
+			return fmt.Errorf("failed to attribute blank regions from the nearest boundary: %w", err)
 		}
-		if stranded > 0 {
-			return fmt.Errorf("%d row(s) still have no region after attribution: their coordinates fall outside "+
-				"every US state boundary, so the location is wrong rather than the state missing. "+
-				"Fix or delete them, then re-run", stranded)
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("Migration 23: attributed %d further row(s) from the nearest boundary within %.0fm",
+				n, shorelineToleranceMeters)
+		}
+
+		// Whatever is left is a genuine coordinate error, not a missing state.
+		// The details go in the error rather than only the log, because that
+		// error is surfaced on /health -- so whoever has to decide what to do
+		// with these rows can see what they are without shell access.
+		rows, err := tx.Query(`
+			SELECT id, COALESCE(NULLIF(county, ''), '?'),
+			       round(ST_X(geom)::numeric, 4), round(ST_Y(geom)::numeric, 4)
+			FROM ohio_addresses
+			WHERE region IS NULL OR region = ''
+			ORDER BY id
+			LIMIT 10
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to inspect rows with no region: %w", err)
+		}
+		var stranded []string
+		for rows.Next() {
+			var id int64
+			var county string
+			var lng, lat float64
+			if err := rows.Scan(&id, &county, &lng, &lat); err != nil {
+				rows.Close()
+				return fmt.Errorf("failed to read rows with no region: %w", err)
+			}
+			stranded = append(stranded, fmt.Sprintf("id=%d county=%s at (%.4f, %.4f)", id, county, lng, lat))
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("failed to read rows with no region: %w", err)
+		}
+
+		if len(stranded) > 0 {
+			return fmt.Errorf("%d row(s) still have no region: their coordinates are not within %.0fm of any US "+
+				"state boundary, so the location is wrong rather than the state missing. Fix or delete them, "+
+				"then re-run. Offending rows: %s",
+				len(stranded), shorelineToleranceMeters, strings.Join(stranded, "; "))
 		}
 	}
 
@@ -1818,6 +1875,15 @@ func RequireSchemaVersion(db *sql.DB, version int) error {
 	return fmt.Errorf("database schema is at version %d and this operation needs %d; "+
 		"migrations are still running -- check /health and retry", applied.Int64, version)
 }
+
+// shorelineToleranceMeters is how far outside a state boundary a point may sit
+// and still be attributed to it.
+//
+// TIGER polygons stop at the waterline, so lakefront and island addresses are
+// legitimately outside them by a small margin. 500m is comfortably more than
+// that margin and far less than the distance to a neighbouring state, so it
+// cannot silently move an address across a border.
+const shorelineToleranceMeters = 500.0
 
 // SchemaVersionRegionUniqueness is migration 23, which keys address uniqueness
 // on (hash, region). Every ingest path's ON CONFLICT depends on the index it
