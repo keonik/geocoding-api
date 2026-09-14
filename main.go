@@ -344,6 +344,7 @@ func main() {
 	admin.PUT("/users/:id/admin", handlers.UpdateUserAdminHandler)
 	admin.GET("/api-keys", handlers.GetAllAPIKeysHandler)
 	admin.GET("/system-status", handlers.GetSystemStatusHandler)
+	admin.GET("/data-quality", handlers.GetDataQualityHandler)
 	admin.POST("/usage-counters/rebuild", handlers.RebuildUsageCountersHandler)
 	admin.GET("/counties", handlers.GetCountyStatsHandler)
 	admin.POST("/counties/load", handlers.LoadCountyBoundariesHandler)
