@@ -438,6 +438,7 @@ func (s *DatasetService) ProcessGeoJSONDataset(datasetID int) error {
 	// An import is the only thing that changes coverage, so drop the cached
 	// snapshot instead of serving a stale one for the rest of the TTL.
 	ResetCoverageCache()
+	ResetDataQualityCache()
 
 	log.Printf("Successfully processed dataset %d: %d records imported, %d duplicates skipped, %d failed",
 		datasetID, recordCount, skippedDuplicates, importer.failed)

@@ -86,12 +86,16 @@ func buildCoverage(db *sql.DB) (*Coverage, error) {
 		db = database.DB
 	}
 
+	// No COALESCE to 'OH'. An earlier version folded every blank region into
+	// the Ohio bucket, which is precisely why 985,634 stateless rows went
+	// unnoticed and why the Ohio count read ~1M higher than it was. A blank is
+	// reported as what it is.
 	rows, err := db.Query(`
-		SELECT COALESCE(NULLIF(region, ''), 'OH') AS state,
+		SELECT COALESCE(NULLIF(region, ''), '(none)') AS state,
 		       COUNT(DISTINCT county) AS counties,
 		       COUNT(*) AS addresses
 		FROM ohio_addresses
-		GROUP BY COALESCE(NULLIF(region, ''), 'OH')
+		GROUP BY COALESCE(NULLIF(region, ''), '(none)')
 		ORDER BY COUNT(*) DESC
 	`)
 	if err != nil {
@@ -132,7 +136,7 @@ func GetStateCoverage(db *sql.DB, state string) ([]CountyCoverage, error) {
 	rows, err := db.Query(`
 		SELECT county, COUNT(*) AS addresses
 		FROM ohio_addresses
-		WHERE COALESCE(NULLIF(region, ''), 'OH') = UPPER($1)
+		WHERE region = UPPER($1)
 		  AND county <> ''
 		GROUP BY county
 		ORDER BY county
