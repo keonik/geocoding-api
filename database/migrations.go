@@ -1591,32 +1591,66 @@ func addRegionToAddressUniqueness() error {
 	}
 	defer tx.Rollback()
 
-	// The backfill below stamps 'OH' onto every blank region, which is only
-	// correct because everything loaded so far is Ohio. That is an assumption,
-	// and a wrong one would be permanent and invisible -- so verify it rather
-	// than trust it.
+	// Blank regions get stamped 'OH' below, which is only sound if Ohio is the
+	// only state present. Production turned out to hold Indiana, Pennsylvania
+	// and Michigan rows as well, so "everything here is Ohio" was never true --
+	// it just looked true from the code.
+	//
+	// The two conditions are separate. Other states are fine on their own;
+	// what is not fine is other states AND blanks, because then a blank could
+	// belong to any of them and stamping it OH is a guess that cannot be
+	// undone.
 	var foreign string
 	// COALESCE because string_agg over no rows is NULL, and the empty-table
 	// case -- a fresh install -- is the common one.
 	err = tx.QueryRow(`
-		SELECT COALESCE(string_agg(DISTINCT region, ', '), '')
+		SELECT COALESCE(string_agg(DISTINCT region, ', ' ORDER BY region), '')
 		FROM ohio_addresses
 		WHERE region IS NOT NULL AND region <> '' AND UPPER(region) <> 'OH'
 	`).Scan(&foreign)
 	if err != nil {
 		return fmt.Errorf("failed to check existing regions: %w", err)
 	}
-	if foreign != "" {
-		return fmt.Errorf("refusing to backfill blank regions to OH: rows already exist for %s, "+
-			"so a blank region cannot be assumed to be Ohio", foreign)
+
+	var blanks int
+	if err := tx.QueryRow(`
+		SELECT COUNT(*) FROM ohio_addresses WHERE region IS NULL OR region = ''
+	`).Scan(&blanks); err != nil {
+		return fmt.Errorf("failed to count blank regions: %w", err)
 	}
 
+	if blanks > 0 && foreign != "" {
+		return fmt.Errorf("%d row(s) have no region while rows also exist for %s: "+
+			"a blank cannot be assumed to be Ohio, so set them explicitly before migrating", blanks, foreign)
+	}
+	if foreign != "" {
+		log.Printf("Migration 23: regions besides OH already present (%s); leaving them as they are", foreign)
+	}
+
+	// Upper-casing merges 'oh' into 'OH'. That cannot produce a duplicate
+	// (hash, region) pair, because the constraint this migration replaces makes
+	// hash unique on its own -- so no two rows share a hash to begin with, in
+	// any region. Checked rather than assumed while writing this, by trying to
+	// construct the collision and being refused by the old constraint.
+
 	statements := []string{
-		// One pass, not two. Each full-table UPDATE rewrites every tuple,
-		// roughly doubling the table until vacuum and generating WAL to match.
+		// Two statements, and they are NOT interchangeable. Collapsing them
+		// into one `SET region = 'OH' WHERE ... OR region <> 'OH'` -- which an
+		// earlier revision of this migration did, to save a table rewrite --
+		// relabels every Indiana, Pennsylvania and Michigan row as Ohio.
+		// Permanently, and with nothing in the logs to say so.
+		//
+		// Case normalisation only touches rows whose case differs, and the
+		// backfill only touches blanks. Both are narrow: the WHERE clauses
+		// keep them off the ~5.8M rows that are already correct, so neither is
+		// the full-table rewrite the single statement appeared to avoid.
+		`UPDATE ohio_addresses
+		 SET region = UPPER(region)
+		 WHERE region IS NOT NULL AND region <> UPPER(region)`,
+
 		`UPDATE ohio_addresses
 		 SET region = 'OH'
-		 WHERE region IS NULL OR region = '' OR region <> 'OH'`,
+		 WHERE region IS NULL OR region = ''`,
 
 		// SHARE lock: readers unaffected.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_ohio_addresses_hash_region
