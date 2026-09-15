@@ -236,6 +236,9 @@ func getEndpointName(path string) string {
 	if strings.Contains(path, "/search") {
 		return "search"
 	}
+	if strings.Contains(path, "/address/validate") {
+		return "addresses"
+	}
 	if strings.Contains(path, "/addresses") {
 		return "addresses"
 	}

@@ -305,6 +305,7 @@ func main() {
 	protected.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
 	protected.GET("/reverse", handlers.ReverseGeocodeHandler)
 	protected.POST("/geocode/batch", handlers.BatchGeocodeHandler)
+	protected.POST("/address/validate", handlers.ValidateAddressHandler)
 	protected.GET("/search", handlers.SearchZipCodesHandler)
 
 	// Distance and proximity endpoints
