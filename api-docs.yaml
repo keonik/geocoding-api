@@ -468,6 +468,50 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /tiles/{layer}/{z}/{x}/{y}:
+    get:
+      security:
+        - ApiKeyAuth: []
+      tags: [Boundaries]
+      summary: County and state outlines as Mapbox Vector Tiles
+      description: >-
+        Standard slippy-map tiles, ready for MapLibre or Leaflet. Layers are
+        separate because the scope differs: the counties layer needs the
+        counties permission and the states layer needs states, matching the
+        boundary endpoints. An empty tile returns 204 rather than an encoding
+        with nothing in it. The .mvt suffix is conventional and optional.
+      parameters:
+        - name: layer
+          in: path
+          required: true
+          schema: { type: string, enum: [counties, states] }
+        - name: z
+          in: path
+          required: true
+          description: Zoom, 0 to 14. Outlines carry no further detail past that.
+          schema: { type: integer, minimum: 0, maximum: 14 }
+        - name: x
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: y
+          in: path
+          required: true
+          description: May carry a .mvt suffix.
+          schema: { type: string }
+      responses:
+        "200":
+          description: A Mapbox Vector Tile
+          content:
+            application/vnd.mapbox-vector-tile:
+              schema: { type: string, format: binary }
+        "204":
+          description: No features in this tile
+        "400":
+          description: Coordinates outside the grid for that zoom
+        "404":
+          description: Unknown layer
+
   /geocode/batch:
     post:
       security:
