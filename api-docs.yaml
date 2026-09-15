@@ -512,6 +512,38 @@ paths:
         "404":
           description: Unknown layer
 
+  /address/validate:
+    post:
+      security:
+        - ApiKeyAuth: []
+      tags: [Addresses]
+      summary: Check an address is real and get its canonical form
+      description: >-
+        Distinct from search, which answers "what matches this". This answers
+        "should I store what the user typed". Returns how the input was parsed,
+        whether the address actually exists in the data, the canonical form when
+        it does, and a per-field list of what differs with the reason -- an
+        expanded abbreviation, normalised capitalisation, a filled-in postcode,
+        or a genuine disagreement. A well-formed address that does not exist is
+        a 200 with verified false, not an error; no canonical form is offered
+        for it, since echoing the input back would present the caller's guess as
+        authority.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address: { type: string }
+            example: { address: "100 main st, columbus" }
+      responses:
+        "200":
+          description: The parse, whether it is real, and what differs
+        "400":
+          description: Empty address or a malformed body
+
   /geocode/batch:
     post:
       security:
