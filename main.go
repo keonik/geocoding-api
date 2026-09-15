@@ -303,6 +303,7 @@ func main() {
 
 	// Geocoding endpoints
 	protected.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
+	protected.GET("/reverse", handlers.ReverseGeocodeHandler)
 	protected.GET("/search", handlers.SearchZipCodesHandler)
 
 	// Distance and proximity endpoints

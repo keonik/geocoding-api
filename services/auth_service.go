@@ -1406,7 +1406,11 @@ func trimSpace(s string) string {
 func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) bool {
 	// Map endpoints to required permissions
 	permissionMap := map[string]string{
-		"geocode":   "geocode",
+		"geocode": "geocode",
+		// Reverse geocoding is the inverse of the same operation, so it takes
+		// the same scope. Giving it one of its own would 403 every key already
+		// issued, none of which carry a "reverse" permission.
+		"reverse":   "geocode",
 		"search":    "search",
 		"distance":  "distance",
 		"nearby":    "distance",
