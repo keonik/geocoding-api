@@ -304,6 +304,7 @@ func main() {
 	// Geocoding endpoints
 	protected.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
 	protected.GET("/reverse", handlers.ReverseGeocodeHandler)
+	protected.POST("/geocode/batch", handlers.BatchGeocodeHandler)
 	protected.GET("/search", handlers.SearchZipCodesHandler)
 
 	// Distance and proximity endpoints

@@ -161,6 +161,12 @@ func RunMigrations() error {
 			Up:          addRegionToAddressUniqueness,
 			Down:        revertRegionAddressUniqueness,
 		},
+		{
+			Version:     24,
+			Description: "Record how many lookups a request was worth, so a batch bills as more than one call",
+			Up:          addUsageUnits,
+			Down:        removeUsageUnits,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1945,3 +1951,41 @@ const shorelineToleranceMeters = 500.0
 // on (hash, region). Every ingest path's ON CONFLICT depends on the index it
 // creates.
 const SchemaVersionRegionUniqueness = 23
+
+// addUsageUnits records how many lookups one request performed.
+//
+// Everything before this assumed one request meant one billable lookup, which
+// COUNT(*) over usage_records expressed exactly. Batch geocoding breaks that:
+// 500 addresses in one POST is 500 lookups, and counting it once both
+// under-bills and hands a caller a way around their own rate limit.
+//
+// DEFAULT 1 makes every existing row correct without a backfill -- each really
+// was one lookup -- and keeps single-lookup endpoints writing nothing extra.
+func addUsageUnits() error {
+	statements := []string{
+		`ALTER TABLE usage_records ADD COLUMN IF NOT EXISTS units INTEGER NOT NULL DEFAULT 1`,
+		// A non-positive unit count would silently subtract from a user's
+		// consumption, which is a way to bill nothing at all.
+		`ALTER TABLE usage_records DROP CONSTRAINT IF EXISTS usage_records_units_positive`,
+		`ALTER TABLE usage_records ADD CONSTRAINT usage_records_units_positive CHECK (units >= 1)`,
+	}
+	for _, stmt := range statements {
+		if _, err := DB.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to add usage units: %w", err)
+		}
+	}
+	return nil
+}
+
+func removeUsageUnits() error {
+	statements := []string{
+		`ALTER TABLE usage_records DROP CONSTRAINT IF EXISTS usage_records_units_positive`,
+		`ALTER TABLE usage_records DROP COLUMN IF EXISTS units`,
+	}
+	for _, stmt := range statements {
+		if _, err := DB.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to drop usage units: %w", err)
+		}
+	}
+	return nil
+}

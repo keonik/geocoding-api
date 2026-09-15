@@ -288,6 +288,13 @@ func (as *AuthService) ValidateAPIKey(apiKey string) (*models.User, *models.APIK
 	return &user, &key, nil
 }
 
+// BillableUnitsKey is the echo context key a handler uses to declare how many
+// lookups it performed, for APIKeyAuth to bill and rate-limit by.
+//
+// It lives here rather than in middleware because middleware imports handlers,
+// so handlers cannot import middleware back. services sits below both.
+const BillableUnitsKey = "billable_units"
+
 // Scope names for RateLimitStatus.Exceeded.
 const (
 	ScopeDaily   = "daily"
@@ -583,15 +590,25 @@ func (a *AuthService) DeleteAPIKey(userID, keyID int) error {
 }
 
 // RecordUsage logs an API call for billing and analytics
-func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string, statusCode, responseTime int, ipAddress, userAgent string, billable bool) error {
+// RecordUsage writes one audit row and moves the counters by units.
+//
+// units is how many lookups the request performed: 1 for a single endpoint,
+// len(items) for a batch. It is a column rather than N audit rows because one
+// request is one request -- and because RebuildUsageCounters derives the
+// counters from this table, so the two have to agree on what a row is worth.
+func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string, statusCode, responseTime int, ipAddress, userAgent string, billable bool, units int) error {
+	if units < 1 {
+		units = 1
+	}
+
 	// Deliberately silent on success. This runs once per authenticated request,
 	// so logging the happy path put two lines in the log for every API call --
 	// log volume proportional to traffic, with nothing in it that a usage_records
 	// query could not answer better.
 	_, err := database.DB.Exec(`
-		INSERT INTO usage_records (user_id, api_key_id, endpoint, method, status_code, response_time_ms, ip_address, user_agent, billable, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-	`, userID, apiKeyID, endpoint, method, statusCode, responseTime, ipAddress, userAgent, billable)
+		INSERT INTO usage_records (user_id, api_key_id, endpoint, method, status_code, response_time_ms, ip_address, user_agent, billable, units, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+	`, userID, apiKeyID, endpoint, method, statusCode, responseTime, ipAddress, userAgent, billable, units)
 
 	if err != nil {
 		log.Printf("Failed to record usage for user %d (endpoint=%s): %v", userID, endpoint, err)
@@ -605,7 +622,7 @@ func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string
 		return nil
 	}
 
-	if err := as.incrementUsageCounters(userID); err != nil {
+	if err := as.incrementUsageCounters(userID, units); err != nil {
 		// The audit row is already written, which is the durable record, so a
 		// counter failure is logged rather than returned -- failing here would
 		// make the caller think the call went unrecorded. It does mean the
@@ -623,15 +640,15 @@ func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string
 // round trip, and the increment happens inside the database rather than as a
 // read-modify-write, so concurrent requests cannot lose counts against each
 // other.
-func (as *AuthService) incrementUsageCounters(userID int) error {
+func (as *AuthService) incrementUsageCounters(userID, units int) error {
 	_, err := database.DB.Exec(`
 		INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
 		VALUES
-			($1, 'month', date_trunc('month', CURRENT_DATE)::date, 1, NOW()),
-			($1, 'day', CURRENT_DATE, 1, NOW())
+			($1, 'month', date_trunc('month', CURRENT_DATE)::date, $2, NOW()),
+			($1, 'day', CURRENT_DATE, $2, NOW())
 		ON CONFLICT (user_id, period_kind, period_start) DO UPDATE
-		  SET count = usage_counters.count + 1, updated_at = NOW()
-	`, userID)
+		  SET count = usage_counters.count + EXCLUDED.count, updated_at = NOW()
+	`, userID, units)
 	return err
 }
 
@@ -662,13 +679,13 @@ func (as *AuthService) RebuildUsageCounters() error {
 		 WHERE (period_kind = 'month' AND period_start = date_trunc('month', CURRENT_DATE)::date)
 		    OR (period_kind = 'day' AND period_start = CURRENT_DATE)`,
 		`INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
-		 SELECT user_id, 'month', date_trunc('month', CURRENT_DATE)::date, COUNT(*), NOW()
+		 SELECT user_id, 'month', date_trunc('month', CURRENT_DATE)::date, SUM(units), NOW()
 		 FROM usage_records
 		 WHERE billable = true AND user_id IS NOT NULL
 		   AND created_at >= date_trunc('month', CURRENT_DATE)
 		 GROUP BY user_id`,
 		`INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
-		 SELECT user_id, 'day', CURRENT_DATE, COUNT(*), NOW()
+		 SELECT user_id, 'day', CURRENT_DATE, SUM(units), NOW()
 		 FROM usage_records
 		 WHERE billable = true AND user_id IS NOT NULL
 		   AND created_at >= CURRENT_DATE
