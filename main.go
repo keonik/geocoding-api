@@ -157,6 +157,11 @@ func main() {
 	// Add request ID middleware for tracing
 	e.Use(echomiddleware.RequestID())
 
+	// Timing wraps everything below it, so a request rejected by auth or by a
+	// quota is still counted -- those are exactly the ones worth seeing.
+	e.Use(middleware.Metrics())
+	middleware.SetDBStatsSource(database.Stats)
+
 	// Decide how the client IP is derived before anything reads it. Both the
 	// auth throttle and the ip_address column on every usage record depend on
 	// this being right.
@@ -232,6 +237,9 @@ func main() {
 	// Always 200, whatever the database says. This endpoint is the container
 	// HEALTHCHECK, and failing it on a transient database blip would restart a
 	// server that is otherwise serving fine.
+	// Prometheus scrape target. Off unless METRICS_TOKEN is set.
+	e.GET("/metrics", handlers.MetricsHandler())
+
 	e.GET("/health", func(c echo.Context) error {
 		response := map[string]interface{}{
 			"status":         "ok",
