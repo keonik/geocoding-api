@@ -14,6 +14,16 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// BillableUnits reports how many lookups the handler performed, defaulting to
+// one. A batch declares its item count via services.BillableUnitsKey, so it is
+// billed and rate-limited as that many calls rather than as a single request.
+func BillableUnits(c echo.Context) int {
+	if n, ok := c.Get(services.BillableUnitsKey).(int); ok && n > 1 {
+		return n
+	}
+	return 1
+}
+
 // rateLimitStatusKey is the echo context key under which APIKeyAuth publishes
 // the *services.RateLimitStatus it computed, for UsageHeader to reuse.
 const rateLimitStatusKey = "rate_limit_status"
@@ -108,7 +118,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				go func() {
 					err := services.Auth.RecordUsage(
 						user.ID, keyRecord.ID, overLimitEndpoint, method,
-						statusCode, responseTime, ipAddress, userAgent, false,
+						statusCode, responseTime, ipAddress, userAgent, false, 1,
 					)
 					if err != nil {
 						log.Printf("Failed to record over-limit usage: %v", err)
@@ -181,11 +191,17 @@ func APIKeyAuth() echo.MiddlewareFunc {
 			ipAddress := c.RealIP()
 			userAgent := c.Request().UserAgent()
 
+			// How many lookups the handler actually performed. One for every
+			// endpoint except batch, which sets it to the number of items --
+			// read here rather than in the goroutine, since the context must
+			// not be touched once the request has returned.
+			units := BillableUnits(c)
+
 			// Record usage after request completes
 			go func() {
 				err := services.Auth.RecordUsage(
 					user.ID, keyRecord.ID, endpoint, method,
-					statusCode, responseTime, ipAddress, userAgent, true,
+					statusCode, responseTime, ipAddress, userAgent, true, units,
 				)
 				if err != nil {
 					log.Printf("Failed to record usage: %v", err)

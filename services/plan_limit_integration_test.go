@@ -70,6 +70,9 @@ func setupRateLimitSchema(t *testing.T) func() {
 			id SERIAL PRIMARY KEY,
 			user_id INTEGER NOT NULL,
 			billable BOOLEAN DEFAULT true,
+			-- Migration 24: how many lookups the request was worth. A batch of
+			-- 100 is 100, everything else is 1, and the rebuild SUMs it.
+			units INTEGER NOT NULL DEFAULT 1,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 		// Enforcement reads the counters rather than aggregating

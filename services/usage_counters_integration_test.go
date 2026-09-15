@@ -100,6 +100,7 @@ func setupCounterDB(t *testing.T) *sql.DB {
 			status_code INTEGER, response_time_ms INTEGER,
 			ip_address VARCHAR(64), user_agent TEXT,
 			billable BOOLEAN NOT NULL DEFAULT true,
+			units INTEGER NOT NULL DEFAULT 1,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE usage_counters (
@@ -164,14 +165,14 @@ func TestCountersTrackBillableUsage(t *testing.T) {
 	userID := probeUserID(t, db)
 
 	for i := 0; i < 7; i++ {
-		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true); err != nil {
+		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true, 1); err != nil {
 			t.Fatalf("record %d: %v", i, err)
 		}
 	}
 	// Over-limit calls are recorded for the audit trail but must not count
 	// against the user again.
 	for i := 0; i < 3; i++ {
-		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 429, 1, "203.0.113.7", "probe", false); err != nil {
+		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 429, 1, "203.0.113.7", "probe", false, 1); err != nil {
 			t.Fatalf("record non-billable %d: %v", i, err)
 		}
 	}
@@ -232,7 +233,7 @@ func TestConcurrentIncrementsDoNotLoseCounts(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true); err != nil {
+			if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true, 1); err != nil {
 				errs <- err
 			}
 		}()
@@ -255,7 +256,7 @@ func TestRebuildCorrectsDrift(t *testing.T) {
 	userID := probeUserID(t, db)
 
 	for i := 0; i < 5; i++ {
-		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true); err != nil {
+		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true, 1); err != nil {
 			t.Fatalf("record: %v", err)
 		}
 	}
@@ -331,7 +332,7 @@ func TestRateLimitSurvivesMissingCounterTable(t *testing.T) {
 	userID := probeUserID(t, db)
 
 	for i := 0; i < 4; i++ {
-		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true); err != nil {
+		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true, 1); err != nil {
 			t.Fatalf("record: %v", err)
 		}
 	}
@@ -423,5 +424,66 @@ func TestRebuildPrunesStalePeriods(t *testing.T) {
 	}
 	if stale != 0 {
 		t.Errorf("%d stale counter row(s) survived the rebuild", stale)
+	}
+}
+
+// A batch is billed as its item count, and the rebuild has to agree. If the
+// rebuild counted rows instead of summing units, running it would wipe every
+// batch's billing back down to one call apiece -- silently, and in the
+// direction that costs money.
+func TestBatchUnitsSurviveARebuild(t *testing.T) {
+	db := setupCounterDB(t)
+	userID := probeUserID(t, db)
+
+	// One ordinary call, then one batch of 50.
+	if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true, 1); err != nil {
+		t.Fatalf("single: %v", err)
+	}
+	if err := Auth.RecordUsage(userID, 1, "geocode", "POST", 200, 40, "203.0.113.7", "probe", true, 50); err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+
+	if got := counterValue(t, db, userID, "month"); got != 51 {
+		t.Errorf("counter = %d, want 51 (1 + a batch of 50)", got)
+	}
+
+	status, err := Auth.CheckRateLimitStatus(userID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.MonthlyUsage != 51 {
+		t.Errorf("enforcement sees %d, want 51 -- a batch that bills as one call is a way around the limit", status.MonthlyUsage)
+	}
+
+	// Two audit rows, not fifty-one: one request is one request.
+	var records int
+	if err := db.QueryRow("SELECT COUNT(*) FROM usage_records").Scan(&records); err != nil {
+		t.Fatalf("records: %v", err)
+	}
+	if records != 2 {
+		t.Errorf("usage_records = %d, want 2", records)
+	}
+
+	if err := Auth.RebuildUsageCounters(); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	if got := counterValue(t, db, userID, "month"); got != 51 {
+		t.Errorf("after rebuild counter = %d, want 51 -- the rebuild counted rows instead of summing units", got)
+	}
+}
+
+// A unit count below one would subtract from what a caller has consumed, which
+// is a way to be billed for nothing.
+func TestUnitsBelowOneAreTreatedAsOne(t *testing.T) {
+	db := setupCounterDB(t)
+	userID := probeUserID(t, db)
+
+	for _, units := range []int{0, -10} {
+		if err := Auth.RecordUsage(userID, 1, "geocode", "GET", 200, 5, "203.0.113.7", "probe", true, units); err != nil {
+			t.Fatalf("record with units=%d: %v", units, err)
+		}
+	}
+	if got := counterValue(t, db, userID, "month"); got != 2 {
+		t.Errorf("counter = %d, want 2; a non-positive unit count must not reduce consumption", got)
 	}
 }
