@@ -317,6 +317,11 @@ func main() {
 	protected.GET("/addresses/search", handlers.FullTextSearchAddressesHandler)
 	protected.GET("/addresses/:id", handlers.GetOhioAddressHandler)
 
+	// Vector tiles. Cacheable for the same reason the boundary endpoints are:
+	// every key gets byte-identical census geometry for a given URL, and it
+	// changes about once a year.
+	protected.GET("/tiles/:layer/:z/:x/:y", handlers.GetTileHandler, middleware.CacheStatic(24*time.Hour))
+
 	// Ohio county boundary endpoints
 	protected.GET("/counties", handlers.GetCountiesHandler)
 	protected.GET("/counties/:name", handlers.GetCountyDetailHandler)
