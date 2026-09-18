@@ -585,6 +585,39 @@ paths:
         "429":
           description: Batch is larger than the caller's remaining allowance
 
+  /user/api-keys/{id}/limits:
+    put:
+      security:
+        - BearerAuth: []
+      tags: [API Keys]
+      summary: Cap one API key below its owner's plan
+      description: >-
+        Plan limits belong to the account, so every key draws on one shared
+        allowance -- and a staging key running a load test, or a key leaked into
+        a public repository, can spend production's. A cap contains that to the
+        key it belongs on. Omit a field to remove that cap. A key that trips its
+        own cap gets a 429 naming the key's limit rather than the plan's, so its
+        owner adjusts the key instead of upgrading a plan that still has room.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                monthly_limit: { type: integer, minimum: 1, nullable: true }
+                daily_limit: { type: integer, minimum: 1, nullable: true }
+            example: { monthly_limit: 1000, daily_limit: 100 }
+      responses:
+        "200": { description: Caps updated }
+        "400": { description: A cap below 1 }
+        "404": { description: "No such key, or not yours -- deliberately indistinguishable" }
+
   /reverse:
     get:
       security:

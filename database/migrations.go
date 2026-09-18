@@ -167,6 +167,12 @@ func RunMigrations() error {
 			Up:          addUsageUnits,
 			Down:        removeUsageUnits,
 		},
+		{
+			Version:     25,
+			Description: "Let a single API key carry its own cap, apart from its owner's plan",
+			Up:          addPerKeyQuotas,
+			Down:        removePerKeyQuotas,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -1988,4 +1994,98 @@ func removeUsageUnits() error {
 		}
 	}
 	return nil
+}
+
+// addPerKeyQuotas lets one key be capped below its owner's plan.
+//
+// Every limit so far belongs to the user: a free account gets 3,000 calls a
+// month across all its keys combined. So a staging key running a load test, or
+// a key leaked into a public repo, burns through production's allowance and the
+// production integration starts returning 429s -- with nothing on the key that
+// caused it to say so.
+//
+// A NULL cap means the key has none of its own and draws on the owner's quota
+// as it always has. Nothing existing changes behaviour.
+//
+// The key counters live in their own table rather than widening
+// usage_counters' primary key. Keeping them apart leaves the user-level
+// enforcement path -- which runs on every request, and which has been reworked
+// twice already -- exactly as it is.
+func addPerKeyQuotas() error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin per-key quota migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	statements := []string{
+		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS monthly_limit INTEGER`,
+		`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS daily_limit INTEGER`,
+		// A cap of zero or less would lock the key out entirely while reading
+		// like a setting. NULL is how "no cap" is spelled.
+		`ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_limits_positive`,
+		`ALTER TABLE api_keys ADD CONSTRAINT api_keys_limits_positive
+			CHECK ((monthly_limit IS NULL OR monthly_limit > 0) AND (daily_limit IS NULL OR daily_limit > 0))`,
+
+		`CREATE TABLE IF NOT EXISTS api_key_counters (
+			api_key_id INTEGER NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+			period_kind VARCHAR(5) NOT NULL CHECK (period_kind IN ('day', 'month')),
+			period_start DATE NOT NULL,
+			count BIGINT NOT NULL DEFAULT 0,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (api_key_id, period_kind, period_start)
+		)`,
+
+		// Backfilled, for the same reason usage_counters was: without it every
+		// key's month restarts at zero on deploy, and a cap set later would
+		// treat a key that has already spent its allowance as fresh.
+		`INSERT INTO api_key_counters (api_key_id, period_kind, period_start, count)
+		 SELECT api_key_id, 'month', date_trunc('month', CURRENT_DATE)::date, SUM(units)
+		 FROM usage_records
+		 WHERE billable = true AND api_key_id IS NOT NULL
+		   AND created_at >= date_trunc('month', CURRENT_DATE)
+		 GROUP BY api_key_id
+		 ON CONFLICT (api_key_id, period_kind, period_start) DO UPDATE
+		   SET count = EXCLUDED.count, updated_at = NOW()`,
+		`INSERT INTO api_key_counters (api_key_id, period_kind, period_start, count)
+		 SELECT api_key_id, 'day', CURRENT_DATE, SUM(units)
+		 FROM usage_records
+		 WHERE billable = true AND api_key_id IS NOT NULL
+		   AND created_at >= CURRENT_DATE
+		 GROUP BY api_key_id
+		 ON CONFLICT (api_key_id, period_kind, period_start) DO UPDATE
+		   SET count = EXCLUDED.count, updated_at = NOW()`,
+		`CREATE INDEX IF NOT EXISTS idx_api_key_counters_period_start
+			ON api_key_counters(period_start)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to add per-key quotas: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit per-key quota migration: %w", err)
+	}
+	return nil
+}
+
+func removePerKeyQuotas() error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin per-key quota rollback: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, stmt := range []string{
+		`DROP TABLE IF EXISTS api_key_counters`,
+		`ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_limits_positive`,
+		`ALTER TABLE api_keys DROP COLUMN IF EXISTS daily_limit`,
+		`ALTER TABLE api_keys DROP COLUMN IF EXISTS monthly_limit`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to remove per-key quotas: %w", err)
+		}
+	}
+	return tx.Commit()
 }

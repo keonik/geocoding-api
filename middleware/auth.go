@@ -167,6 +167,62 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				})
 			}
 
+			// The key's own cap, if it has one. Checked after the owner's plan,
+			// because a key cap can only ever be tighter: a key cannot be given
+			// more than its owner has. A key with no cap costs one indexed read
+			// and is never rejected here.
+			keyStatus, err := services.Auth.CheckKeyLimit(keyRecord.ID)
+			if err != nil {
+				// Enforcement failing closed would take the API down over a
+				// feature most keys do not use. The owner's plan limit above
+				// still applies, so the caller is not unbounded.
+				log.Printf("Failed to check key limit for key %d: %v", keyRecord.ID, err)
+			} else if keyStatus.HasCap() {
+				// Published for the batch handler, which has to check a batch's
+				// size against this key's remaining cap before doing the work.
+				c.Set(services.KeyLimitStatusKey, keyStatus)
+			}
+			if keyStatus != nil && keyStatus.Exceeded != "" {
+				scopeUsage, scopeLimit, reset := keyStatus.Limit()
+				RecordRateLimitRejection(keyStatus.Exceeded)
+
+				retryAfter := int(time.Until(reset).Seconds())
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				c.Response().Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+				c.Response().Header().Set("X-RateLimit-Scope", keyStatus.Exceeded)
+
+				// Recorded as non-billable, like the plan-limit rejection: the
+				// caller did not get what they asked for.
+				endpointName, method, ip, ua := getEndpointName(path), c.Request().Method, c.RealIP(), c.Request().UserAgent()
+				elapsed := int(time.Since(startTime).Milliseconds())
+				go func() {
+					if err := services.Auth.RecordUsage(user.ID, keyRecord.ID, endpointName, method,
+						http.StatusTooManyRequests, elapsed, ip, ua, false, 1); err != nil {
+						log.Printf("Failed to record key-limit rejection: %v", err)
+					}
+				}()
+
+				return c.JSON(http.StatusTooManyRequests, handlers.GeocodeResponse{
+					Success: false,
+					// Named as the key's limit rather than the plan's, so the
+					// owner looks at the key's settings instead of upgrading a
+					// plan that still has room.
+					Error: "This API key has reached its own limit",
+					Data: map[string]interface{}{
+						"limit_scope": keyStatus.Exceeded,
+						"usage":       scopeUsage,
+						"limit":       scopeLimit,
+						"resets_at":   reset.UTC().Format(time.RFC3339),
+						"retry_after": retryAfter,
+						"key_name":    keyRecord.Name,
+						"message":     "Raise or remove this key's cap, or use a different key; your plan itself still has allowance",
+					},
+				})
+			}
+
 			// Check endpoint permissions
 			endpoint := getEndpointName(path)
 			if !services.Auth.HasPermission(keyRecord, endpoint) {
