@@ -25,13 +25,78 @@ func TestRollAPIKeyProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	// search_path is per-session, so every statement must use this connection.
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		t.Skipf("probe database unreachable: %v", err)
+	}
+
+	// This test used to roll API key 1 in whatever database PROBE_DSN named.
+	// Pointed at a real one, that rotates a live customer's key: the old secret
+	// stops validating at once, and the new one is returned to this test and
+	// thrown away. Their integration breaks and there is nothing to restore.
+	//
+	// It now builds its own keys in a private schema. Key 1 is active with
+	// usage history to preserve, key 2 is the same user's revoked key, and key 3
+	// belongs to someone else -- the three cases the assertions below need.
+	const schema = "roll_key_probe"
+	for _, stmt := range []string{
+		"DROP SCHEMA IF EXISTS " + schema + " CASCADE",
+		"CREATE SCHEMA " + schema,
+		"SET search_path TO " + schema,
+		`CREATE TABLE users (
+			id SERIAL PRIMARY KEY,
+			email VARCHAR(255) NOT NULL UNIQUE,
+			password_hash VARCHAR(255) NOT NULL,
+			plan_type VARCHAR(50) DEFAULT 'free',
+			is_active BOOLEAN DEFAULT true,
+			is_admin BOOLEAN DEFAULT false,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+		`CREATE TABLE api_keys (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			name VARCHAR(255) NOT NULL,
+			key_hash VARCHAR(255) NOT NULL UNIQUE,
+			permissions TEXT[],
+			is_active BOOLEAN DEFAULT true,
+			last_used_at TIMESTAMP,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			key_preview VARCHAR(255),
+			expires_at TIMESTAMP)`,
+		`CREATE TABLE usage_records (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+			api_key_id INTEGER REFERENCES api_keys(id) ON DELETE CASCADE,
+			endpoint VARCHAR(100), method VARCHAR(10),
+			billable BOOLEAN DEFAULT true,
+			units INTEGER NOT NULL DEFAULT 1,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+		`INSERT INTO users (id, email, password_hash) VALUES
+			(1, 'owner@example.test', 'x'),
+			(2, 'someone-else@example.test', 'x')`,
+		`INSERT INTO api_keys (id, user_id, name, key_hash, permissions, is_active, key_preview) VALUES
+			(1, 1, 'production', 'hash-one',   ARRAY['geocode','search'], true,  'gk_one...'),
+			(2, 1, 'old',        'hash-two',   ARRAY['geocode'],          false, 'gk_two...'),
+			(3, 2, 'theirs',     'hash-three', ARRAY['geocode'],          true,  'gk_thr...')`,
+		`INSERT INTO usage_records (user_id, api_key_id, endpoint, method) VALUES
+			(1, 1, 'geocode', 'GET'), (1, 1, 'search', 'GET'), (1, 1, 'geocode', 'GET')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup failed on %.60q: %v", stmt, err)
+		}
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+		db.Close()
+	})
 
 	prev := database.DB
 	database.DB = db
 	defer func() { database.DB = prev }()
-
-	requireTables(t, db, "api_keys", "users", "usage_records")
 
 	as := &AuthService{}
 

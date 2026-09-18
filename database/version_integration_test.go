@@ -23,15 +23,39 @@ func TestAppliedMigrationVersionProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		t.Skipf("probe database unreachable: %v", err)
+	}
 
-	var exists bool
-	if err := db.QueryRow(`SELECT to_regclass('schema_migrations') IS NOT NULL`).Scan(&exists); err != nil {
-		t.Fatalf("probe: %v", err)
+	// This test used to insert versions 1, 7 and 19 into the real
+	// schema_migrations and leave them there. On a fresh database about to be
+	// migrated, that records three migrations as applied that never ran, so
+	// the next boot skips them. Against an already-migrated database it failed
+	// on the first assertion, which is why it never looked dangerous.
+	//
+	// It now uses its own table in a private schema, so the empty case it
+	// checks first is genuinely empty rather than dependent on where it ran.
+	const schema = "version_probe"
+	for _, stmt := range []string{
+		"DROP SCHEMA IF EXISTS " + schema + " CASCADE",
+		"CREATE SCHEMA " + schema,
+		"SET search_path TO " + schema,
+		`CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			description TEXT,
+			applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup failed on %.60q: %v", stmt, err)
+		}
 	}
-	if !exists {
-		t.Skip("probe database has no schema_migrations table")
-	}
+	t.Cleanup(func() {
+		if _, err := db.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+		db.Close()
+	})
 
 	prev := DB
 	DB = db

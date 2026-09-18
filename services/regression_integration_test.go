@@ -29,6 +29,26 @@ func requireTables(t *testing.T, db *sql.DB, tables ...string) {
 
 // requireColumns skips when a fixture table exists but lacks a column the
 // test depends on -- table presence alone is not enough to say a fixture fits.
+// requireFixture skips unless the probe database holds the data a probe's
+// assertions were written against.
+//
+// These probes assert literal values -- four states, Texas present, four keys
+// for user 1 -- tied to one hand-seeded fixture. Pointed at any other database
+// they fail every assertion at once, which says the data differs rather than
+// that anything is broken. A suite that is always red that way trains people to
+// ignore red, which is how a genuine failure gets missed. Checking up front
+// turns it into a skip that names what was expected.
+func requireFixture(t *testing.T, db *sql.DB, what, query string, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(query).Scan(&got); err != nil {
+		t.Skipf("cannot check fixture (%s): %v", what, err)
+	}
+	if got != want {
+		t.Skipf("probe expects %s = %d, database has %d; its assertions are written for that fixture", what, want, got)
+	}
+}
+
 func requireColumns(t *testing.T, db *sql.DB, table string, columns ...string) {
 	t.Helper()
 	for _, col := range columns {
@@ -71,6 +91,7 @@ func TestSearchStatesUnfilteredProbe(t *testing.T) {
 	defer func() { database.DB = prev }()
 
 	requireTables(t, db, "us_states")
+	requireFixture(t, db, "rows in us_states", "SELECT COUNT(*) FROM us_states", 4)
 
 	ss := &StateService{}
 
@@ -118,6 +139,7 @@ func TestCountyServiceNilHandleProbe(t *testing.T) {
 	defer func() { database.DB = prev }()
 
 	requireTables(t, db, "ohio_counties")
+	requireFixture(t, db, "rows in ohio_counties", "SELECT COUNT(*) FROM ohio_counties", 1)
 
 	// Exactly what init() produces when it runs before the connection exists.
 	cs := &CountyService{db: nil}
