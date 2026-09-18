@@ -30,6 +30,7 @@ func TestGetKeyUsageProbe(t *testing.T) {
 	defer func() { database.DB = prev }()
 
 	requireTables(t, db, "api_keys", "usage_records")
+	requireFixture(t, db, "API keys for user 1", "SELECT COUNT(*) FROM api_keys WHERE user_id = 1", 4)
 
 	as := &AuthService{}
 	got, err := as.GetKeyUsage(1, 30)

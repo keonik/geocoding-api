@@ -33,6 +33,8 @@ func TestBoundaryGeometryProbe(t *testing.T) {
 	defer func() { database.DB = prev }()
 
 	requireTables(t, db, "us_states", "ohio_counties")
+	requireFixture(t, db, "a TX row in us_states",
+		"SELECT COUNT(*) FROM us_states WHERE state_abbr = 'TX' AND geometry IS NOT NULL", 1)
 	requireColumns(t, db, "us_states", "geometry", "geometry_simplified")
 	requireColumns(t, db, "ohio_counties", "bounds_geometry_simplified")
 
