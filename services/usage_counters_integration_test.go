@@ -318,7 +318,13 @@ func withSearchPathOption(dsn, schema string) (string, error) {
 		return "", err
 	}
 	q := u.Query()
-	q.Set("options", fmt.Sprintf("-c search_path=%s,public", schema))
+	// The probe schema only, with no ", public" after it. These tests use no
+	// PostGIS, so nothing needs public to resolve -- and leaving it on the path
+	// is actively wrong here: against a probe database whose public schema
+	// already holds a migrated usage_counters, dropping the probe's own copy
+	// just exposes public's, so the query that should fail and fall back to
+	// usage_records quietly succeeds and reads 0/0 instead.
+	q.Set("options", fmt.Sprintf("-c search_path=%s", schema))
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
