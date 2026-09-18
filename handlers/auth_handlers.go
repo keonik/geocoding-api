@@ -522,3 +522,63 @@ func GetPlansHandler(c echo.Context) error {
 		},
 	})
 }
+
+// SetAPIKeyLimitsRequest carries a key's own caps. An omitted field clears that
+// cap, so the key draws on its owner's plan for it.
+type SetAPIKeyLimitsRequest struct {
+	MonthlyLimit *int `json:"monthly_limit"`
+	DailyLimit   *int `json:"daily_limit"`
+}
+
+// SetAPIKeyLimitsHandler caps one key below its owner's plan.
+//
+// Every limit used to belong to the user, so a staging key running a load
+// test, or a key leaked into a public repository, spent production's allowance
+// -- and the production integration started failing with nothing on the key
+// that caused it to say so. A cap contains that to the key it belongs on.
+//
+// PUT /api/v1/user/api-keys/:id/limits
+//
+//	{"monthly_limit": 1000, "daily_limit": 100}
+func SetAPIKeyLimitsHandler(c echo.Context) error {
+	userID, ok := c.Get("user_id").(int)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
+			Success: false,
+			Error:   "Authentication required",
+		})
+	}
+
+	keyID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+			Success: false,
+			Error:   "Key id must be a number",
+		})
+	}
+
+	var req SetAPIKeyLimitsRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+			Success: false,
+			Error:   `Body must be JSON: {"monthly_limit": 1000, "daily_limit": 100}`,
+		})
+	}
+
+	if err := services.Auth.SetKeyLimits(userID, keyID, req.MonthlyLimit, req.DailyLimit); err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "key not found" {
+			status = http.StatusNotFound
+		}
+		return c.JSON(status, GeocodeResponse{Success: false, Error: err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, GeocodeResponse{
+		Success: true,
+		Data: map[string]interface{}{
+			"key_id":        keyID,
+			"monthly_limit": req.MonthlyLimit,
+			"daily_limit":   req.DailyLimit,
+		},
+	})
+}

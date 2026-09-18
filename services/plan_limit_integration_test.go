@@ -47,7 +47,12 @@ func setupRateLimitSchema(t *testing.T) func() {
 	if _, err := db.Exec(`CREATE SCHEMA ratelimit_probe`); err != nil {
 		t.Fatalf("failed to create probe schema: %v", err)
 	}
-	if _, err := db.Exec(`SET search_path TO ratelimit_probe, public`); err != nil {
+	// The probe schema alone. Nothing here uses PostGIS, and a trailing public
+	// lets any table the fixture lacks resolve to the real one: against a
+	// migrated database, RebuildUsageCounters found public.api_key_counters
+	// while reading this fixture's usage_records, mixing two schemas in one
+	// operation and failing on a column neither half expected.
+	if _, err := db.Exec(`SET search_path TO ratelimit_probe`); err != nil {
 		t.Fatalf("failed to set search_path: %v", err)
 	}
 
@@ -69,6 +74,7 @@ func setupRateLimitSchema(t *testing.T) func() {
 		`CREATE TABLE usage_records (
 			id SERIAL PRIMARY KEY,
 			user_id INTEGER NOT NULL,
+			api_key_id INTEGER,
 			billable BOOLEAN DEFAULT true,
 			-- Migration 24: how many lookups the request was worth. A batch of
 			-- 100 is 100, everything else is 1, and the rebuild SUMs it.

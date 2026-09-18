@@ -65,6 +65,23 @@ func BatchGeocodeHandler(c echo.Context) error {
 		}
 	}
 
+	// The same check against the key's own cap, which can be tighter than the
+	// plan. Without it a key capped at 50 submits a batch of 100.
+	if ks, ok := c.Get(services.KeyLimitStatusKey).(*services.KeyLimitStatus); ok {
+		if remaining, capped := ks.Remaining(); capped && len(req.Items) > remaining {
+			return c.JSON(http.StatusTooManyRequests, GeocodeResponse{
+				Success: false,
+				Error:   "Batch is larger than this API key's remaining allowance",
+				Data: map[string]interface{}{
+					"items":     len(req.Items),
+					"remaining": remaining,
+					"scope":     "key",
+					"message":   "Split the batch, or raise this key's own cap",
+				},
+			})
+		}
+	}
+
 	result, err := services.BatchGeocode(services.GetDB(), req.Items)
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
@@ -99,9 +116,6 @@ func remainingAllowance(status *services.RateLimitStatus) (int, bool) {
 
 	if remaining < 0 {
 		return 0, false
-	}
-	if remaining < 0 {
-		remaining = 0
 	}
 	return remaining, true
 }

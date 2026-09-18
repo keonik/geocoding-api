@@ -294,6 +294,7 @@ func main() {
 	user.GET("/api-keys", handlers.GetAPIKeysHandler)
 	user.DELETE("/api-keys/:id", handlers.DeleteAPIKeyHandler)
 	user.POST("/api-keys/:id/roll", handlers.RollAPIKeyHandler)
+	user.PUT("/api-keys/:id/limits", handlers.SetAPIKeyLimitsHandler)
 	user.GET("/usage", handlers.GetUsageHandler)
 	user.GET("/usage/daily", handlers.GetDailyUsageHandler)
 	user.GET("/usage/endpoints", handlers.GetEndpointUsageHandler)

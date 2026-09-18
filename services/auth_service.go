@@ -622,6 +622,12 @@ func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string
 		return nil
 	}
 
+	// The key's own counters move alongside the owner's. Independent writes:
+	// a failure in one must not skip the other.
+	if err := as.incrementKeyCounters(apiKeyID, units); err != nil {
+		log.Printf("Failed to increment key counters for key %d: %v", apiKeyID, err)
+	}
+
 	if err := as.incrementUsageCounters(userID, units); err != nil {
 		// The audit row is already written, which is the durable record, so a
 		// counter failure is logged rather than returned -- failing here would
@@ -696,6 +702,35 @@ func (as *AuthService) RebuildUsageCounters() error {
 		// is pure upkeep on the hot upsert path.
 		`DELETE FROM usage_counters
 		 WHERE period_start < date_trunc('month', CURRENT_DATE)::date`,
+	}
+
+	// Key counters are derived from the same audit rows, so they rebuild the
+	// same way -- or a key's drift is permanent while its owner's is not.
+	// Skipped cleanly before migration 25, when the table does not exist.
+	var keyTable bool
+	if err := tx.QueryRow(`SELECT to_regclass('api_key_counters') IS NOT NULL`).Scan(&keyTable); err != nil {
+		return fmt.Errorf("failed to check for key counters: %w", err)
+	}
+	if keyTable {
+		statements = append(statements,
+			`DELETE FROM api_key_counters
+			 WHERE (period_kind = 'month' AND period_start = date_trunc('month', CURRENT_DATE)::date)
+			    OR (period_kind = 'day' AND period_start = CURRENT_DATE)`,
+			`INSERT INTO api_key_counters (api_key_id, period_kind, period_start, count, updated_at)
+			 SELECT api_key_id, 'month', date_trunc('month', CURRENT_DATE)::date, SUM(units), NOW()
+			 FROM usage_records
+			 WHERE billable = true AND api_key_id IS NOT NULL
+			   AND created_at >= date_trunc('month', CURRENT_DATE)
+			 GROUP BY api_key_id`,
+			`INSERT INTO api_key_counters (api_key_id, period_kind, period_start, count, updated_at)
+			 SELECT api_key_id, 'day', CURRENT_DATE, SUM(units), NOW()
+			 FROM usage_records
+			 WHERE billable = true AND api_key_id IS NOT NULL
+			   AND created_at >= CURRENT_DATE
+			 GROUP BY api_key_id`,
+			`DELETE FROM api_key_counters
+			 WHERE period_start < date_trunc('month', CURRENT_DATE)::date`,
+		)
 	}
 
 	for _, stmt := range statements {
