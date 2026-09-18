@@ -86,3 +86,15 @@ func getEnv(key, defaultValue string) string {
 	}
 	return defaultValue
 }
+
+// Stats reports connection pool statistics.
+//
+// Exposed so the metrics middleware can read them without importing this
+// package directly -- it is imported by handlers, which middleware already
+// imports, and the cycle is easier to avoid than to unpick.
+func Stats() sql.DBStats {
+	if DB == nil {
+		return sql.DBStats{}
+	}
+	return DB.Stats()
+}

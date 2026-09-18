@@ -131,6 +131,11 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				scopeUsage, scopeLimit, reset := status.Limit()
 				scope := status.Exceeded
 
+				// Counted by which period ran out. A spike here is the
+				// difference between "the API is down" and "a customer hit
+				// their plan limit", and those need different responses.
+				RecordRateLimitRejection(scope)
+
 				retryAfter := int(time.Until(reset).Seconds())
 				if retryAfter < 1 {
 					retryAfter = 1
