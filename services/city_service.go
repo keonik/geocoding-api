@@ -208,26 +208,51 @@ func (cs *CityService) SearchCities(params models.CitySearchParams) ([]models.Ci
 		whereClause = "WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// Get total count
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM cities %s", whereClause)
+	// How the total is obtained depends on whether there is a filter, measured
+	// on the real 31k-row city file (best of five):
+	//
+	//	unfiltered      two queries  56.4ms   window  84.5ms  (1.5x slower)
+	//	name filter     two queries  13.6ms   window   8.2ms
+	//	name + state    two queries  10.8ms   window   6.5ms
+	//
+	// Unfiltered, the paged query runs a top-N heapsort that only ever holds
+	// LIMIT rows; COUNT(*) OVER () forces every row through a tuplestore first,
+	// which gives that away. Filtered, the predicate is evaluated once instead
+	// of twice. The same rule address search settled on, for a different
+	// reason -- there it was an index-driven early exit being lost.
+	useWindowCount := whereClause != ""
+
 	var total int
-	err := database.DB.QueryRow(countQuery, args...).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count cities: %w", err)
+	if !useWindowCount {
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM cities %s", whereClause)
+		if err := database.DB.QueryRow(countQuery, args...).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("failed to count cities: %w", err)
+		}
 	}
 
-	// Build main query
+	windowCol := ""
+	if useWindowCount {
+		windowCol = ", COUNT(*) OVER () AS total_count"
+	}
+
+	// id ends the ordering because nothing before it is unique. On the real
+	// data 23,957 of 31,183 cities -- 77% -- share their ranking and
+	// population with at least one other, one group of 399. LIMIT/OFFSET runs
+	// the query again for every page, and the planner may order tied rows
+	// differently each time, so a client paging through results was seeing
+	// cities twice and never seeing others.
 	query := fmt.Sprintf(`
 		SELECT id, city, city_ascii, state_id, state_name, county_fips, county_name,
 		       lat, lng, population, density, source, military, incorporated,
-		       timezone, ranking, zips, external_id
+		       timezone, ranking, zips, external_id%s
 		FROM cities
 		%s
-		ORDER BY 
+		ORDER BY
 			CASE WHEN ranking > 0 THEN ranking ELSE 999999 END,
-			population DESC NULLS LAST
+			population DESC NULLS LAST,
+			id
 		LIMIT $%d OFFSET $%d
-	`, whereClause, argCount+1, argCount+2)
+	`, windowCol, whereClause, argCount+1, argCount+2)
 
 	args = append(args, params.Limit, params.Offset)
 
@@ -244,15 +269,26 @@ func (cs *CityService) SearchCities(params models.CitySearchParams) ([]models.Ci
 		var population, ranking sql.NullInt64
 		var density sql.NullFloat64
 
-		err := rows.Scan(
+		dest := []interface{}{
 			&city.ID, &city.City, &city.CityAscii, &city.StateID, &city.StateName,
 			&countyFIPS, &countyName, &city.Lat, &city.Lng,
 			&population, &density, &source, &city.Military, &city.Incorporated,
 			&timezone, &ranking, &zips, &externalID,
-		)
-		if err != nil {
-			log.Printf("Error scanning city: %v", err)
-			continue
+		}
+		var rowTotal int
+		if useWindowCount {
+			dest = append(dest, &rowTotal)
+		}
+
+		// A scan error is returned rather than logged and skipped. The loop
+		// used to `continue` past one, so a column-count mismatch -- say, a
+		// SELECT gaining a column the scan did not -- skipped every row and
+		// returned an empty result with no error at all.
+		if err := rows.Scan(dest...); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan city: %w", err)
+		}
+		if useWindowCount {
+			total = rowTotal
 		}
 
 		if countyFIPS.Valid {
@@ -284,6 +320,21 @@ func (cs *CityService) SearchCities(params models.CitySearchParams) ([]models.Ci
 		}
 
 		cities = append(cities, city)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to read cities: %w", err)
+	}
+
+	// The window total rides on the rows, so a filtered page past the end
+	// returns none and carries no total. Counted separately only in that case,
+	// so the common path never pays for it -- otherwise a client walking one
+	// page too far reads total 0 and concludes the results emptied.
+	if useWindowCount && len(cities) == 0 && params.Offset > 0 {
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM cities %s", whereClause)
+		if err := database.DB.QueryRow(countQuery, args[:len(args)-2]...).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("failed to count cities: %w", err)
+		}
 	}
 
 	return cities, total, nil
