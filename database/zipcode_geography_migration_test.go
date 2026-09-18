@@ -135,10 +135,15 @@ func TestZipCodeGeographyMigration(t *testing.T) {
 	}
 
 	var hasColumn bool
+	// Qualified by schema. search_path ends in ", public" so PostGIS resolves,
+	// and against a probe database whose public schema already carries a
+	// migrated zip_codes, an unqualified check finds public.zip_codes.geog and
+	// reports that the probe's own column survived when it did not.
 	if err := db.QueryRow(`
 		SELECT EXISTS (
 			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'zip_codes' AND column_name = 'geog'
+			WHERE table_schema = current_schema()
+			  AND table_name = 'zip_codes' AND column_name = 'geog'
 		)
 	`).Scan(&hasColumn); err != nil {
 		t.Fatalf("check column after down: %v", err)
@@ -146,7 +151,9 @@ func TestZipCodeGeographyMigration(t *testing.T) {
 	if hasColumn {
 		t.Error("geog column survived removeZipCodeGeography")
 	}
-	if err := db.QueryRow(`SELECT to_regclass('idx_zip_codes_geog') IS NOT NULL`).Scan(&hasIndex); err != nil {
+	// to_regclass resolves an unqualified name through search_path, which
+	// reaches public -- so it is qualified too.
+	if err := db.QueryRow(`SELECT to_regclass(current_schema() || '.idx_zip_codes_geog') IS NOT NULL`).Scan(&hasIndex); err != nil {
 		t.Fatalf("check index after down: %v", err)
 	}
 	if hasIndex {
