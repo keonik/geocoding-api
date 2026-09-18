@@ -27,23 +27,58 @@ func TestEnsureCountyBoundariesProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	// One connection, because search_path is per-session and every statement
+	// below has to land on the probe schema.
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		t.Skipf("probe database unreachable: %v", err)
+	}
 
-	var exists bool
-	if err := db.QueryRow(`SELECT to_regclass('ohio_counties') IS NOT NULL`).Scan(&exists); err != nil {
-		t.Fatalf("probe: %v", err)
+	// This test used to DELETE FROM ohio_counties against whatever PROBE_DSN
+	// named. Pointed at a real database -- and a real connection string is the
+	// obvious thing to reach for when chasing a production bug -- that wiped
+	// every county boundary. It also raced any other package testing against
+	// the same database, which is how it showed up: a county probe elsewhere
+	// read its fixture mid-reload and failed.
+	//
+	// It now builds its own table in a private schema and never names public.
+	// That also means it always runs, instead of skipping whenever the target
+	// happened to lack the table.
+	const schema = "counties_probe"
+	for _, stmt := range []string{
+		"CREATE EXTENSION IF NOT EXISTS postgis",
+		"DROP SCHEMA IF EXISTS " + schema + " CASCADE",
+		"CREATE SCHEMA " + schema,
+		// public stays on the path for the PostGIS functions. The table is
+		// created in the probe schema, so it shadows any public copy and
+		// nothing below resolves past it.
+		"SET search_path TO " + schema + ", public",
+		`CREATE TABLE ohio_counties (
+			id SERIAL PRIMARY KEY,
+			county_name VARCHAR(255) UNIQUE NOT NULL,
+			source_name VARCHAR(255) NOT NULL,
+			layer VARCHAR(100) NOT NULL,
+			address_count INTEGER DEFAULT 0,
+			stats JSONB,
+			bounds_geometry GEOMETRY(POLYGON, 4326) NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup failed on %.60q: %v", stmt, err)
+		}
 	}
-	if !exists {
-		t.Skip("probe database has no ohio_counties table")
-	}
+	t.Cleanup(func() {
+		if _, err := db.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE"); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+		db.Close()
+	})
 
 	prev := DB
 	DB = db
 	defer func() { DB = prev }()
-
-	if _, err := db.Exec(`DELETE FROM ohio_counties`); err != nil {
-		t.Fatalf("reset: %v", err)
-	}
 
 	// Empty table reads 0 rather than erroring on a NULL aggregate.
 	n, err := CountOhioCounties()
