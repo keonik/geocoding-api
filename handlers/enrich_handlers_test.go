@@ -20,6 +20,9 @@ func TestEnrichAndReverseRejectBadInput(t *testing.T) {
 		{"enrich with an unknown field", "/enrich?lat=39.96&lng=-83&fields=census,zodiac", "unknown fields zodiac", EnrichHandler},
 		{"reverse with an unknown field", "/reverse?lat=39.96&lng=-83&fields=zodiac", "unknown fields zodiac", ReverseGeocodeHandler},
 		{"reverse without lat", "/reverse?lng=-83", "Both lat and lng are required", ReverseGeocodeHandler},
+		{"enrich with lng out of range", "/enrich?lat=39.96&lng=-183", "lng -183 is outside", EnrichHandler},
+		{"enrich with lat out of range", "/enrich?lat=91&lng=-83", "lat 91 is outside", EnrichHandler},
+		{"reverse with NaN", "/reverse?lat=NaN&lng=-83", "lat is not a number", ReverseGeocodeHandler},
 	}
 	e := echo.New()
 	for _, tc := range cases {

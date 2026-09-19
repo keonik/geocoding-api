@@ -16,22 +16,27 @@ import (
 //
 // GET /api/v1/reverse?lat=39.9612&lng=-83.0007[&radius=2000][&fields=census,cd]
 func ReverseGeocodeHandler(c echo.Context) error {
-	lat, lng, ok, err := parseLatLng(c, "/api/v1/reverse?lat=39.9612&lng=-83.0007")
-	if !ok {
-		return err
+	lat, lng, problem := parseLatLng(c)
+	if problem != "" {
+		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+			Success: false,
+			Error:   problem,
+			Data:    map[string]interface{}{"example": "/api/v1/reverse?lat=39.9612&lng=-83.0007"},
+		})
 	}
 
 	// Enrichment is opt-in here, unlike on /enrich: it is a second query set,
 	// and a caller who asked what is at a point did not ask for its districts.
-	var layers []services.BoundaryLayer
+	var enrich *services.EnrichmentRequest
+	var err error
 	if raw := c.QueryParam("fields"); raw != "" {
-		if layers, err = services.ParseEnrichmentFields(raw); err != nil {
-			return c.JSON(http.StatusBadRequest, GeocodeResponse{Success: false, Error: err.Error()})
+		req, perr := services.ParseEnrichmentFields(raw)
+		if perr != nil {
+			return c.JSON(http.StatusBadRequest, GeocodeResponse{Success: false, Error: perr.Error()})
 		}
+		enrich = &req
 	}
 
-	// Rejected rather than clamped: a caller who passes them the wrong way
-	// round gets told, instead of a confident answer about somewhere else.
 	var radius float64
 	if raw := c.QueryParam("radius"); raw != "" {
 		radius, err = strconv.ParseFloat(raw, 64)
@@ -43,18 +48,17 @@ func ReverseGeocodeHandler(c echo.Context) error {
 		}
 	}
 
+	// The range was checked above, so what fails here is the server.
 	result, err := services.ReverseGeocode(services.GetDB(), lat, lng, radius)
 	if err != nil {
-		// The service validates the coordinate range, and that is the caller's
-		// mistake rather than a server fault.
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
 			Success: false,
 			Error:   err.Error(),
 		})
 	}
 
-	if layers != nil {
-		if result.Enrichment, err = services.Enrich(services.GetDB(), lat, lng, layers); err != nil {
+	if enrich != nil {
+		if result.Enrichment, err = services.Enrich(services.GetDB(), lat, lng, *enrich); err != nil {
 			return c.JSON(http.StatusInternalServerError, GeocodeResponse{Success: false, Error: err.Error()})
 		}
 	}

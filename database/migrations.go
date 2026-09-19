@@ -176,7 +176,7 @@ func RunMigrations() error {
 		{
 			Version:     26,
 			Description: "Hold Census boundary layers for enrichment: tracts, districts, school districts",
-			Up:          addBoundaries,
+			Up:          func() error { return CreateBoundaryTables(DB) },
 			Down:        removeBoundaries,
 		},
 	} // Create migrations table if it doesn't exist
@@ -2100,7 +2100,7 @@ func removePerKeyQuotas() error {
 // boundary_loads. The loader writes to both and checks for it first.
 const SchemaVersionBoundaries = 26
 
-// addBoundaries creates one table for every Census layer rather than one per
+// CreateBoundaryTables creates one table for every Census layer rather than one per
 // layer.
 //
 // Every layer answers the same question -- which polygon contains this point
@@ -2113,8 +2113,11 @@ const SchemaVersionBoundaries = 26
 // it, a point in a state whose tracts were never loaded is indistinguishable
 // from a point that falls in no tract, and those are different answers: the
 // first is a gap in this deployment, the second a fact about the place.
-func addBoundaries() error {
-	tx, err := DB.Begin()
+//
+// Exported and taking its handle so integration tests in other packages build
+// the real tables in their own schema, rather than a copy that could drift.
+func CreateBoundaryTables(db *sql.DB) error {
+	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin boundaries migration: %w", err)
 	}
@@ -2139,6 +2142,9 @@ func addBoundaries() error {
 			-- boundaries can be trusted. They differ after a failed reload,
 			-- which rolls back and leaves the previous load serving.
 			status VARCHAR(10) NOT NULL CHECK (status IN ('loading', 'loaded', 'failed', 'absent')),
+			-- Identifies the load that holds a 'loading' row, so a load whose
+			-- claim was taken over cannot write its outcome over the new one.
+			claim_id VARCHAR(36),
 			available BOOLEAN NOT NULL DEFAULT false,
 			features INTEGER NOT NULL DEFAULT 0,
 			source_url TEXT NOT NULL,

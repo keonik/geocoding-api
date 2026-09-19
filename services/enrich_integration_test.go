@@ -157,6 +157,21 @@ func setupEnrichDB(t *testing.T) (*sql.DB, *tigerFixture) {
 		t.Skipf("probe database unreachable: %v", err)
 	}
 
+	// Registered before any setup can fail, so a failed setup still drops
+	// the schema and restores the base URL.
+	fixture := &tigerFixture{files: map[string][]byte{}, fail: map[string]bool{}}
+	srv := httptest.NewServer(fixture)
+	prevURL := tigerBaseURL
+	tigerBaseURL = srv.URL
+	t.Cleanup(func() {
+		srv.Close()
+		tigerBaseURL = prevURL
+		if _, err := db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", enrichSchema)); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+		db.Close()
+	})
+
 	for _, stmt := range []string{
 		"CREATE EXTENSION IF NOT EXISTS postgis",
 		fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", enrichSchema),
@@ -172,32 +187,23 @@ func setupEnrichDB(t *testing.T) (*sql.DB, *tigerFixture) {
 		`INSERT INTO us_states (state_fips, state_abbr, state_name, geometry) VALUES
 		 ('39','OH','Ohio',   ST_Multi(ST_MakeEnvelope(-84.8,38.4,-80.5,42.0,4326))),
 		 ('18','IN','Indiana',ST_Multi(ST_MakeEnvelope(-88.1,37.8,-84.8,41.8,4326)))`,
+		// ZIPs for the timezone field. geog as migration 21 generates it.
+		`CREATE TABLE zip_codes (
+			zip_code VARCHAR(10) PRIMARY KEY, state_code VARCHAR(2) NOT NULL,
+			timezone VARCHAR(100) NOT NULL, latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
+			geog geography(Point,4326) GENERATED ALWAYS AS
+				(ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography) STORED)`,
+		`INSERT INTO zip_codes (zip_code, state_code, timezone, latitude, longitude) VALUES
+		 ('43215','OH','America/New_York',39.96,-83.00)`,
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("setup failed on %.60q: %v", stmt, err)
 		}
 	}
 	// The real migration, not a copy of it, so the test fails if they drift.
-	prevDB := database.DB
-	database.DB = db
-	if err := database.AddBoundariesForTest(); err != nil {
+	if err := database.CreateBoundaryTables(db); err != nil {
 		t.Fatalf("migration 26: %v", err)
 	}
-
-	fixture := &tigerFixture{files: map[string][]byte{}, fail: map[string]bool{}}
-	srv := httptest.NewServer(fixture)
-	prevURL := tigerBaseURL
-	tigerBaseURL = srv.URL
-
-	t.Cleanup(func() {
-		srv.Close()
-		tigerBaseURL = prevURL
-		database.DB = prevDB
-		if _, err := db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", enrichSchema)); err != nil {
-			t.Logf("cleanup: %v", err)
-		}
-		db.Close()
-	})
 	return db, fixture
 }
 
@@ -212,11 +218,11 @@ func mustLayer(t *testing.T, name string) BoundaryLayer {
 
 func load(t *testing.T, db *sql.DB, layer, state string) (int, error) {
 	t.Helper()
-	l := mustLayer(t, layer)
-	if err := BeginBoundaryLoad(db, l, state); err != nil {
+	claim, err := BeginBoundaryLoad(db, mustLayer(t, layer), state)
+	if err != nil {
 		return 0, err
 	}
-	return LoadBoundaryLayer(context.Background(), db, l, state)
+	return claim.Load(context.Background(), db)
 }
 
 func loadRow(t *testing.T, db *sql.DB, layer, state string) (status string, available bool, features int) {
@@ -230,11 +236,11 @@ func loadRow(t *testing.T, db *sql.DB, layer, state string) (status string, avai
 
 func enrichAt(t *testing.T, db *sql.DB, lat, lng float64, fields string) *Enrichment {
 	t.Helper()
-	layers, err := ParseEnrichmentFields(fields)
+	req, err := ParseEnrichmentFields(fields)
 	if err != nil {
 		t.Fatalf("fields %q: %v", fields, err)
 	}
-	e, err := Enrich(db, lat, lng, layers)
+	e, err := Enrich(db, lat, lng, req)
 	if err != nil {
 		t.Fatalf("enrich: %v", err)
 	}
@@ -380,26 +386,93 @@ func TestReloadReplacesRatherThanAppends(t *testing.T) {
 }
 
 func TestBoundaryLoadClaims(t *testing.T) {
-	db, _ := setupEnrichDB(t)
+	db, fx := setupEnrichDB(t)
+	fx.set("/TRACT/tl_2025_39_tract.zip", shapefileZip(t, tractColumns, tractFeatures()))
 	tract := mustLayer(t, "tract")
 
-	if err := BeginBoundaryLoad(db, tract, "39"); err != nil {
+	first, err := BeginBoundaryLoad(db, tract, "39")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := BeginBoundaryLoad(db, tract, "39"); !errors.Is(err, ErrBoundaryLoadInProgress) {
+	if _, err := BeginBoundaryLoad(db, tract, "39"); !errors.Is(err, ErrBoundaryLoadInProgress) {
 		t.Errorf("second concurrent claim: %v, want ErrBoundaryLoadInProgress", err)
 	}
 	// Other states and layers are independent.
-	if err := BeginBoundaryLoad(db, tract, "18"); err != nil {
+	if _, err := BeginBoundaryLoad(db, tract, "18"); err != nil {
 		t.Errorf("a different state was blocked: %v", err)
 	}
-	// A claim left by a crash expires.
+
+	// The first load stalls past the stale window and its claim is taken.
 	db.Exec(`UPDATE boundary_loads SET started_at = NOW() - interval '2 hours' WHERE layer = 'tract' AND state_fips = '39'`)
-	if err := BeginBoundaryLoad(db, tract, "39"); err != nil {
-		t.Errorf("a stale claim still blocks: %v", err)
+	second, err := BeginBoundaryLoad(db, tract, "39")
+	if err != nil {
+		t.Fatalf("a stale claim still blocks: %v", err)
 	}
-	if err := BeginBoundaryLoad(db, tract, "3"); err == nil {
+	fx.setFail("/TRACT/tl_2025_39_tract.zip", true)
+	if _, err := second.Load(context.Background(), db); err == nil {
+		t.Fatal("the second load should fail against a 500")
+	}
+	fx.setFail("/TRACT/tl_2025_39_tract.zip", false)
+
+	// The stalled first load finishes late. Its success must not overwrite
+	// the outcome of the load that replaced it.
+	if _, err := first.Load(context.Background(), db); err == nil || !strings.Contains(err.Error(), "taken over") {
+		t.Errorf("a load whose claim was taken over reported: %v", err)
+	}
+	if status, _, _ := loadRow(t, db, "tract", "39"); status != "failed" {
+		t.Errorf("status = %s; the late load overwrote the newer outcome", status)
+	}
+
+	if _, err := BeginBoundaryLoad(db, tract, "3"); err == nil {
 		t.Error("a malformed FIPS code was accepted")
+	}
+}
+
+// A 404 for a layer that was loaded means the file moved, not that the
+// districts vanished. The rows must survive, and must not be recorded as a
+// trusted "none".
+func TestA404AfterALoadKeepsTheRows(t *testing.T) {
+	db, fx := setupEnrichDB(t)
+	path := "/TRACT/tl_2025_39_tract.zip"
+	fx.set(path, shapefileZip(t, tractColumns, tractFeatures()))
+	if _, err := load(t, db, "tract", "39"); err != nil {
+		t.Fatal(err)
+	}
+	fx.mu.Lock()
+	delete(fx.files, path)
+	fx.mu.Unlock()
+
+	if _, err := load(t, db, "tract", "39"); err == nil || !strings.Contains(err.Error(), "keeping the 2") {
+		t.Errorf("404 after a load: %v", err)
+	}
+	status, available, features := loadRow(t, db, "tract", "39")
+	if status != "failed" || !available || features != 2 {
+		t.Errorf("after a 404: %s available=%v features=%d", status, available, features)
+	}
+	if e := enrichAt(t, db, 40.5, -83.9, "census"); e.Boundaries["tract"] == nil {
+		t.Error("tracts stopped answering after a 404")
+	}
+}
+
+func TestEnrichTimezoneAndSource(t *testing.T) {
+	db, _ := setupEnrichDB(t)
+	e := enrichAt(t, db, 39.97, -83.01, "timezone")
+	if e.Timezone == nil || *e.Timezone != "America/New_York" {
+		t.Errorf("timezone = %v", e.Timezone)
+	}
+	if e.Source != "Census TIGER/Line 2025" {
+		t.Errorf("source = %q", e.Source)
+	}
+	if len(e.Boundaries) != 0 || len(e.Unavailable) != 0 {
+		t.Errorf("fields=timezone returned boundaries: %+v", e)
+	}
+	if e := enrichAt(t, db, 39.97, -83.01, "cd"); e.Timezone != nil || strings.Contains(strings.Join(e.Unavailable, ","), "timezone") {
+		t.Error("timezone reported when not asked for")
+	}
+	// Asked for with no ZIP near: unknown, and said so.
+	far := enrichAt(t, db, 41.5, -86.0, "timezone")
+	if far.Timezone != nil || strings.Join(far.Unavailable, ",") != "timezone" {
+		t.Errorf("timezone with no ZIP data: %v, unavailable %v", far.Timezone, far.Unavailable)
 	}
 }
 
@@ -438,14 +511,37 @@ func TestSharedEdgeIsDeterministic(t *testing.T) {
 
 func TestParseEnrichmentFields(t *testing.T) {
 	all, err := ParseEnrichmentFields("")
-	if err != nil || len(all) != len(BoundaryLayers) {
-		t.Errorf("empty fields: %d layers, %v", len(all), err)
+	if err != nil || len(all.Layers) != len(BoundaryLayers) || !all.Timezone {
+		t.Errorf("empty fields: %d layers, timezone=%v, %v", len(all.Layers), all.Timezone, err)
 	}
 	cd, err := ParseEnrichmentFields(" CD , ")
-	if err != nil || len(cd) != 1 || cd[0].Name != "congressional_district" {
+	if err != nil || len(cd.Layers) != 1 || cd.Layers[0].Name != "congressional_district" || cd.Timezone {
 		t.Errorf("cd: %+v, %v", cd, err)
 	}
 	if _, err := ParseEnrichmentFields("census,zodiac"); err == nil || !strings.Contains(err.Error(), "zodiac") {
 		t.Errorf("unknown field: %v", err)
+	}
+}
+
+// Part offsets come from the file; a corrupt one must be an error, not a
+// panic in a goroutine the server cannot recover.
+func TestRingsWKTRejectsCorruptParts(t *testing.T) {
+	ring := square(0, 0, 1, 1)
+	cases := map[string]shp.Polygon{
+		"offset past the points": {NumParts: 2, Parts: []int32{0, 99}, Points: ring},
+		"negative offset":        {NumParts: 1, Parts: []int32{-1}, Points: ring},
+		"parts count mismatch":   {NumParts: 3, Parts: []int32{0}, Points: ring},
+		"no area":                {NumParts: 1, Parts: []int32{0}, Points: ring[:3]},
+	}
+	for name, p := range cases {
+		p := p
+		if _, err := ringsWKT(&p); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// A degenerate ring beside a real one is dropped, not fatal.
+	ok := shp.Polygon{NumParts: 2, Parts: []int32{0, 5}, Points: append(append([]shp.Point{}, ring...), ring[:3]...)}
+	if wkt, err := ringsWKT(&ok); err != nil || strings.Count(wkt, "(") != 2 {
+		t.Errorf("degenerate ring beside a real one: %q, %v", wkt, err)
 	}
 }

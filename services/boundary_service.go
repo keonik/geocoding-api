@@ -2,11 +2,14 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -112,84 +115,147 @@ func ResolveStateFIPS(db *sql.DB, state string) (string, error) {
 	return fips, nil
 }
 
-// BeginBoundaryLoad claims a layer and state for loading, so two requests
-// cannot load the same file into the same rows at once. The caller then runs
-// LoadBoundaryLayer, which finishes the claim either way.
-func BeginBoundaryLoad(db *sql.DB, layer BoundaryLayer, stateFIPS string) error {
-	if err := database.RequireSchemaVersion(db, database.SchemaVersionBoundaries); err != nil {
-		return err
+// DefaultBoundaryLayers is what a load without a layer list loads: every
+// layer except blocks, which are an order of magnitude larger than the rest
+// (Ohio: 147 MB, 276,000 polygons) and worth loading only where block-level
+// answers are needed.
+func DefaultBoundaryLayers() []BoundaryLayer {
+	var layers []BoundaryLayer
+	for _, l := range BoundaryLayers {
+		if l.Name != "block" {
+			layers = append(layers, l)
+		}
 	}
-	if !stateFIPSPattern.MatchString(stateFIPS) {
-		return fmt.Errorf("state FIPS %q is not two digits", stateFIPS)
-	}
-	res, err := db.Exec(`
-		INSERT INTO boundary_loads (layer, state_fips, status, source_url, started_at)
-		VALUES ($1, $2, 'loading', $3, NOW())
-		ON CONFLICT (layer, state_fips) DO UPDATE
-		SET status = 'loading', source_url = EXCLUDED.source_url, error = NULL,
-		    started_at = NOW(), finished_at = NULL
-		WHERE boundary_loads.status <> 'loading'
-		   OR boundary_loads.started_at < NOW() - make_interval(secs => $4)
-	`, layer.Name, stateFIPS, tigerURL(layer, stateFIPS), staleLoadAfter.Seconds())
-	if err != nil {
-		return fmt.Errorf("failed to record the boundary load: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrBoundaryLoadInProgress
-	}
-	return nil
+	return layers
 }
 
-// LoadBoundaryLayer downloads one state's TIGER file for a layer and replaces
-// that state's rows with it.
+// BoundaryClaim is a held claim on loading one layer for one state.
+//
+// The claim carries an id, and every write the load makes about itself is
+// conditioned on it. A load that outlives staleLoadAfter can have its claim
+// taken over; when it finally finishes, it must not write its outcome over
+// the load that replaced it.
+type BoundaryClaim struct {
+	Layer     BoundaryLayer
+	StateFIPS string
+	id        string
+}
+
+// BeginBoundaryLoad claims a layer and state for loading, so two requests
+// cannot load the same file into the same rows at once. The caller then runs
+// Load, which releases the claim whatever happens.
+func BeginBoundaryLoad(db *sql.DB, layer BoundaryLayer, stateFIPS string) (*BoundaryClaim, error) {
+	if err := database.RequireSchemaVersion(db, database.SchemaVersionBoundaries); err != nil {
+		return nil, err
+	}
+	if !stateFIPSPattern.MatchString(stateFIPS) {
+		return nil, fmt.Errorf("state FIPS %q is not two digits", stateFIPS)
+	}
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate a claim id: %w", err)
+	}
+	claim := &BoundaryClaim{Layer: layer, StateFIPS: stateFIPS, id: hex.EncodeToString(idBytes)}
+
+	res, err := db.Exec(`
+		INSERT INTO boundary_loads (layer, state_fips, status, claim_id, source_url, started_at)
+		VALUES ($1, $2, 'loading', $3, $4, NOW())
+		ON CONFLICT (layer, state_fips) DO UPDATE
+		SET status = 'loading', claim_id = EXCLUDED.claim_id, source_url = EXCLUDED.source_url,
+		    error = NULL, started_at = NOW(), finished_at = NULL
+		WHERE boundary_loads.status <> 'loading'
+		   OR boundary_loads.started_at < NOW() - make_interval(secs => $5)
+	`, layer.Name, stateFIPS, claim.id, tigerURL(layer, stateFIPS), staleLoadAfter.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("failed to record the boundary load: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrBoundaryLoadInProgress
+	}
+	return claim, nil
+}
+
+// Load downloads the state's TIGER file for the layer and replaces that
+// state's rows with it.
 //
 // The replace is one transaction: a lookup during the load sees the old
 // polygons or the new ones, never a state half-loaded, and a load that fails
-// leaves the previous one serving. The outcome is written
-// to boundary_loads whatever happens, since a load is started from a request
-// that has long since returned.
-func LoadBoundaryLayer(ctx context.Context, db *sql.DB, layer BoundaryLayer, stateFIPS string) (int, error) {
-	n, status, err := loadBoundaryLayer(ctx, db, layer, stateFIPS)
+// leaves the previous one serving. The outcome is written to boundary_loads
+// whatever happens -- including a panic on a malformed file -- since the load
+// runs after the request that started it has returned.
+func (c *BoundaryClaim) Load(ctx context.Context, db *sql.DB) (int, error) {
+	n, status, err := c.load(ctx, db)
 
 	errText := sql.NullString{}
 	if err != nil {
 		status = "failed"
 		errText = sql.NullString{String: err.Error(), Valid: true}
 	}
-	if _, uerr := db.Exec(`
+	res, uerr := db.Exec(`
 		UPDATE boundary_loads
-		SET status = $3::text, error = $5, finished_at = NOW(),
+		SET status = $4::text, error = $6, finished_at = NOW(), claim_id = NULL,
 		    -- A failure rolled back, so whatever was serving still is.
-		    available = CASE WHEN $3::text IN ('loaded', 'absent') THEN true ELSE available END,
-		    features = CASE WHEN $3::text IN ('loaded', 'absent') THEN $4 ELSE features END
-		WHERE layer = $1 AND state_fips = $2
-	`, layer.Name, stateFIPS, status, n, errText); uerr != nil && err == nil {
+		    available = CASE WHEN $4::text IN ('loaded', 'absent') THEN true ELSE available END,
+		    features = CASE WHEN $4::text IN ('loaded', 'absent') THEN $5 ELSE features END
+		WHERE layer = $1 AND state_fips = $2 AND claim_id = $3
+	`, c.Layer.Name, c.StateFIPS, c.id, status, n, errText)
+	if uerr != nil && err == nil {
 		err = fmt.Errorf("loaded, but failed to record it: %w", uerr)
+	}
+	if uerr == nil {
+		if rows, _ := res.RowsAffected(); rows == 0 && err == nil {
+			err = errors.New("loaded, but the claim was taken over before it finished; the newer load's outcome stands")
+		}
 	}
 	return n, err
 }
 
-func loadBoundaryLayer(ctx context.Context, db *sql.DB, layer BoundaryLayer, stateFIPS string) (int, string, error) {
-	path, found, err := downloadTigerFile(ctx, tigerURL(layer, stateFIPS))
+// load does the work; Load records it.
+func (c *BoundaryClaim) load(ctx context.Context, db *sql.DB) (n int, status string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			n, status, err = 0, "", fmt.Errorf("loading %s for state %s panicked: %v", c.Layer.Name, c.StateFIPS, r)
+		}
+	}()
+
+	url := tigerURL(c.Layer, c.StateFIPS)
+	path, found, err := downloadTigerFile(ctx, url)
 	if err != nil {
 		return 0, "", err
 	}
 	if !found {
-		// Not an error: the state has no such layer. Any rows from an
-		// earlier load are stale by the same token.
-		if _, err := db.Exec(`DELETE FROM boundaries WHERE layer = $1 AND state_fips = $2`, layer.Name, stateFIPS); err != nil {
-			return 0, "", fmt.Errorf("failed to clear %s for state %s: %w", layer.Name, stateFIPS, err)
+		// A 404 means the state has no such layer -- unless it had one a
+		// moment ago. Rows already loaded mean the file moved, not that the
+		// districts vanished, and replacing them with a trusted "none" is the
+		// exact confusion boundary_loads exists to prevent.
+		var loaded int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM boundaries WHERE layer = $1 AND state_fips = $2`,
+			c.Layer.Name, c.StateFIPS).Scan(&loaded); err != nil {
+			return 0, "", fmt.Errorf("failed to count loaded %s: %w", c.Layer.Name, err)
+		}
+		if loaded > 0 {
+			return 0, "", fmt.Errorf("census.gov has no file at %s; keeping the %d %s already loaded", url, loaded, c.Layer.Name)
 		}
 		return 0, "absent", nil
 	}
 	defer os.Remove(path)
 
-	n, err := replaceBoundaries(ctx, db, layer, stateFIPS, path)
+	n, err = replaceBoundaries(ctx, db, c.Layer, c.StateFIPS, path)
 	if err != nil {
 		return 0, "", err
 	}
 	return n, "loaded", nil
 }
+
+// tigerClient bounds each stage of a download. The load's context bounds the
+// whole, but a server that accepts the connection and never answers would
+// otherwise hold the claim for the full half hour.
+var tigerClient = &http.Client{Transport: &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+	TLSHandshakeTimeout:   30 * time.Second,
+	ResponseHeaderTimeout: time.Minute,
+}}
 
 // downloadTigerFile fetches a zip to a temporary file. found is false when the
 // Census has no such file, which for TIGER means the layer does not exist for
@@ -197,11 +263,11 @@ func loadBoundaryLayer(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 func downloadTigerFile(ctx context.Context, url string) (path string, found bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("failed to build a request for %s: %w", url, err)
 	}
 	req.Header.Set("User-Agent", "geocoding-api boundary loader")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := tigerClient.Do(req)
 	if err != nil {
 		return "", false, fmt.Errorf("failed to download %s: %w", url, err)
 	}
@@ -229,9 +295,14 @@ func downloadTigerFile(ctx context.Context, url string) (path string, found bool
 	return f.Name(), true, nil
 }
 
-// boundaryInsertBatch is how many features go in one INSERT. Block groups
-// average ~2 KB of WKT each; 200 keeps a statement to a few hundred KB.
-const boundaryInsertBatch = 200
+// A batch is flushed at whichever limit it reaches first. Block groups average
+// ~2 KB of WKT, so 200 of them is a few hundred KB; 200 congressional or state
+// senate districts with their coastlines would be tens of MB, which the byte
+// limit stops.
+const (
+	boundaryInsertBatch      = 200
+	boundaryInsertBatchBytes = 8 << 20
+)
 
 // replaceBoundaries reads a shapefile zip and swaps it in for the state's rows.
 func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, stateFIPS, zipPath string) (int, error) {
@@ -275,11 +346,12 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(`DELETE FROM boundaries WHERE layer = $1 AND state_fips = $2`, layer.Name, stateFIPS); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM boundaries WHERE layer = $1 AND state_fips = $2`, layer.Name, stateFIPS); err != nil {
 		return 0, fmt.Errorf("failed to clear %s for state %s: %w", layer.Name, stateFIPS, err)
 	}
 
 	var batch []interface{}
+	var batchBytes int
 	var firstGEOID, lastGEOID string
 	n := 0
 	flush := func() error {
@@ -296,19 +368,19 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 				b+1, b+2, b+3, b+4)
 		}
 		args := append([]interface{}{layer.Name, stateFIPS}, batch...)
-		if _, err := tx.Exec(`INSERT INTO boundaries (layer, geoid, state_fips, name, attrs, geom) VALUES `+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO boundaries (layer, geoid, state_fips, name, attrs, geom) VALUES `+
 			strings.Join(values, ", "), args...); err != nil {
 			// A feature whose rings form no area fails NOT NULL on geom; the
 			// range is what finds it in a file of thousands.
 			return fmt.Errorf("failed to insert %s boundaries %s..%s: %w", layer.Name, firstGEOID, lastGEOID, err)
 		}
-		batch = batch[:0]
+		batch, batchBytes = batch[:0], 0
 		return nil
 	}
 
 	for z.Next() {
 		if err := ctx.Err(); err != nil {
-			return 0, err
+			return 0, fmt.Errorf("stopped loading %s: %w", layer.Name, err)
 		}
 		_, shape := z.Shape()
 		poly, ok := shape.(*shp.Polygon)
@@ -323,16 +395,21 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 		}
 		attrJSON, err := json.Marshal(attrs)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("failed to encode %s attributes: %w", layer.Name, err)
 		}
 		geoid := attr(geoidCol)
+		wkt, err := ringsWKT(poly)
+		if err != nil {
+			return 0, fmt.Errorf("%s %s: %w", layer.Name, geoid, err)
+		}
 		if len(batch) == 0 {
 			firstGEOID = geoid
 		}
 		lastGEOID = geoid
-		batch = append(batch, geoid, attr(nameCol), string(attrJSON), ringsWKT(poly))
+		batch = append(batch, geoid, attr(nameCol), string(attrJSON), wkt)
+		batchBytes += len(wkt)
 		n++
-		if n%boundaryInsertBatch == 0 {
+		if len(batch)/4 >= boundaryInsertBatch || batchBytes >= boundaryInsertBatchBytes {
 			if err := flush(); err != nil {
 				return 0, err
 			}
@@ -352,18 +429,34 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 
 // ringsWKT writes a shapefile polygon's rings as a MULTILINESTRING, for
 // ST_BuildArea to assemble.
-func ringsWKT(p *shp.Polygon) string {
+//
+// The part offsets come from the file and are checked: a corrupt one would
+// otherwise index past the points and panic.
+func ringsWKT(p *shp.Polygon) (string, error) {
+	if int(p.NumParts) != len(p.Parts) || len(p.Parts) == 0 {
+		return "", fmt.Errorf("polygon declares %d parts but has %d", p.NumParts, len(p.Parts))
+	}
 	var b strings.Builder
 	b.WriteString("MULTILINESTRING(")
-	for part := 0; part < int(p.NumParts); part++ {
+	rings := 0
+	for part := 0; part < len(p.Parts); part++ {
 		start := int(p.Parts[part])
 		end := len(p.Points)
-		if part+1 < int(p.NumParts) {
+		if part+1 < len(p.Parts) {
 			end = int(p.Parts[part+1])
 		}
-		if part > 0 {
+		if start < 0 || start > end || end > len(p.Points) {
+			return "", fmt.Errorf("polygon ring %d spans points %d..%d of %d", part, start, end, len(p.Points))
+		}
+		// A ring needs four points to close around an area. A shorter one
+		// encloses nothing, and ST_BuildArea would ignore it anyway.
+		if end-start < 4 {
+			continue
+		}
+		if rings > 0 {
 			b.WriteByte(',')
 		}
+		rings++
 		b.WriteByte('(')
 		for i := start; i < end; i++ {
 			if i > start {
@@ -375,8 +468,11 @@ func ringsWKT(p *shp.Polygon) string {
 		}
 		b.WriteByte(')')
 	}
+	if rings == 0 {
+		return "", errors.New("polygon has no ring that encloses an area")
+	}
 	b.WriteByte(')')
-	return b.String()
+	return b.String(), nil
 }
 
 // BoundaryLoad is one layer's load for one state.

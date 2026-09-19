@@ -11,8 +11,19 @@ import (
 )
 
 // EnrichmentGroups are the values fields= accepts, in the order they are
-// documented. Each selects one or more boundary layers.
-var EnrichmentGroups = []string{"census", "cd", "stateleg", "school", "place"}
+// documented. Each selects boundary layers, except timezone.
+var EnrichmentGroups = []string{"census", "cd", "stateleg", "school", "place", "timezone"}
+
+// enrichmentSource names where the boundaries come from. Tract, block group
+// and block codes within it are 2020-Census geographies, which the Census
+// keeps until 2030; districts are as of the release.
+const enrichmentSource = "Census TIGER/Line 2025"
+
+// EnrichmentRequest is what fields= asked for.
+type EnrichmentRequest struct {
+	Layers   []BoundaryLayer
+	Timezone bool
+}
 
 // Boundary is the polygon of one layer that contains a point.
 type Boundary struct {
@@ -31,13 +42,20 @@ type Boundary struct {
 // answer as "there is none", and a caller must not read one as the other.
 type Enrichment struct {
 	StateFIPS   *string              `json:"state_fips"`
+	Source      string               `json:"source"`
 	Boundaries  map[string]*Boundary `json:"boundaries"`
 	Unavailable []string             `json:"unavailable"`
+
+	// Timezone is present when fields= asked for it and it is known. It is
+	// the zone /reverse reports, ZIP-derived; see ReverseResult.Timezone.
+	// Asked for and not known -- no ZIP data near the point -- it is listed
+	// in Unavailable, like a layer.
+	Timezone *string `json:"timezone,omitempty"`
 }
 
-// ParseEnrichmentFields turns "census,cd" into layers. An empty string means
-// every group.
-func ParseEnrichmentFields(raw string) ([]BoundaryLayer, error) {
+// ParseEnrichmentFields turns "census,cd" into a request. An empty string
+// means every group.
+func ParseEnrichmentFields(raw string) (EnrichmentRequest, error) {
 	want := map[string]bool{}
 	for _, f := range strings.Split(raw, ",") {
 		if f = strings.ToLower(strings.TrimSpace(f)); f != "" {
@@ -56,26 +74,26 @@ func ParseEnrichmentFields(raw string) ([]BoundaryLayer, error) {
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, fmt.Errorf("unknown fields %s; valid fields are %s",
+		return EnrichmentRequest{}, fmt.Errorf("unknown fields %s; valid fields are %s",
 			strings.Join(unknown, ", "), strings.Join(EnrichmentGroups, ", "))
 	}
 
-	var layers []BoundaryLayer
+	req := EnrichmentRequest{Timezone: len(want) == 0 || want["timezone"]}
 	for _, l := range BoundaryLayers {
 		if len(want) == 0 || want[l.Group] {
-			layers = append(layers, l)
+			req.Layers = append(req.Layers, l)
 		}
 	}
-	return layers, nil
+	return req, nil
 }
 
 // Enrich finds the polygon of each layer that contains the point.
 //
-// Two queries: one to find the state, so availability can be judged against
-// what was loaded for it, and one GIST probe for every layer at once. A point
-// in no state -- open water, or outside the US -- has no state to have loaded
-// anything for, so every layer comes back null and none unavailable.
-func Enrich(db *sql.DB, lat, lng float64, layers []BoundaryLayer) (*Enrichment, error) {
+// Three queries: the containing state, what has been loaded for it, and one
+// GIST probe for every layer at once. A point in no state is outside the US
+// -- TIGER state polygons include their coastal and Great Lakes water -- so
+// every layer comes back null and none unavailable.
+func Enrich(db *sql.DB, lat, lng float64, req EnrichmentRequest) (*Enrichment, error) {
 	if lat < -90 || lat > 90 {
 		return nil, fmt.Errorf("latitude %g is outside -90..90", lat)
 	}
@@ -83,24 +101,32 @@ func Enrich(db *sql.DB, lat, lng float64, layers []BoundaryLayer) (*Enrichment, 
 		return nil, fmt.Errorf("longitude %g is outside -180..180", lng)
 	}
 
-	e := &Enrichment{Boundaries: map[string]*Boundary{}, Unavailable: []string{}}
-	names := make([]string, len(layers))
-	for i, l := range layers {
+	e := &Enrichment{Source: enrichmentSource, Boundaries: map[string]*Boundary{}, Unavailable: []string{}}
+	names := make([]string, len(req.Layers))
+	for i, l := range req.Layers {
 		names[i] = l.Name
 	}
 
-	var fips string
+	var fips, abbr string
 	err := db.QueryRow(`
-		SELECT state_fips FROM us_states
+		SELECT state_fips, state_abbr FROM us_states
 		WHERE geometry IS NOT NULL
 		  AND ST_Covers(geometry, ST_SetSRID(ST_MakePoint($1, $2), 4326))
 		ORDER BY state_fips
 		LIMIT 1
-	`, lng, lat).Scan(&fips)
+	`, lng, lat).Scan(&fips, &abbr)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("failed to find the containing state: %w", err)
 	}
-	if err == sql.ErrNoRows {
+	if req.Timezone {
+		if e.Timezone, err = timezoneAt(db, lat, lng, abbr); err != nil {
+			return nil, err
+		}
+		if e.Timezone == nil {
+			e.Unavailable = append(e.Unavailable, "timezone")
+		}
+	}
+	if fips == "" {
 		for _, n := range names {
 			e.Boundaries[n] = nil
 		}
