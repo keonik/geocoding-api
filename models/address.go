@@ -25,6 +25,17 @@ type OhioAddress struct {
 	Longitude   float64   `json:"longitude" db:"longitude"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 
+	// Accuracy is always AccuracyPoint for an address row. It is stated so a
+	// caller mixing address and ZIP results can tell them apart without
+	// knowing which endpoint produced which.
+	Accuracy Accuracy `json:"accuracy"`
+
+	// Timezone is the IANA zone, taken from the address's ZIP code, or from
+	// the nearest ZIP in the same state when the address has none. Null when
+	// no ZIP data covers it. ZIP-level, so an address within a few kilometres
+	// of a zone boundary can carry its neighbour's zone.
+	Timezone *string `json:"timezone"`
+
 	// Match describes why this row was returned. Populated by the /addresses
 	// search path; absent on a lookup by id, where there is nothing to have
 	// matched, and absent on /addresses/search, which runs a different set of

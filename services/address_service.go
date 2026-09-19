@@ -61,6 +61,18 @@ const fuzzyWordSimilarityThreshold = 0.6
 // fuzzyWordSimilarityThreshold. Closing that needs a Levenshtein pass over a
 // candidate set - worth doing only if it shows up in real query logs.
 func (s *AddressService) SearchAddresses(params models.AddressSearchParams) ([]models.OhioAddress, int, error) {
+	addresses, total, err := s.matchAddresses(params)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := describeAddresses(s.db, addresses); err != nil {
+		return nil, 0, err
+	}
+	return addresses, total, nil
+}
+
+// matchAddresses runs the two search passes described on SearchAddresses.
+func (s *AddressService) matchAddresses(params models.AddressSearchParams) ([]models.OhioAddress, int, error) {
 	addresses, total, err := s.searchAddresses(s.db, params, false)
 	if err != nil || total > 0 || params.Query == "" {
 		return addresses, total, err
@@ -484,7 +496,11 @@ func (s *AddressService) GetAddressByID(id int64) (*models.OhioAddress, error) {
 		return nil, fmt.Errorf("failed to get address: %w", err)
 	}
 
-	return &addr, nil
+	described := []models.OhioAddress{addr}
+	if err := describeAddresses(s.db, described); err != nil {
+		return nil, err
+	}
+	return &described[0], nil
 }
 
 // GetCountyStats returns statistics about loaded counties
@@ -529,6 +545,19 @@ type AddressSearchResult struct {
 // FullTextSearchAddresses performs a simple full-text search on the full_address column
 // Returns exact matches first, followed by street-level matches (fallback) with lower priority
 func (s *AddressService) FullTextSearchAddresses(query string, limit int) (*AddressSearchResult, error) {
+	result, err := s.fullTextSearchAddresses(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	if err := describeAddresses(s.db, result.Addresses); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// fullTextSearchAddresses tries each search strategy in turn; see
+// FullTextSearchAddresses.
+func (s *AddressService) fullTextSearchAddresses(query string, limit int) (*AddressSearchResult, error) {
 	result := &AddressSearchResult{
 		OriginalQuery: query,
 	}

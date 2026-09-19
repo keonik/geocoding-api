@@ -654,6 +654,10 @@ paths:
       responses:
         "200":
           description: What is at that coordinate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReverseResult'
         "400":
           description: Missing or out-of-range coordinates
 
@@ -1951,6 +1955,8 @@ components:
           format: double
           description: Longitude coordinate (WGS84)
           example: -73.99670
+        accuracy:
+          $ref: '#/components/schemas/Accuracy'
 
     GeocodeResponse:
       type: object
@@ -2109,6 +2115,70 @@ components:
           type: integer
           example: 1
 
+    Accuracy:
+      type: string
+      enum: [point, postal_centroid, locality_centroid]
+      description: >-
+        What the result's coordinates are the location of. `point` is an
+        address point from a county or statewide address dataset.
+        `postal_centroid` is the centre of a ZIP code's area, which can be tens
+        of kilometres from any given address in it. `locality_centroid` is the
+        representative point of a city or town.
+      example: point
+
+    ReverseResult:
+      type: object
+      properties:
+        lat: { type: number, format: double, example: 39.9613 }
+        lng: { type: number, format: double, example: -83.0008 }
+        address:
+          type: object
+          nullable: true
+          description: Nearest address within the search radius, or null.
+          allOf:
+            - $ref: '#/components/schemas/OhioAddress'
+            - type: object
+              properties:
+                distance_meters: { type: number, format: double, example: 14.0 }
+        zip:
+          type: object
+          nullable: true
+          description: >-
+            Nearest ZIP code centroid, in any state. Not containment: ZIP
+            data is a point per ZIP, not a boundary.
+          properties:
+            zip_code: { type: string, example: "43215" }
+            city_name: { type: string, example: "Columbus" }
+            state_code: { type: string, example: "OH" }
+            timezone: { type: string, example: "America/New_York" }
+            accuracy:
+              $ref: '#/components/schemas/Accuracy'
+            distance_meters: { type: number, format: double, example: 14.0 }
+        county:
+          type: string
+          nullable: true
+          description: Containing county, by boundary.
+          example: "Franklin"
+        state:
+          type: object
+          nullable: true
+          description: Containing state, by boundary.
+          properties:
+            code: { type: string, example: "OH" }
+            name: { type: string, example: "Ohio" }
+        timezone:
+          type: string
+          nullable: true
+          description: >-
+            IANA timezone at the queried point, from the nearest ZIP centroid in
+            the containing state within 50km. Can differ from zip.timezone near
+            a state line, where the nearest ZIP is across it. Null over open
+            water or where no ZIP data is loaded. ZIP-level, so a point near a
+            zone line that runs through a state can report the neighbouring
+            zone.
+          example: "America/New_York"
+        search_radius_meters: { type: number, format: double, example: 2000 }
+
     AddressMatch:
       type: object
       description: >-
@@ -2201,6 +2271,18 @@ components:
           format: double
           description: Longitude coordinate (WGS84)
           example: -82.9988
+        accuracy:
+          $ref: '#/components/schemas/Accuracy'
+        timezone:
+          type: string
+          nullable: true
+          description: >-
+            IANA timezone, from the address's ZIP code, or from the nearest ZIP
+            in the same state within 50km when the address has no known
+            postcode. Null when no ZIP data covers it. ZIP-level: an address
+            within a few kilometres of a zone line can carry the neighbouring
+            zone.
+          example: "America/New_York"
 
     AddressSearchResponse:
       type: object
@@ -2523,6 +2605,8 @@ components:
           type: string
           description: External identifier from source data
           example: "1840034016"
+        accuracy:
+          $ref: '#/components/schemas/Accuracy'
 
     CitySearchResponse:
       type: object

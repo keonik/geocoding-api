@@ -50,6 +50,7 @@ func setupReverseDB(t *testing.T) *sql.DB {
 			geometry GEOMETRY(MULTIPOLYGON, 4326))`,
 		`CREATE TABLE zip_codes (
 			zip_code VARCHAR(10) PRIMARY KEY, city_name VARCHAR(255), state_code VARCHAR(2),
+			timezone VARCHAR(100) NOT NULL DEFAULT 'America/New_York',
 			latitude DOUBLE PRECISION, longitude DOUBLE PRECISION,
 			geog geography(Point,4326))`,
 

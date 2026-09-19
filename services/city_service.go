@@ -264,7 +264,7 @@ func (cs *CityService) SearchCities(params models.CitySearchParams) ([]models.Ci
 
 	var cities []models.City
 	for rows.Next() {
-		var city models.City
+		city := models.City{Accuracy: models.AccuracyLocalityCentroid}
 		var countyFIPS, countyName, source, timezone, zips, externalID sql.NullString
 		var population, ranking sql.NullInt64
 		var density sql.NullFloat64
@@ -342,7 +342,7 @@ func (cs *CityService) SearchCities(params models.CitySearchParams) ([]models.Ci
 
 // GetCityByID retrieves a specific city by ID
 func (cs *CityService) GetCityByID(id int64) (*models.City, error) {
-	var city models.City
+	city := models.City{Accuracy: models.AccuracyLocalityCentroid}
 	var countyFIPS, countyName, source, timezone, zips, externalID sql.NullString
 	var population, ranking sql.NullInt64
 	var density sql.NullFloat64

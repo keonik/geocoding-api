@@ -20,6 +20,8 @@ type City struct {
 	Ranking      int     `json:"ranking,omitempty"`
 	Zips         string  `json:"zips,omitempty"`
 	ExternalID   string  `json:"external_id,omitempty"`
+	// Accuracy is always AccuracyLocalityCentroid.
+	Accuracy Accuracy `json:"accuracy"`
 }
 
 // CitySearchParams represents search parameters for city lookups
