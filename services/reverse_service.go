@@ -53,11 +53,11 @@ type ReverseResult struct {
 	State   *ReverseState   `json:"state"`
 
 	// Timezone is the IANA zone at the queried point, from the nearest ZIP
-	// centroid in the containing state, or within 50km when the point is in no
-	// state. Null when there is none -- open water, or a state with no ZIP
-	// data. ZIP-level, so a point within a
-	// few kilometres of a zone line inside one state (the Florida panhandle,
-	// western Kentucky) can report the neighbouring zone.
+	// centroid in the containing state, or within 50km when the point is in
+	// no state. Null when there is none -- open water, or a state with no ZIP
+	// data. ZIP-level, so a point within a few kilometres of a zone line
+	// inside one state (the Florida panhandle, western Kentucky) can report
+	// the neighbouring zone.
 	Timezone *string `json:"timezone"`
 
 	SearchRadiusMeters float64 `json:"search_radius_meters"`
@@ -228,12 +228,13 @@ func (r *ReverseResult) findZip(db *sql.DB, lat, lng float64) error {
 // the nearest ZIP's: that one is found without regard to state, and across a
 // state line it is often in the other zone.
 func (r *ReverseResult) findTimezone(db *sql.DB, lat, lng float64) error {
-	state := ""
-	if r.State != nil {
-		state = r.State.Code
-	}
 	var zone string
-	err := db.QueryRow(nearestZipTimezoneSQL, lng, lat, state, timezoneSearchMeters).Scan(&zone)
+	var err error
+	if r.State != nil {
+		err = db.QueryRow(nearestZipInStateTimezoneSQL, lng, lat, r.State.Code).Scan(&zone)
+	} else {
+		err = db.QueryRow(nearestZipTimezoneSQL, lng, lat, timezoneSearchMeters).Scan(&zone)
+	}
 	if err == sql.ErrNoRows {
 		return nil
 	}

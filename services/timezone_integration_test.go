@@ -173,10 +173,9 @@ func TestAddressTimezoneRules(t *testing.T) {
 		{"ownzip", "America/Chicago", "the address's own ZIP wins over a nearer one in another zone"},
 		{"border", "America/Indiana/Indianapolis", "with no postcode, the nearest ZIP in the same state wins over a closer one across the line"},
 		{"unknownzip", "America/Indiana/Indianapolis", "a postcode missing from zip_codes falls back to the nearest ZIP"},
-		// Over 100km from Vincennes, its nearest ZIP. Sparse states have ZIPs
-		// further apart than that, and the same state's nearest is still the
-		// best answer.
-		{"remote", "America/Indiana/Vincennes", "distance does not blank a zone inside a known state"},
+		// Over 100km from Vincennes, its nearest ZIP. The fallback runs per
+		// row and stays bounded; see timezoneSearchMeters.
+		{"remote", "<null>", "the per-address fallback is bounded at 50km"},
 	}
 	for _, c := range cases {
 		t.Run(c.hash, func(t *testing.T) {
@@ -203,7 +202,7 @@ func TestEveryAddressPathStatesAccuracyAndTimezone(t *testing.T) {
 			if a.Accuracy != models.AccuracyPoint {
 				t.Errorf("%s: %s has accuracy %q", path, a.FullAddress, a.Accuracy)
 			}
-			if a.Timezone == nil {
+			if a.Hash != "remote" && a.Timezone == nil {
 				t.Errorf("%s: %s has no timezone", path, a.FullAddress)
 			}
 		}
@@ -315,6 +314,29 @@ func TestReverseTimezoneIsTheZoneAtThePoint(t *testing.T) {
 	if got.Address == nil || got.Address.Accuracy != models.AccuracyPoint ||
 		zoneOf(got.Address.Timezone) != "America/Indiana/Indianapolis" {
 		t.Errorf("reverse address not described: %+v", got.Address)
+	}
+
+	// Inside a known state there is no bound: over 100km from any ZIP, the
+	// nearest one in the same state is still the answer.
+	remote, err := ReverseGeocode(db, 38.20, -86.50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zoneOf(remote.Timezone) != "America/Indiana/Vincennes" {
+		t.Errorf("sparse-area point in Indiana got %s, want the nearest Indiana ZIP's zone", zoneOf(remote.Timezone))
+	}
+
+	// In no state but 44km from Mount Vernon: within the bound, so the
+	// nearest ZIP in any state answers.
+	offshore, err := ReverseGeocode(db, 37.75, -87.45, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offshore.State != nil {
+		t.Fatalf("fixture premise: point should be in no state, got %s", offshore.State.Code)
+	}
+	if zoneOf(offshore.Timezone) != "America/Chicago" {
+		t.Errorf("stateless point 44km from a ZIP got %s, want its zone", zoneOf(offshore.Timezone))
 	}
 
 	// Open water in Lake Michigan: no state, so the 50km bound applies, and

@@ -31,9 +31,9 @@ type OhioAddress struct {
 	Accuracy Accuracy `json:"accuracy"`
 
 	// Timezone is the IANA zone, taken from the address's ZIP code, or from
-	// the nearest ZIP in the same state when the address has none. Null when
-	// no ZIP data covers it. ZIP-level, so an address within a few kilometres
-	// of a zone boundary can carry its neighbour's zone.
+	// the nearest ZIP in the same state within 50km when the address has
+	// none. Null when no ZIP data covers it. ZIP-level, so an address within
+	// a few kilometres of a zone boundary can carry its neighbour's zone.
 	Timezone *string `json:"timezone"`
 
 	// Match describes why this row was returned. Populated by the /addresses

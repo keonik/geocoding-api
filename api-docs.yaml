@@ -2337,7 +2337,8 @@ components:
           nullable: true
           description: >-
             IANA timezone, from the address's ZIP code, or from the nearest ZIP
-            in the same state when the address has no known postcode. Null when no ZIP data covers it. ZIP-level: an address
+            in the same state within 50km when the address has no known
+            postcode. Null when no ZIP data covers it. ZIP-level: an address
             within a few kilometres of a zone line can carry the neighbouring
             zone.
           example: "America/New_York"
