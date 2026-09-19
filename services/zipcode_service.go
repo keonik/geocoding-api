@@ -211,7 +211,7 @@ func GetZipCodeByZip(zipCode string) (*models.ZipCode, error) {
 
 	row := database.DB.QueryRow(query, zipCode)
 
-	zc := &models.ZipCode{}
+	zc := &models.ZipCode{Accuracy: models.AccuracyPostalCentroid}
 	err := row.Scan(
 		&zc.ZipCode,
 		&zc.CityName,
@@ -272,7 +272,7 @@ func SearchZipCodesByCity(cityName string, stateCode string, limit int) ([]*mode
 
 	var zipCodes []*models.ZipCode
 	for rows.Next() {
-		zc := &models.ZipCode{}
+		zc := &models.ZipCode{Accuracy: models.AccuracyPostalCentroid}
 		err := rows.Scan(
 			&zc.ZipCode,
 			&zc.CityName,

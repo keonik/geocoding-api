@@ -29,6 +29,9 @@ type ZipCode struct {
 	Timezone          string        `json:"timezone" db:"timezone"`
 	Latitude          float64       `json:"latitude" db:"latitude"`
 	Longitude         float64       `json:"longitude" db:"longitude"`
+	// Accuracy is always AccuracyPostalCentroid: the coordinates are the
+	// centre of the ZIP, not of any address in it.
+	Accuracy Accuracy `json:"accuracy"`
 }
 
 // CountyWeights represents the JSON structure for county weights

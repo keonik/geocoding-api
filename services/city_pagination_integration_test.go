@@ -174,3 +174,22 @@ func TestCityTotalSurvivesAPagePastTheEnd(t *testing.T) {
 		t.Errorf("total past the end = %d, want %d -- a client would think the results emptied", total, tiedCities)
 	}
 }
+
+func TestCitiesAreLocalityCentroids(t *testing.T) {
+	setupCityDB(t)
+	cs := &CityService{}
+
+	rows, _, err := cs.SearchCities(models.CitySearchParams{Limit: 3})
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("search: %v %v", rows, err)
+	}
+	one, err := cs.GetCityByID(rows[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range append(rows, *one) {
+		if c.Accuracy != models.AccuracyLocalityCentroid {
+			t.Errorf("city %d has accuracy %q", c.ID, c.Accuracy)
+		}
+	}
+}

@@ -70,8 +70,12 @@ func BatchGeocode(db *sql.DB, items []BatchItem) (*BatchResponse, error) {
 		BillableUnits: len(items),
 	}
 
-	// Collect the ZIP lookups so they can be answered together.
+	// Collect the ZIP lookups so they can be answered together, and the
+	// address hits so they can be described together.
 	zipWanted := make(map[string][]int)
+	var hits []models.OhioAddress
+	var hitAt []int
+	addresses := addressServiceFor(db)
 	for i, item := range items {
 		resp.Results[i].ID = item.ID
 
@@ -86,24 +90,34 @@ func BatchGeocode(db *sql.DB, items []BatchItem) (*BatchResponse, error) {
 		case query != "":
 			// Address search runs per item: each one is a different full-text
 			// query, so there is nothing to combine.
-			addresses, _, err := addressServiceFor(db).SearchAddresses(models.AddressSearchParams{
+			matched, _, err := addresses.matchAddresses(models.AddressSearchParams{
 				Query: query, Limit: 1,
 			})
 			if err != nil {
 				resp.Results[i].Error = "lookup failed"
 				continue
 			}
-			if len(addresses) > 0 {
-				resp.Results[i].Found = true
-				resp.Results[i].Address = &addresses[0]
+			if len(matched) > 0 {
+				hits = append(hits, matched[0])
+				hitAt = append(hitAt, i)
 			}
 		default:
 			resp.Results[i].Error = "item has neither zip_code nor query"
 		}
 	}
 
+	// matchAddresses skips the describe step SearchAddresses runs per call;
+	// doing it once here saves a query per item.
+	if err := describeAddresses(addresses.db, hits); err != nil {
+		return nil, err
+	}
+	for n, i := range hitAt {
+		resp.Results[i].Found = true
+		resp.Results[i].Address = &hits[n]
+	}
+
 	if len(zipWanted) > 0 {
-		if err := resolveZipBatch(db, zipWanted, resp); err != nil {
+		if err := resolveZipBatch(addresses.db, zipWanted, resp); err != nil {
 			return nil, err
 		}
 	}
@@ -143,7 +157,7 @@ func resolveZipBatch(db *sql.DB, wanted map[string][]int, resp *BatchResponse) e
 	defer rows.Close()
 
 	for rows.Next() {
-		var z models.ZipCode
+		z := models.ZipCode{Accuracy: models.AccuracyPostalCentroid}
 		if err := rows.Scan(
 			&z.ZipCode, &z.CityName, &z.StateCode, &z.StateName, &z.ZCTA, &z.ZCTAParent,
 			&z.Population, &z.Density, &z.PrimaryCountyCode, &z.PrimaryCountyName,

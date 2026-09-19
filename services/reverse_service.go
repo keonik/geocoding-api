@@ -29,10 +29,12 @@ type NearestAddress struct {
 
 // NearestZip is the closest ZIP code centroid.
 type NearestZip struct {
-	ZipCode        string  `json:"zip_code"`
-	CityName       string  `json:"city_name"`
-	StateCode      string  `json:"state_code"`
-	DistanceMeters float64 `json:"distance_meters"`
+	ZipCode        string          `json:"zip_code"`
+	CityName       string          `json:"city_name"`
+	StateCode      string          `json:"state_code"`
+	Timezone       string          `json:"timezone"`
+	Accuracy       models.Accuracy `json:"accuracy"`
+	DistanceMeters float64         `json:"distance_meters"`
 }
 
 // ReverseResult answers "what is here".
@@ -49,6 +51,14 @@ type ReverseResult struct {
 	Zip     *NearestZip     `json:"zip"`
 	County  *string         `json:"county"`
 	State   *ReverseState   `json:"state"`
+
+	// Timezone is the IANA zone at the queried point, from the nearest ZIP
+	// centroid in the containing state, or within 50km when the point is in
+	// no state. Null when there is none -- open water, or a state with no ZIP
+	// data. ZIP-level, so a point within a few kilometres of a zone line
+	// inside one state (the Florida panhandle, western Kentucky) can report
+	// the neighbouring zone.
+	Timezone *string `json:"timezone"`
 
 	SearchRadiusMeters float64 `json:"search_radius_meters"`
 }
@@ -98,6 +108,10 @@ func ReverseGeocode(db *sql.DB, lat, lng, radiusMeters float64) (*ReverseResult,
 	if err := result.findZip(db, lat, lng); err != nil {
 		return nil, err
 	}
+	// After findState: the zone lookup is restricted to the containing state.
+	if err := result.findTimezone(db, lat, lng); err != nil {
+		return nil, err
+	}
 
 	return result, nil
 }
@@ -131,6 +145,11 @@ func (r *ReverseResult) findAddress(db *sql.DB, lat, lng, radius float64) error 
 	if err != nil {
 		return fmt.Errorf("failed to find the nearest address: %w", err)
 	}
+	described := []models.OhioAddress{a.OhioAddress}
+	if err := describeAddresses(db, described); err != nil {
+		return err
+	}
+	a.OhioAddress = described[0]
 	r.Address = &a
 	return nil
 }
@@ -181,14 +200,14 @@ func (r *ReverseResult) findState(db *sql.DB, lat, lng float64) error {
 // centroid with its distance is honest; silently presenting it as containment
 // would not be.
 func (r *ReverseResult) findZip(db *sql.DB, lat, lng float64) error {
-	var z NearestZip
+	z := NearestZip{Accuracy: models.AccuracyPostalCentroid}
 	err := db.QueryRow(`
-		SELECT zip_code, city_name, state_code,
+		SELECT zip_code, city_name, state_code, timezone,
 		       ST_Distance(geog, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, false)
 		FROM zip_codes
 		ORDER BY geog <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography
 		LIMIT 1
-	`, lng, lat).Scan(&z.ZipCode, &z.CityName, &z.StateCode, &z.DistanceMeters)
+	`, lng, lat).Scan(&z.ZipCode, &z.CityName, &z.StateCode, &z.Timezone, &z.DistanceMeters)
 	if err == sql.ErrNoRows {
 		return nil
 	}
@@ -202,5 +221,30 @@ func (r *ReverseResult) findZip(db *sql.DB, lat, lng float64) error {
 		return fmt.Errorf("failed to find the nearest ZIP code: %w", err)
 	}
 	r.Zip = &z
+	return nil
+}
+
+// findTimezone reports the zone at the point itself, which is not necessarily
+// the nearest ZIP's: that one is found without regard to state, and across a
+// state line it is often in the other zone.
+func (r *ReverseResult) findTimezone(db *sql.DB, lat, lng float64) error {
+	var zone string
+	var err error
+	if r.State != nil {
+		err = db.QueryRow(nearestZipInStateTimezoneSQL, lng, lat, r.State.Code).Scan(&zone)
+	} else {
+		err = db.QueryRow(nearestZipTimezoneSQL, lng, lat, timezoneSearchMeters).Scan(&zone)
+	}
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		// Same degradation as findZip: geog arrives with migration 21.
+		if isUndefinedColumn(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to find the timezone: %w", err)
+	}
+	r.Timezone = &zone
 	return nil
 }

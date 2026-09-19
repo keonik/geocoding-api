@@ -142,7 +142,7 @@ func FindZipCodesWithinRadius(centerZip string, radiusMiles float64, limit int) 
 
 	var results []*RadiusSearchResult
 	for rows.Next() {
-		zc := &models.ZipCode{}
+		zc := &models.ZipCode{Accuracy: models.AccuracyPostalCentroid}
 		var distanceMeters float64
 		err := rows.Scan(
 			&zc.ZipCode, &zc.CityName, &zc.StateCode, &zc.StateName, &zc.ZCTA, &zc.ZCTAParent,
