@@ -541,6 +541,10 @@ paths:
       responses:
         "200":
           description: The parse, whether it is real, and what differs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResult'
         "400":
           description: Empty address or a malformed body
 
@@ -580,6 +584,10 @@ paths:
       responses:
         "200":
           description: Results in request order, with per-item found/error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
         "400":
           description: Empty batch, more than 100 items, or a malformed body
         "429":
@@ -2115,6 +2123,57 @@ components:
           type: integer
           example: 1
 
+    BatchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string, description: "The item's id, echoed back" }
+              found: { type: boolean }
+              error: { type: string, description: "Why this item failed, when it did" }
+              zip_code:
+                $ref: '#/components/schemas/ZipCode'
+              address:
+                $ref: '#/components/schemas/OhioAddress'
+        total: { type: integer, example: 2 }
+        found: { type: integer, example: 2 }
+        billable_units:
+          type: integer
+          description: What this request counted against the quota -- one per item
+          example: 2
+
+    ValidationResult:
+      type: object
+      properties:
+        input: { type: string, example: "100 main st, columbus" }
+        parsed:
+          type: object
+          description: How the input was read, before any lookup
+          additionalProperties: true
+        verified:
+          type: boolean
+          description: Whether the address exists in the data, not merely whether it parses
+        normalized:
+          type: string
+          description: The canonical form, present only when verified
+          example: "100 Main Street, Columbus, OH 43215"
+        match:
+          $ref: '#/components/schemas/AddressMatch'
+        address:
+          $ref: '#/components/schemas/OhioAddress'
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string, example: street }
+              from: { type: string, example: "main st" }
+              to: { type: string, example: "Main Street" }
+              reason: { type: string, example: abbreviation expanded }
+
     Accuracy:
       type: string
       enum: [point, postal_centroid, locality_centroid]
@@ -2171,7 +2230,7 @@ components:
           nullable: true
           description: >-
             IANA timezone at the queried point, from the nearest ZIP centroid in
-            the containing state within 50km. Can differ from zip.timezone near
+            the containing state, or within 50km when the point is in no state. Can differ from zip.timezone near
             a state line, where the nearest ZIP is across it. Null over open
             water or where no ZIP data is loaded. ZIP-level, so a point near a
             zone line that runs through a state can report the neighbouring
@@ -2278,8 +2337,7 @@ components:
           nullable: true
           description: >-
             IANA timezone, from the address's ZIP code, or from the nearest ZIP
-            in the same state within 50km when the address has no known
-            postcode. Null when no ZIP data covers it. ZIP-level: an address
+            in the same state when the address has no known postcode. Null when no ZIP data covers it. ZIP-level: an address
             within a few kilometres of a zone line can carry the neighbouring
             zone.
           example: "America/New_York"

@@ -53,8 +53,9 @@ type ReverseResult struct {
 	State   *ReverseState   `json:"state"`
 
 	// Timezone is the IANA zone at the queried point, from the nearest ZIP
-	// centroid in the containing state within 50km. Null when there is none --
-	// open water, or a state with no ZIP data. ZIP-level, so a point within a
+	// centroid in the containing state, or within 50km when the point is in no
+	// state. Null when there is none -- open water, or a state with no ZIP
+	// data. ZIP-level, so a point within a
 	// few kilometres of a zone line inside one state (the Florida panhandle,
 	// western Kentucky) can report the neighbouring zone.
 	Timezone *string `json:"timezone"`

@@ -8,9 +8,12 @@ import (
 	"github.com/lib/pq"
 )
 
-// timezoneSearchMeters bounds the nearest-ZIP fallback. A ZIP centroid further
-// away than this is not evidence about the zone at a point -- it would hand a
-// point in open water the zone of whatever coast is nearest.
+// timezoneSearchMeters bounds the nearest-ZIP search when the point is in no
+// known state -- open water, mostly -- where a distant centroid is no evidence
+// at all and would hand a point mid-lake the zone of whichever shore is
+// nearest. Inside a known state there is no bound: in Alaska, Nevada or West
+// Texas the nearest ZIP can be well past 50km, and the nearest one in the same
+// state is still the best answer available.
 const timezoneSearchMeters = 50000.0
 
 // nearestZipTimezoneSQL finds the zone of the nearest ZIP centroid to a point.
@@ -20,12 +23,13 @@ const timezoneSearchMeters = 50000.0
 // can be an Illinois ZIP and an hour off. Lines that cut through a state are
 // not helped by this; exact boundaries would fix both.
 // $1 and $2 are longitude and latitude, $3 the state code or empty, $4 the
-// search radius in metres.
+// search radius in metres, applied only when $3 is empty.
 const nearestZipTimezoneSQL = `
 	SELECT z.timezone FROM zip_codes z
 	WHERE z.timezone <> ''
-	  AND ($3::text = '' OR z.state_code = $3::text)
-	  AND ST_DWithin(z.geog, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $4, false)
+	  AND CASE WHEN $3::text = ''
+	           THEN ST_DWithin(z.geog, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $4, false)
+	           ELSE z.state_code = $3::text END
 	ORDER BY z.geog <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography
 	LIMIT 1`
 
@@ -34,12 +38,13 @@ const nearestZipTimezoneSQL = `
 //
 // One query for the whole page. The zone comes from the address's own ZIP
 // first, since that is what the postal record says, and from the nearest ZIP
-// centroid in its state only when the postcode is missing or unknown.
+// centroid in its state only when the postcode is missing or unknown. Every
+// address has a state, so the fallback is unbounded; see timezoneSearchMeters.
 //
-// ZIP data is optional -- a deployment can serve addresses without it, and
-// zip_codes.geog arrives with migration 21 -- so a missing table or column
-// leaves the timezones null rather than failing a search that otherwise
-// succeeded.
+// ZIP data is optional -- a deployment can serve addresses without it -- so a
+// missing zip_codes leaves the timezones null rather than failing a search
+// that otherwise succeeded. Before migration 21 adds zip_codes.geog, only the
+// nearest-ZIP fallback is unavailable.
 func describeAddresses(q querier, addrs []models.OhioAddress) error {
 	if len(addrs) == 0 {
 		return nil
@@ -56,14 +61,23 @@ func describeAddresses(q querier, addrs []models.OhioAddress) error {
 			 WHERE z.zip_code = left(a.postcode, 5) AND z.timezone <> ''),
 			(SELECT z.timezone FROM zip_codes z
 			 WHERE z.timezone <> '' AND z.state_code = a.region
-			   AND ST_DWithin(z.geog, a.geom::geography, $2, false)
 			 ORDER BY z.geog <-> a.geom::geography
 			 LIMIT 1))
 		FROM ohio_addresses a
 		WHERE a.id = ANY($1)
-	`, pq.Array(ids), timezoneSearchMeters)
+	`, pq.Array(ids))
+	if isUndefinedColumn(err) {
+		// Without geog only the fallback is lost; an address's own ZIP needs
+		// nothing from migration 21.
+		rows, err = q.Query(`
+			SELECT a.id, z.timezone
+			FROM ohio_addresses a
+			JOIN zip_codes z ON z.zip_code = left(a.postcode, 5) AND z.timezone <> ''
+			WHERE a.id = ANY($1)
+		`, pq.Array(ids))
+	}
 	if err != nil {
-		if isUndefinedTable(err) || isUndefinedColumn(err) {
+		if isUndefinedTable(err) {
 			return nil
 		}
 		return fmt.Errorf("failed to look up address timezones: %w", err)

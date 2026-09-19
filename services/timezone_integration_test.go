@@ -173,7 +173,10 @@ func TestAddressTimezoneRules(t *testing.T) {
 		{"ownzip", "America/Chicago", "the address's own ZIP wins over a nearer one in another zone"},
 		{"border", "America/Indiana/Indianapolis", "with no postcode, the nearest ZIP in the same state wins over a closer one across the line"},
 		{"unknownzip", "America/Indiana/Indianapolis", "a postcode missing from zip_codes falls back to the nearest ZIP"},
-		{"remote", "<null>", "no ZIP within 50km is no evidence, not a guess"},
+		// Over 100km from Vincennes, its nearest ZIP. Sparse states have ZIPs
+		// further apart than that, and the same state's nearest is still the
+		// best answer.
+		{"remote", "America/Indiana/Vincennes", "distance does not blank a zone inside a known state"},
 	}
 	for _, c := range cases {
 		t.Run(c.hash, func(t *testing.T) {
@@ -200,7 +203,7 @@ func TestEveryAddressPathStatesAccuracyAndTimezone(t *testing.T) {
 			if a.Accuracy != models.AccuracyPoint {
 				t.Errorf("%s: %s has accuracy %q", path, a.FullAddress, a.Accuracy)
 			}
-			if a.Hash != "remote" && a.Timezone == nil {
+			if a.Timezone == nil {
 				t.Errorf("%s: %s has no timezone", path, a.FullAddress)
 			}
 		}
@@ -314,7 +317,8 @@ func TestReverseTimezoneIsTheZoneAtThePoint(t *testing.T) {
 		t.Errorf("reverse address not described: %+v", got.Address)
 	}
 
-	// Open water in Lake Michigan: no state, nothing within 50km.
+	// Open water in Lake Michigan: no state, so the 50km bound applies, and
+	// nothing is within it.
 	lake, err := ReverseGeocode(db, 42.3, -87.0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -324,23 +328,28 @@ func TestReverseTimezoneIsTheZoneAtThePoint(t *testing.T) {
 	}
 }
 
-// Before migration 21 zip_codes has no geog. Searches must still succeed; the
-// zone is the only thing lost.
+// Before migration 21 zip_codes has no geog. Searches must still succeed, and
+// only what needs geog is lost: the nearest-ZIP fallback, not the address's
+// own ZIP.
 func TestTimezoneDegradesBeforeGeogExists(t *testing.T) {
 	db := setupTimezoneDB(t, false)
 
-	found, _, err := NewAddressService(db).SearchAddresses(models.AddressSearchParams{Query: "wabash", Limit: 10})
-	if err != nil {
-		t.Fatalf("search failed without zip_codes.geog: %v", err)
+	own := addressByHash(t, db, "zip4")
+	if own.Accuracy != models.AccuracyPoint {
+		t.Errorf("accuracy %q without geog", own.Accuracy)
 	}
-	if len(found) == 0 || found[0].Accuracy != models.AccuracyPoint {
-		t.Fatalf("search result not described: %+v", found)
+	if zoneOf(own.Timezone) != "America/Indiana/Indianapolis" {
+		t.Errorf("own-ZIP timezone = %s without geog; the postcode lookup does not need it", zoneOf(own.Timezone))
 	}
-	if found[0].Timezone != nil {
-		t.Logf("timezone %s resolved without geog", *found[0].Timezone)
+	if border := addressByHash(t, db, "border"); border.Timezone != nil {
+		t.Errorf("no-postcode address got %s without geog, which the fallback needs", *border.Timezone)
 	}
 
-	if _, err := ReverseGeocode(db, borderLat, borderLng, 0); err != nil {
-		t.Errorf("reverse failed without zip_codes.geog: %v", err)
+	rev, err := ReverseGeocode(db, borderLat, borderLng, 0)
+	if err != nil {
+		t.Fatalf("reverse failed without zip_codes.geog: %v", err)
+	}
+	if rev.Timezone != nil {
+		t.Errorf("reverse timezone %s without geog", *rev.Timezone)
 	}
 }
