@@ -21,6 +21,8 @@ func TestTilePathsTakeTheirLayersScope(t *testing.T) {
 		// in getEndpointName shows up here too.
 		{"/api/v1/counties/Franklin/boundary", "counties"},
 		{"/api/v1/states/OH/boundary", "states"},
+		{"/api/v1/enrich", "enrich"},
+		{"/api/v1/reverse", "reverse"},
 	}
 
 	for _, tc := range cases {

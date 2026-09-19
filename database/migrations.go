@@ -173,6 +173,12 @@ func RunMigrations() error {
 			Up:          addPerKeyQuotas,
 			Down:        removePerKeyQuotas,
 		},
+		{
+			Version:     26,
+			Description: "Hold Census boundary layers for enrichment: tracts, districts, school districts",
+			Up:          func() error { return CreateBoundaryTables(DB) },
+			Down:        removeBoundaries,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -2085,6 +2091,92 @@ func removePerKeyQuotas() error {
 	} {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("failed to remove per-key quotas: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// SchemaVersionBoundaries is the migration that creates boundaries and
+// boundary_loads. The loader writes to both and checks for it first.
+const SchemaVersionBoundaries = 26
+
+// CreateBoundaryTables creates one table for every Census layer rather than one per
+// layer.
+//
+// Every layer answers the same question -- which polygon contains this point
+// -- with the same shape of answer: a GEOID and a name. A table per layer
+// would be eight copies of one schema and eight queries per lookup; here a
+// lookup for any set of layers is one GIST probe. GEOIDs are unique within a
+// layer nationally, since each embeds its state's FIPS code.
+//
+// boundary_loads records what has been loaded, per layer and state. Without
+// it, a point in a state whose tracts were never loaded is indistinguishable
+// from a point that falls in no tract, and those are different answers: the
+// first is a gap in this deployment, the second a fact about the place.
+//
+// Exported and taking its handle so integration tests in other packages build
+// the real tables in their own schema, rather than a copy that could drift.
+func CreateBoundaryTables(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin boundaries migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS boundaries (
+			layer VARCHAR(32) NOT NULL,
+			geoid VARCHAR(20) NOT NULL,
+			state_fips CHAR(2) NOT NULL,
+			name TEXT NOT NULL,
+			attrs JSONB NOT NULL DEFAULT '{}'::jsonb,
+			geom GEOMETRY(MULTIPOLYGON, 4326) NOT NULL,
+			PRIMARY KEY (layer, geoid)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_boundaries_geom ON boundaries USING GIST (geom)`,
+		`CREATE INDEX IF NOT EXISTS idx_boundaries_layer_state ON boundaries (layer, state_fips)`,
+		`CREATE TABLE IF NOT EXISTS boundary_loads (
+			layer VARCHAR(32) NOT NULL,
+			state_fips CHAR(2) NOT NULL,
+			-- status is the last attempt; available is whether the rows in
+			-- boundaries can be trusted. They differ after a failed reload,
+			-- which rolls back and leaves the previous load serving.
+			status VARCHAR(10) NOT NULL CHECK (status IN ('loading', 'loaded', 'failed', 'absent')),
+			-- Identifies the load that holds a 'loading' row, so a load whose
+			-- claim was taken over cannot write its outcome over the new one.
+			claim_id VARCHAR(36),
+			available BOOLEAN NOT NULL DEFAULT false,
+			features INTEGER NOT NULL DEFAULT 0,
+			source_url TEXT NOT NULL,
+			error TEXT,
+			started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			finished_at TIMESTAMP,
+			PRIMARY KEY (layer, state_fips)
+		)`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to add boundaries: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit boundaries migration: %w", err)
+	}
+	return nil
+}
+
+func removeBoundaries() error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin boundaries rollback: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, stmt := range []string{
+		`DROP TABLE IF EXISTS boundary_loads`,
+		`DROP TABLE IF EXISTS boundaries`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to remove boundaries: %w", err)
 		}
 	}
 	return tx.Commit()

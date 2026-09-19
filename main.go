@@ -313,6 +313,7 @@ func main() {
 	// Geocoding endpoints
 	protected.GET("/geocode/:zipcode", handlers.GetZipCodeHandler)
 	protected.GET("/reverse", handlers.ReverseGeocodeHandler)
+	protected.GET("/enrich", handlers.EnrichHandler)
 	protected.POST("/geocode/batch", handlers.BatchGeocodeHandler)
 	protected.POST("/address/validate", handlers.ValidateAddressHandler)
 	protected.GET("/search", handlers.SearchZipCodesHandler)
@@ -365,6 +366,8 @@ func main() {
 	admin.POST("/usage-counters/rebuild", handlers.RebuildUsageCountersHandler)
 	admin.GET("/counties", handlers.GetCountyStatsHandler)
 	admin.POST("/counties/load", handlers.LoadCountyBoundariesHandler)
+	admin.GET("/boundaries", handlers.GetBoundaryLoadsHandler)
+	admin.POST("/boundaries/load", handlers.LoadBoundariesHandler)
 	admin.GET("/analytics", handlers.GetAdminAnalyticsHandler)
 
 	// Dataset management routes (admin only)

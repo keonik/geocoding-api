@@ -1,6 +1,7 @@
 package services
 
 import (
+	"database/sql"
 	"fmt"
 
 	"geocoding-api/models"
@@ -120,4 +121,24 @@ func describeAddresses(q querier, addrs []models.OhioAddress) error {
 		}
 	}
 	return nil
+}
+
+// timezoneAt is the zone at a point: the nearest ZIP in its state, or within
+// timezoneSearchMeters when stateCode is empty because the point is in none.
+// Nil when there is no such ZIP, or before migration 21 adds zip_codes.geog.
+func timezoneAt(db *sql.DB, lat, lng float64, stateCode string) (*string, error) {
+	var zone string
+	var err error
+	if stateCode != "" {
+		err = db.QueryRow(nearestZipInStateTimezoneSQL, lng, lat, stateCode).Scan(&zone)
+	} else {
+		err = db.QueryRow(nearestZipTimezoneSQL, lng, lat, timezoneSearchMeters).Scan(&zone)
+	}
+	if err == sql.ErrNoRows || isUndefinedColumn(err) || isUndefinedTable(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to find the timezone: %w", err)
+	}
+	return &zone, nil
 }

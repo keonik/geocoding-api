@@ -61,6 +61,9 @@ type ReverseResult struct {
 	Timezone *string `json:"timezone"`
 
 	SearchRadiusMeters float64 `json:"search_radius_meters"`
+
+	// Enrichment is present only when the caller asked for fields=.
+	Enrichment *Enrichment `json:"enrichment,omitempty"`
 }
 
 // ReverseState is the containing state, by boundary rather than by proximity.
@@ -228,23 +231,11 @@ func (r *ReverseResult) findZip(db *sql.DB, lat, lng float64) error {
 // the nearest ZIP's: that one is found without regard to state, and across a
 // state line it is often in the other zone.
 func (r *ReverseResult) findTimezone(db *sql.DB, lat, lng float64) error {
-	var zone string
-	var err error
+	state := ""
 	if r.State != nil {
-		err = db.QueryRow(nearestZipInStateTimezoneSQL, lng, lat, r.State.Code).Scan(&zone)
-	} else {
-		err = db.QueryRow(nearestZipTimezoneSQL, lng, lat, timezoneSearchMeters).Scan(&zone)
+		state = r.State.Code
 	}
-	if err == sql.ErrNoRows {
-		return nil
-	}
-	if err != nil {
-		// Same degradation as findZip: geog arrives with migration 21.
-		if isUndefinedColumn(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to find the timezone: %w", err)
-	}
-	r.Timezone = &zone
-	return nil
+	zone, err := timezoneAt(db, lat, lng, state)
+	r.Timezone = zone
+	return err
 }

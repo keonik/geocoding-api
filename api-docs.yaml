@@ -659,6 +659,17 @@ paths:
             it as the address there.
           schema: { type: number, format: double }
           example: 2000
+        - name: fields
+          in: query
+          required: false
+          description: >-
+            Comma-separated boundary groups to append: `census` (tract, block
+            group, block), `cd` (congressional district, 119th Congress),
+            `stateleg` (state senate and house), `school` (unified, elementary
+            and secondary school districts), `place` (incorporated place or
+            CDP), `timezone` (IANA zone, ZIP-derived as on /reverse).
+          schema: { type: string }
+          example: census,cd,timezone
       responses:
         "200":
           description: What is at that coordinate
@@ -668,6 +679,61 @@ paths:
                 $ref: '#/components/schemas/ReverseResult'
         "400":
           description: Missing or out-of-range coordinates
+
+  /enrich:
+    get:
+      operationId: enrichPoint
+      security:
+        - ApiKeyAuth: []
+      tags: [Geocoding]
+      summary: Census geographies and districts containing a coordinate
+      description: >-
+        Returns the Census tract, block group and block, congressional and
+        state legislative districts, school districts, and incorporated place
+        that contain a point, from Census TIGER/Line 2025. Also available on
+        /reverse via the same fields parameter. A layer loaded for the state
+        with no polygon at the point is returned as null -- Ohio has no
+        elementary school districts, for example. A layer not loaded for the
+        state is omitted from boundaries and listed in unavailable instead, so
+        "none here" and "not known" never read the same. Water is covered by
+        the Census as it publishes it: a point in Lake Erie is in water tract
+        9900 and school district 99997, "School District Not Defined".
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema: { type: number, format: double, minimum: -90, maximum: 90 }
+          example: 39.9612
+        - name: lng
+          in: query
+          required: true
+          schema: { type: number, format: double, minimum: -180, maximum: 180 }
+          example: -83.0007
+        - name: fields
+          in: query
+          required: false
+          description: >-
+            Comma-separated boundary groups to return; all of them when omitted: `census` (tract, block
+            group, block), `cd` (congressional district, 119th Congress),
+            `stateleg` (state senate and house), `school` (unified, elementary
+            and secondary school districts), `place` (incorporated place or
+            CDP), `timezone` (IANA zone, ZIP-derived as on /reverse).
+          schema: { type: string }
+          example: census,cd,timezone
+      responses:
+        "200":
+          description: The boundaries containing the point
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      lat: { type: number, format: double, example: 39.9612 }
+                      lng: { type: number, format: double, example: -83.0007 }
+                  - $ref: '#/components/schemas/Enrichment'
+        "400":
+          description: Missing or out-of-range coordinates, or an unknown field
 
   /addresses:
     get:
@@ -1754,6 +1820,110 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /admin/boundaries/load:
+    post:
+      summary: Load Census boundary layers for a state
+      description: |
+        Downloads one state's TIGER/Line 2025 files from census.gov and
+        replaces that state's rows for each layer. Runs after the response:
+        a state's block groups are a 19 MB download, and blocks are larger
+        still (Ohio: 147 MB, 276,000 polygons, under two minutes). Progress is
+        read from GET /admin/boundaries.
+
+        Each layer loads concurrently, and each replace is one transaction, so
+        lookups see the previous load or the new one and never a half-loaded
+        state, and a load that fails leaves the previous one serving. A layer
+        the state does not have (Census returns 404) is recorded as absent --
+        unless it was loaded before, in which case the file has moved and the
+        load fails, keeping the rows. Loading a layer already loading for that
+        state is refused and reported, not queued.
+      operationId: loadBoundaries
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state:
+                  type: string
+                  description: Postal abbreviation or FIPS code
+                  example: OH
+                layers:
+                  type: array
+                  description: Layers to load. Every layer except block when omitted.
+                  items:
+                    type: string
+                    enum: [tract, block_group, block, congressional_district, state_senate, state_house,
+                           school_unified, school_elementary, school_secondary, place]
+      responses:
+        '202':
+          description: Loads started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      state_fips: { type: string, example: "39" }
+                      started: { type: array, items: { type: string } }
+                      already_in_progress: { type: array, items: { type: string } }
+                      failed_to_start:
+                        type: object
+                        description: Layers that could not be claimed, with why. The rest still started.
+                        additionalProperties: { type: string }
+                      status: { type: string, example: /api/v1/admin/boundaries }
+        '400':
+          description: Unknown state or layer, or a malformed body
+        '401':
+          description: Missing or invalid admin credentials
+
+  /admin/boundaries:
+    get:
+      summary: Boundary layer loads and their outcome
+      description: >-
+        One row per layer and state. status is the last attempt; available is
+        whether the layer answers enrichment. They differ after a failed
+        reload, which leaves the previous load serving.
+      operationId: listBoundaryLoads
+      security:
+        - BearerAuth: []
+      tags:
+        - Admin
+      responses:
+        '200':
+          description: Every load, most recent first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        layer: { type: string, example: tract }
+                        state_fips: { type: string, example: "39" }
+                        status: { type: string, enum: [loading, loaded, failed, absent] }
+                        available: { type: boolean }
+                        features: { type: integer, example: 3168 }
+                        source_url: { type: string }
+                        error: { type: string, nullable: true }
+                        started_at: { type: string, format: date-time }
+                        finished_at: { type: string, format: date-time, nullable: true }
+        '401':
+          description: Missing or invalid admin credentials
+
   /admin/counties/load:
     post:
       summary: Load Ohio County Boundaries
@@ -2174,6 +2344,55 @@ components:
               to: { type: string, example: "Main Street" }
               reason: { type: string, example: abbreviation expanded }
 
+    Enrichment:
+      type: object
+      properties:
+        state_fips:
+          type: string
+          nullable: true
+          description: The containing state; null for a point in no state, where every layer is null.
+          example: "39"
+        boundaries:
+          type: object
+          description: >-
+            Keyed by layer. Null when the layer is loaded for the state and no
+            polygon contains the point. Absent when the layer is not loaded --
+            see unavailable.
+          additionalProperties:
+            type: object
+            nullable: true
+            properties:
+              geoid: { type: string, example: "39049004002" }
+              name: { type: string, example: "Census Tract 40.02" }
+              attributes:
+                type: object
+                additionalProperties: { type: string }
+                example: { county_fips: "049", tract_code: "004002" }
+          example:
+            tract: { geoid: "39049004002", name: "Census Tract 40.02", attributes: { county_fips: "049", tract_code: "004002" } }
+            congressional_district: { geoid: "3915", name: "Congressional District 15", attributes: { district: "15", congress: "119" } }
+            school_elementary: null
+        unavailable:
+          type: array
+          description: Requested layers not loaded for this state -- unknown, not absent.
+          items: { type: string }
+          example: [block]
+        source:
+          type: string
+          description: >-
+            Where the boundaries come from. Tract, block group and block codes
+            are 2020-Census geographies, which the Census keeps until 2030;
+            districts are as of the release (119th Congress, 2024 state
+            legislative districts).
+          example: Census TIGER/Line 2025
+        timezone:
+          type: string
+          description: >-
+            Present when fields included timezone and it is known. ZIP-derived;
+            see ReverseResult.timezone. Asked for with no ZIP data near the
+            point, it is listed in unavailable instead.
+          example: America/New_York
+
     Accuracy:
       type: string
       enum: [point, postal_centroid, locality_centroid]
@@ -2237,6 +2456,10 @@ components:
             zone.
           example: "America/New_York"
         search_radius_meters: { type: number, format: double, example: 2000 }
+        enrichment:
+          description: Present only when fields was given.
+          allOf:
+            - $ref: '#/components/schemas/Enrichment'
 
     AddressMatch:
       type: object
