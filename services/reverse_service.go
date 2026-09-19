@@ -61,6 +61,9 @@ type ReverseResult struct {
 	Timezone *string `json:"timezone"`
 
 	SearchRadiusMeters float64 `json:"search_radius_meters"`
+
+	// Enrichment is present only when the caller asked for fields=.
+	Enrichment *Enrichment `json:"enrichment,omitempty"`
 }
 
 // ReverseState is the containing state, by boundary rather than by proximity.

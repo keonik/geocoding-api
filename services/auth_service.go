@@ -1462,7 +1462,10 @@ func (as *AuthService) HasPermission(apiKey *models.APIKey, endpoint string) boo
 		// Reverse geocoding is the inverse of the same operation, so it takes
 		// the same scope. Giving it one of its own would 403 every key already
 		// issued, none of which carry a "reverse" permission.
-		"reverse":   "geocode",
+		"reverse": "geocode",
+		// Enrichment answers a question about a coordinate, like reverse, and
+		// takes its scope for the same reason.
+		"enrich":    "geocode",
 		"search":    "search",
 		"distance":  "distance",
 		"nearby":    "distance",

@@ -282,6 +282,9 @@ func getEndpointName(path string) string {
 	if strings.Contains(path, "/reverse") {
 		return "reverse"
 	}
+	if strings.Contains(path, "/enrich") {
+		return "enrich"
+	}
 	if strings.Contains(path, "/geocode/") {
 		return "geocode"
 	}
