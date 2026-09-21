@@ -179,6 +179,12 @@ func RunMigrations() error {
 			Up:          func() error { return CreateBoundaryTables(DB) },
 			Down:        removeBoundaries,
 		},
+		{
+			Version:     27,
+			Description: "Widen boundaries.geoid: IANA timezone ids are longer than Census GEOIDs",
+			Up:          widenBoundaryGeoIDs,
+			Down:        narrowBoundaryGeoIDs,
+		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
 		return fmt.Errorf("failed to create migrations table: %w", err)
@@ -2097,8 +2103,14 @@ func removePerKeyQuotas() error {
 }
 
 // SchemaVersionBoundaries is the migration that creates boundaries and
-// boundary_loads. The loader writes to both and checks for it first.
+// boundary_loads. Enrichment reads both and degrades before it.
 const SchemaVersionBoundaries = 26
+
+// SchemaVersionBoundaryGeoIDs widened boundaries.geoid to hold an IANA zone
+// id. The loader checks for it: "America/Indiana/Indianapolis" does not fit
+// the original column, and a load that found out mid-file would roll back
+// after doing the work.
+const SchemaVersionBoundaryGeoIDs = 27
 
 // CreateBoundaryTables creates one table for every Census layer rather than one per
 // layer.
@@ -2126,7 +2138,7 @@ func CreateBoundaryTables(db *sql.DB) error {
 	for _, stmt := range []string{
 		`CREATE TABLE IF NOT EXISTS boundaries (
 			layer VARCHAR(32) NOT NULL,
-			geoid VARCHAR(20) NOT NULL,
+			geoid VARCHAR(64) NOT NULL,
 			state_fips CHAR(2) NOT NULL,
 			name TEXT NOT NULL,
 			attrs JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -2180,4 +2192,28 @@ func removeBoundaries() error {
 		}
 	}
 	return tx.Commit()
+}
+
+// widenBoundaryGeoIDs makes room for identifiers that are not Census GEOIDs.
+//
+// A Census GEOID is at most 15 digits, so the column was sized for one. The
+// timezone layer stores an IANA zone id -- "America/Indiana/Indianapolis" is
+// 28 characters, and "America/Argentina/ComodRivadavia" is 32.
+func widenBoundaryGeoIDs() error {
+	if _, err := DB.Exec(`ALTER TABLE boundaries ALTER COLUMN geoid TYPE VARCHAR(64)`); err != nil {
+		return fmt.Errorf("failed to widen boundaries.geoid: %w", err)
+	}
+	return nil
+}
+
+func narrowBoundaryGeoIDs() error {
+	// Only the rows that still fit can come back, so anything longer is
+	// removed first rather than failing the rollback.
+	if _, err := DB.Exec(`DELETE FROM boundaries WHERE length(geoid) > 20`); err != nil {
+		return fmt.Errorf("failed to drop over-long geoids: %w", err)
+	}
+	if _, err := DB.Exec(`ALTER TABLE boundaries ALTER COLUMN geoid TYPE VARCHAR(20)`); err != nil {
+		return fmt.Errorf("failed to narrow boundaries.geoid: %w", err)
+	}
+	return nil
 }

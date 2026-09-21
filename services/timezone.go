@@ -142,3 +142,35 @@ func timezoneAt(db *sql.DB, lat, lng float64, stateCode string) (*string, error)
 	}
 	return &zone, nil
 }
+
+// timezoneAtPoint is the zone at a point, and where that answer came from.
+//
+// The timezone layer, when loaded, is the real boundary: it puts the line
+// where the line is, including the ones that run through a state, which the
+// ZIP fallback cannot. The fallback still answers when the layer is not
+// loaded, and for a point outside every zone -- the polygons stop at the
+// coast, so a point at sea has none.
+func timezoneAtPoint(db *sql.DB, lat, lng float64, stateCode string) (*string, string, error) {
+	var zone string
+	err := db.QueryRow(`
+		SELECT b.geoid FROM boundaries b
+		WHERE b.layer = 'timezone'
+		  AND ST_Covers(b.geom, ST_SetSRID(ST_MakePoint($1, $2), 4326))
+		  AND EXISTS (SELECT 1 FROM boundary_loads l
+		              WHERE l.layer = 'timezone' AND l.state_fips = $3 AND l.available)
+		ORDER BY b.geoid
+		LIMIT 1
+	`, lng, lat, NationalScope).Scan(&zone)
+	switch {
+	case err == nil:
+		return &zone, TimezoneBoundarySource, nil
+	case err != sql.ErrNoRows && !isUndefinedTable(err):
+		return nil, "", fmt.Errorf("failed to find the timezone boundary: %w", err)
+	}
+
+	fallback, err := timezoneAt(db, lat, lng, stateCode)
+	if err != nil || fallback == nil {
+		return nil, "", err
+	}
+	return fallback, TimezoneZIPSource, nil
+}

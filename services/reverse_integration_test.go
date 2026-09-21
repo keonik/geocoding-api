@@ -70,6 +70,8 @@ func setupReverseDB(t *testing.T) *sql.DB {
 		 ('43215','Columbus','OH',39.9612,-83.0007, ST_SetSRID(ST_MakePoint(-83.0007,39.9612),4326)::geography),
 		 ('43617','Toledo','OH',41.6600,-83.6000,   ST_SetSRID(ST_MakePoint(-83.6000,41.6600),4326)::geography)`,
 	}
+	// Reverse reports a timezone, which reads these; see boundaryTableDDL.
+	stmts = append(stmts, boundaryTableDDL()...)
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("setup failed on %.60q: %v", stmt, err)

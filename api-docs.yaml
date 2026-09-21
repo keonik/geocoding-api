@@ -667,7 +667,7 @@ paths:
             group, block), `cd` (congressional district, 119th Congress),
             `stateleg` (state senate and house), `school` (unified, elementary
             and secondary school districts), `place` (incorporated place or
-            CDP), `timezone` (IANA zone, ZIP-derived as on /reverse).
+            CDP), `timezone` (IANA zone).
           schema: { type: string }
           example: census,cd,timezone
       responses:
@@ -717,7 +717,7 @@ paths:
             group, block), `cd` (congressional district, 119th Congress),
             `stateleg` (state senate and house), `school` (unified, elementary
             and secondary school districts), `place` (incorporated place or
-            CDP), `timezone` (IANA zone, ZIP-derived as on /reverse).
+            CDP), `timezone` (IANA zone).
           schema: { type: string }
           example: census,cd,timezone
       responses:
@@ -1825,7 +1825,14 @@ paths:
       summary: Load Census boundary layers for a state
       description: |
         Downloads one state's TIGER/Line 2025 files from census.gov and
-        replaces that state's rows for each layer. Runs after the response:
+        replaces that state's rows for each layer.
+
+        The `timezone` layer is different: one file from
+        timezone-boundary-builder (ODbL, from OpenStreetMap) covers the world,
+        so it is loaded once rather than per state, recorded against state
+        "00", and is not part of a load that names no layers. Only the zones
+        that touch a loaded state are kept -- 51 of 419 with every state
+        loaded -- so it is worth reloading after loading more states. Runs after the response:
         a state's block groups are a 19 MB download, and blocks are larger
         still (Ohio: 147 MB, 276,000 polygons, under two minutes). Progress is
         read from GET /admin/boundaries.
@@ -1852,7 +1859,10 @@ paths:
               properties:
                 state:
                   type: string
-                  description: Postal abbreviation or FIPS code
+                  description: >-
+                    Postal abbreviation or FIPS code. Required for Census
+                    layers, which ship one file per state; omit it when
+                    loading only national layers such as timezone.
                   example: OH
                 layers:
                   type: array
@@ -1860,7 +1870,7 @@ paths:
                   items:
                     type: string
                     enum: [tract, block_group, block, congressional_district, state_senate, state_house,
-                           school_unified, school_elementary, school_secondary, place]
+                           school_unified, school_elementary, school_secondary, place, timezone]
       responses:
         '202':
           description: Loads started
@@ -2388,10 +2398,22 @@ components:
         timezone:
           type: string
           description: >-
-            Present when fields included timezone and it is known. ZIP-derived;
-            see ReverseResult.timezone. Asked for with no ZIP data near the
-            point, it is listed in unavailable instead.
-          example: America/New_York
+            Present when fields included timezone and it is known. Asked for
+            and not known -- a point at sea with no ZIP nearby -- it is listed
+            in unavailable instead.
+          example: America/Indiana/Tell_City
+        timezone_source:
+          type: string
+          description: >-
+            Which answer the timezone is. `timezone-boundary-builder <release>
+            (ODbL)` is the exact zone polygon, right to the line, including
+            lines that run through a state. `zip_centroid` is the fallback
+            used when the timezone layer is not loaded, or for a point outside
+            every zone: the zone of the nearest ZIP centroid in the state,
+            which near such a line can be the neighbouring zone. Measured over
+            2,235 points spread across every state, the two disagreed on 0.58%
+            of them, concentrated in the states a zone line crosses.
+          example: timezone-boundary-builder 2026d (ODbL)
 
     Accuracy:
       type: string
@@ -2448,13 +2470,17 @@ components:
           type: string
           nullable: true
           description: >-
-            IANA timezone at the queried point, from the nearest ZIP centroid in
-            the containing state, or within 50km when the point is in no state. Can differ from zip.timezone near
-            a state line, where the nearest ZIP is across it. Null over open
-            water or where no ZIP data is loaded. ZIP-level, so a point near a
-            zone line that runs through a state can report the neighbouring
-            zone.
+            IANA timezone at the queried point. With the timezone boundary
+            layer loaded this is the containing zone polygon, exact to the
+            line; otherwise it falls back to the nearest ZIP centroid in the
+            containing state, or within 50km when the point is in no state,
+            which can differ from zip.timezone near a state line. Null when
+            neither answers. timezone_source says which it is.
           example: "America/New_York"
+        timezone_source:
+          type: string
+          description: The provenance of timezone; see Enrichment.timezone_source.
+          example: timezone-boundary-builder 2026d (ODbL)
         search_radius_meters: { type: number, format: double, example: 2000 }
         enrichment:
           description: Present only when fields was given.

@@ -33,6 +33,14 @@ type BoundaryLayer struct {
 	// Dir and Suffix locate the per-state file:
 	// TIGER2025/<Dir>/tl_2025_<statefips>_<Suffix>.zip
 	Dir, Suffix string
+	// URL is the whole address instead, for a layer that is not TIGER. A
+	// layer with one is national: it covers the country in a single file, is
+	// loaded once rather than per state, and is recorded against
+	// NationalScope.
+	URL string
+	// IDColumn and NameColumn name the DBF columns holding the identifier and
+	// the label. Empty means the TIGER pair, GEOID and NAMELSAD.
+	IDColumn, NameColumn string
 	// Attrs maps DBF columns to the attribute names returned for this layer.
 	// Only these are stored: TIGER ships a dozen columns per layer, most of
 	// them feature-class codes no caller asked for.
@@ -67,7 +75,39 @@ var BoundaryLayers = []BoundaryLayer{
 		Attrs: map[string]string{"SCSDLEA": "lea_code", "LOGRADE": "lowest_grade", "HIGRADE": "highest_grade"}},
 	{Name: "place", Group: "place", Dir: "PLACE", Suffix: "place",
 		Attrs: map[string]string{"PLACEFP": "place_fips", "LSAD": "lsad"}},
+	// Not a Census layer: the IANA zones, as polygons, from
+	// timezone-boundary-builder. One file covers the world, so only the zones
+	// that touch a loaded state are kept -- see replaceBoundaries.
+	//
+	// This is the release that keeps every zone distinct that has differed
+	// since 1970, rather than the "now" file that merges zones currently
+	// agreeing: America/Indiana/Indianapolis stays itself rather than
+	// becoming America/New_York.
+	{Name: "timezone", Group: "timezone", URL: timezoneBoundaryURL,
+		IDColumn: "tzid", NameColumn: "tzid"},
 }
+
+// timezoneBoundaryURL is pinned to a release: the project publishes several
+// times a year as the IANA database changes, and a load should not silently
+// change which vintage it fetched. TimezoneBoundarySource names it in
+// responses, as ODbL attribution requires.
+const (
+	timezoneBoundaryRelease = "2026d"
+	timezoneBoundaryURL     = "https://github.com/evansiroky/timezone-boundary-builder/releases/download/" +
+		timezoneBoundaryRelease + "/timezones.shapefile.zip"
+
+	// TimezoneBoundarySource is the timezone_source of a zone read from those
+	// polygons, and its attribution: the data is ODbL, from OpenStreetMap.
+	TimezoneBoundarySource = "timezone-boundary-builder " + timezoneBoundaryRelease + " (ODbL)"
+
+	// TimezoneZIPSource is the timezone_source of the older, approximate
+	// answer: the zone of the nearest ZIP code centroid.
+	TimezoneZIPSource = "zip_centroid"
+)
+
+// NationalScope stands in for a state FIPS code on a layer that is not loaded
+// per state. "00" is not a state code, so it cannot collide with one.
+const NationalScope = "00"
 
 // BoundaryLayerByName finds a layer, or reports that there is none.
 func BoundaryLayerByName(name string) (BoundaryLayer, bool) {
@@ -82,9 +122,25 @@ func BoundaryLayerByName(name string) (BoundaryLayer, bool) {
 // tigerBaseURL is a variable so tests can serve their own shapefiles.
 var tigerBaseURL = "https://www2.census.gov/geo/tiger/TIGER2025"
 
-// tigerURL is where one state's file for a layer lives.
-func tigerURL(layer BoundaryLayer, stateFIPS string) string {
+// sourceURL is where a layer's file for a state lives.
+func sourceURL(layer BoundaryLayer, stateFIPS string) string {
+	if layer.URL != "" {
+		return layer.URL
+	}
 	return fmt.Sprintf("%s/%s/tl_2025_%s_%s.zip", tigerBaseURL, layer.Dir, stateFIPS, layer.Suffix)
+}
+
+// IsNational reports whether one file covers the country, so the layer is
+// loaded once rather than per state.
+func (l BoundaryLayer) IsNational() bool { return l.URL != "" }
+
+// Scope is the state a layer is loaded against: the state itself for a Census
+// layer, NationalScope for a national one.
+func (l BoundaryLayer) Scope(stateFIPS string) string {
+	if l.IsNational() {
+		return NationalScope
+	}
+	return stateFIPS
 }
 
 // staleLoadAfter is how long a load may sit in 'loading' before another is
@@ -116,13 +172,17 @@ func ResolveStateFIPS(db *sql.DB, state string) (string, error) {
 }
 
 // DefaultBoundaryLayers is what a load without a layer list loads: every
-// layer except blocks, which are an order of magnitude larger than the rest
-// (Ohio: 147 MB, 276,000 polygons) and worth loading only where block-level
-// answers are needed.
+// Census layer except blocks, which are an order of magnitude larger than the
+// rest (Ohio: 147 MB, 276,000 polygons) and worth loading only where
+// block-level answers are needed.
+//
+// The timezone layer is left out for a different reason: it is national, so
+// loading it once is enough, and repeating it for each state would re-fetch
+// 80 MB to write the same rows.
 func DefaultBoundaryLayers() []BoundaryLayer {
 	var layers []BoundaryLayer
 	for _, l := range BoundaryLayers {
-		if l.Name != "block" {
+		if l.Name != "block" && !l.IsNational() {
 			layers = append(layers, l)
 		}
 	}
@@ -145,9 +205,10 @@ type BoundaryClaim struct {
 // cannot load the same file into the same rows at once. The caller then runs
 // Load, which releases the claim whatever happens.
 func BeginBoundaryLoad(db *sql.DB, layer BoundaryLayer, stateFIPS string) (*BoundaryClaim, error) {
-	if err := database.RequireSchemaVersion(db, database.SchemaVersionBoundaries); err != nil {
+	if err := database.RequireSchemaVersion(db, database.SchemaVersionBoundaryGeoIDs); err != nil {
 		return nil, err
 	}
+	stateFIPS = layer.Scope(stateFIPS)
 	if !stateFIPSPattern.MatchString(stateFIPS) {
 		return nil, fmt.Errorf("state FIPS %q is not two digits", stateFIPS)
 	}
@@ -165,7 +226,7 @@ func BeginBoundaryLoad(db *sql.DB, layer BoundaryLayer, stateFIPS string) (*Boun
 		    error = NULL, started_at = NOW(), finished_at = NULL
 		WHERE boundary_loads.status <> 'loading'
 		   OR boundary_loads.started_at < NOW() - make_interval(secs => $5)
-	`, layer.Name, stateFIPS, claim.id, tigerURL(layer, stateFIPS), staleLoadAfter.Seconds())
+	`, layer.Name, stateFIPS, claim.id, sourceURL(layer, stateFIPS), staleLoadAfter.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("failed to record the boundary load: %w", err)
 	}
@@ -218,7 +279,7 @@ func (c *BoundaryClaim) load(ctx context.Context, db *sql.DB) (n int, status str
 		}
 	}()
 
-	url := tigerURL(c.Layer, c.StateFIPS)
+	url := sourceURL(c.Layer, c.StateFIPS)
 	path, found, err := downloadTigerFile(ctx, url)
 	if err != nil {
 		return 0, "", err
@@ -324,14 +385,37 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 		i, ok := cols[name+"20"]
 		return i, ok
 	}
-	geoidCol, ok := col("GEOID")
-	if !ok {
-		return 0, fmt.Errorf("%s shapefile has no GEOID column", layer.Name)
+	idColumn, nameColumn := layer.IDColumn, layer.NameColumn
+	if idColumn == "" {
+		idColumn = "GEOID"
 	}
-	nameCol, ok := col("NAMELSAD")
+	geoidCol, ok := col(idColumn)
 	if !ok {
-		if nameCol, ok = col("NAME"); !ok {
-			return 0, fmt.Errorf("%s shapefile has no NAME or NAMELSAD column", layer.Name)
+		return 0, fmt.Errorf("%s shapefile has no %s column", layer.Name, idColumn)
+	}
+	nameCol, ok := col(nameColumn)
+	if !ok && nameColumn == "" {
+		// TIGER labels a feature NAMELSAD ("Census Tract 40.02"); a few
+		// layers carry only the bare NAME.
+		if nameCol, ok = col("NAMELSAD"); !ok {
+			nameCol, ok = col("NAME")
+		}
+	}
+	if !ok {
+		return 0, fmt.Errorf("%s shapefile has no name column", layer.Name)
+	}
+
+	// A national file covers the world, and only what touches a loaded state
+	// is wanted. The bounds of each state cheaply reject most of it before a
+	// polygon is ever built; ST_Intersects settles the rest on the way in.
+	var stateBounds []shp.Box
+	if layer.IsNational() {
+		stateBounds, err = loadStateBounds(ctx, db)
+		if err != nil {
+			return 0, err
+		}
+		if len(stateBounds) == 0 {
+			return 0, errors.New("no state boundaries are loaded, so there is nothing to select zones against")
 		}
 	}
 
@@ -350,6 +434,7 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 		return 0, fmt.Errorf("failed to clear %s for state %s: %w", layer.Name, stateFIPS, err)
 	}
 
+	national := layer.IsNational()
 	var batch []interface{}
 	var batchBytes int
 	var firstGEOID, lastGEOID string
@@ -368,8 +453,14 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 				b+1, b+2, b+3, b+4)
 		}
 		args := append([]interface{}{layer.Name, stateFIPS}, batch...)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO boundaries (layer, geoid, state_fips, name, attrs, geom) VALUES `+
-			strings.Join(values, ", "), args...); err != nil {
+		insert := `INSERT INTO boundaries (layer, geoid, state_fips, name, attrs, geom) VALUES ` + strings.Join(values, ", ")
+		if national {
+			insert = `INSERT INTO boundaries (layer, geoid, state_fips, name, attrs, geom)
+				SELECT v.* FROM (VALUES ` + strings.Join(values, ", ") + `) AS v(layer, geoid, state_fips, name, attrs, geom)
+				WHERE EXISTS (SELECT 1 FROM us_states s
+				              WHERE s.geometry IS NOT NULL AND ST_Intersects(s.geometry, v.geom))`
+		}
+		if _, err := tx.ExecContext(ctx, insert, args...); err != nil {
 			// A feature whose rings form no area fails NOT NULL on geom; the
 			// range is what finds it in a file of thousands.
 			return fmt.Errorf("failed to insert %s boundaries %s..%s: %w", layer.Name, firstGEOID, lastGEOID, err)
@@ -386,6 +477,9 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 		poly, ok := shape.(*shp.Polygon)
 		if !ok {
 			return 0, fmt.Errorf("%s shapefile holds %T, not polygons", layer.Name, shape)
+		}
+		if national && !nearAnyState(poly.Box, stateBounds) {
+			continue
 		}
 		attrs := map[string]string{}
 		for dbf, key := range layer.Attrs {
@@ -421,10 +515,50 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 	if err := flush(); err != nil {
 		return 0, err
 	}
+	// What was kept, which for a national layer is a fraction of what was
+	// read: 419 zones cover the world, a few dozen touch the United States.
+	if err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FROM boundaries WHERE layer = $1 AND state_fips = $2`, layer.Name, stateFIPS).Scan(&n); err != nil {
+		return 0, fmt.Errorf("failed to count %s boundaries: %w", layer.Name, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("failed to commit %s boundaries: %w", layer.Name, err)
 	}
 	return n, nil
+}
+
+// loadStateBounds reads the bounding box of every state with a boundary.
+func loadStateBounds(ctx context.Context, db *sql.DB) ([]shp.Box, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT ST_XMin(geometry), ST_YMin(geometry), ST_XMax(geometry), ST_YMax(geometry)
+		FROM us_states WHERE geometry IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read state bounds: %w", err)
+	}
+	defer rows.Close()
+	var boxes []shp.Box
+	for rows.Next() {
+		var b shp.Box
+		if err := rows.Scan(&b.MinX, &b.MinY, &b.MaxX, &b.MaxY); err != nil {
+			return nil, fmt.Errorf("failed to read state bounds: %w", err)
+		}
+		boxes = append(boxes, b)
+	}
+	return boxes, rows.Err()
+}
+
+// nearAnyState reports whether a feature's bounds overlap any state's.
+//
+// Only a filter, and a loose one: Alaska reaches past the antimeridian, so its
+// bounds span most of the globe and admit zones on the far side of it. What
+// gets through is settled exactly by ST_Intersects.
+func nearAnyState(b shp.Box, states []shp.Box) bool {
+	for _, s := range states {
+		if b.MinX <= s.MaxX && b.MaxX >= s.MinX && b.MinY <= s.MaxY && b.MaxY >= s.MinY {
+			return true
+		}
+	}
+	return false
 }
 
 // ringsWKT writes a shapefile polygon's rings as a MULTILINESTRING, for

@@ -124,6 +124,8 @@ func setupTimezoneDB(t *testing.T, withGeog bool) *sql.DB {
 		"ANALYZE zip_codes",
 		"ANALYZE ohio_addresses",
 	}
+	// The timezone lookup reads these; see boundaryTableDDL.
+	stmts = append(stmts, boundaryTableDDL()...)
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("setup failed on %.60q: %v", stmt, err)
