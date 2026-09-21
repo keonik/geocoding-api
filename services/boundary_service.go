@@ -97,8 +97,11 @@ const (
 		timezoneBoundaryRelease + "/timezones.shapefile.zip"
 
 	// TimezoneBoundarySource is the timezone_source of a zone read from those
-	// polygons, and its attribution: the data is ODbL, from OpenStreetMap.
-	TimezoneBoundarySource = "timezone-boundary-builder " + timezoneBoundaryRelease + " (ODbL)"
+	// polygons. It names the project, not the release: a caller matching on
+	// it should not break when the data is updated. Which release is loaded
+	// is in boundary_loads.source_url, and the attribution the ODbL asks for
+	// is in the API description and the README.
+	TimezoneBoundarySource = "timezone-boundary-builder"
 
 	// TimezoneZIPSource is the timezone_source of the older, approximate
 	// answer: the zone of the nearest ZIP code centroid.
@@ -133,6 +136,12 @@ func sourceURL(layer BoundaryLayer, stateFIPS string) string {
 // IsNational reports whether one file covers the country, so the layer is
 // loaded once rather than per state.
 func (l BoundaryLayer) IsNational() bool { return l.URL != "" }
+
+// AnswersAsTimezone reports whether the layer is reported through
+// Enrichment.Timezone rather than among its boundaries: a caller asking for
+// the zone wants the zone, not a polygon whose id and name are both the zone
+// again.
+func (l BoundaryLayer) AnswersAsTimezone() bool { return l.Group == "timezone" }
 
 // Scope is the state a layer is loaded against: the state itself for a Census
 // layer, NationalScope for a national one.
@@ -417,6 +426,9 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 		if len(stateBounds) == 0 {
 			return 0, errors.New("no state boundaries are loaded, so there is nothing to select zones against")
 		}
+		// What is kept reflects the states loaded right now. Load another
+		// state later and this layer will not cover it until it is reloaded;
+		// lookups there fall back rather than inventing an answer.
 	}
 
 	// DBF pads fixed-width fields. The Census pads with spaces, which the
@@ -438,7 +450,7 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 	var batch []interface{}
 	var batchBytes int
 	var firstGEOID, lastGEOID string
-	n := 0
+	var n int
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
@@ -478,7 +490,7 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 		if !ok {
 			return 0, fmt.Errorf("%s shapefile holds %T, not polygons", layer.Name, shape)
 		}
-		if national && !nearAnyState(poly.Box, stateBounds) {
+		if national && !boundsOverlapAnyState(poly.Box, stateBounds) {
 			continue
 		}
 		attrs := map[string]string{}
@@ -502,7 +514,6 @@ func replaceBoundaries(ctx context.Context, db *sql.DB, layer BoundaryLayer, sta
 		lastGEOID = geoid
 		batch = append(batch, geoid, attr(nameCol), string(attrJSON), wkt)
 		batchBytes += len(wkt)
-		n++
 		if len(batch)/4 >= boundaryInsertBatch || batchBytes >= boundaryInsertBatchBytes {
 			if err := flush(); err != nil {
 				return 0, err
@@ -547,12 +558,14 @@ func loadStateBounds(ctx context.Context, db *sql.DB) ([]shp.Box, error) {
 	return boxes, rows.Err()
 }
 
-// nearAnyState reports whether a feature's bounds overlap any state's.
+// boundsOverlapAnyState reports whether a feature's bounds overlap any
+// state's.
 //
 // Only a filter, and a loose one: Alaska reaches past the antimeridian, so its
 // bounds span most of the globe and admit zones on the far side of it. What
-// gets through is settled exactly by ST_Intersects.
-func nearAnyState(b shp.Box, states []shp.Box) bool {
+// gets through is settled exactly by ST_Intersects, which is what makes the
+// selection correct; this only saves building polygons that cannot qualify.
+func boundsOverlapAnyState(b shp.Box, states []shp.Box) bool {
 	for _, s := range states {
 		if b.MinX <= s.MaxX && b.MaxX >= s.MinX && b.MinY <= s.MaxY && b.MaxY >= s.MinY {
 			return true

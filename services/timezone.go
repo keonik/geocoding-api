@@ -70,6 +70,15 @@ func describeAddresses(q querier, addrs []models.OhioAddress) error {
 		ids[i] = addrs[i].ID
 	}
 
+	// The zone polygons first, where they are loaded. Without this an address
+	// would keep the ZIP-level answer while the same request's /reverse point
+	// carried the exact one, and the two would disagree at precisely the
+	// places the polygons exist to get right.
+	zones, err := addressZonesFromBoundaries(q, ids)
+	if err != nil {
+		return err
+	}
+
 	rows, err := q.Query(`
 		SELECT a.id, COALESCE(
 			(SELECT z.timezone FROM zip_codes z
@@ -100,7 +109,7 @@ func describeAddresses(q querier, addrs []models.OhioAddress) error {
 	}
 	defer rows.Close()
 
-	zones := make(map[int64]string, len(addrs))
+	zipZones := make(map[int64]string, len(addrs))
 	for rows.Next() {
 		var id int64
 		var zone *string
@@ -108,7 +117,7 @@ func describeAddresses(q querier, addrs []models.OhioAddress) error {
 			return fmt.Errorf("failed to scan address timezone: %w", err)
 		}
 		if zone != nil {
-			zones[id] = *zone
+			zipZones[id] = *zone
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -118,15 +127,54 @@ func describeAddresses(q querier, addrs []models.OhioAddress) error {
 	for i := range addrs {
 		if zone, ok := zones[addrs[i].ID]; ok {
 			addrs[i].Timezone = &zone
+			addrs[i].TimezoneSource = TimezoneBoundarySource
+			continue
+		}
+		if zone, ok := zipZones[addrs[i].ID]; ok {
+			addrs[i].Timezone = &zone
+			addrs[i].TimezoneSource = TimezoneZIPSource
 		}
 	}
 	return nil
 }
 
-// timezoneAt is the zone at a point: the nearest ZIP in its state, or within
+// addressZonesFromBoundaries reads the containing zone polygon for a page of
+// addresses. Empty when the timezone layer is not loaded, or before migration
+// 26 creates the tables, which leaves the ZIP fallback to answer.
+func addressZonesFromBoundaries(q querier, ids []int64) (map[int64]string, error) {
+	zones := map[int64]string{}
+	rows, err := q.Query(`
+		SELECT DISTINCT ON (a.id) a.id, b.geoid
+		FROM ohio_addresses a
+		JOIN boundaries b ON b.layer = 'timezone' AND ST_Covers(b.geom, a.geom)
+		WHERE a.id = ANY($1)
+		  AND EXISTS (SELECT 1 FROM boundary_loads l
+		              WHERE l.layer = 'timezone' AND l.state_fips = $2 AND l.available)
+		ORDER BY a.id, b.geoid
+	`, pq.Array(ids), NationalScope)
+	if err != nil {
+		if isUndefinedTable(err) {
+			return zones, nil
+		}
+		return nil, fmt.Errorf("failed to look up address timezone boundaries: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var zone string
+		if err := rows.Scan(&id, &zone); err != nil {
+			return nil, fmt.Errorf("failed to scan an address timezone boundary: %w", err)
+		}
+		zones[id] = zone
+	}
+	return zones, rows.Err()
+}
+
+// timezoneFromZipCentroids is the approximate zone at a point: the zone of
+// the nearest ZIP in its state, or within
 // timezoneSearchMeters when stateCode is empty because the point is in none.
 // Nil when there is no such ZIP, or before migration 21 adds zip_codes.geog.
-func timezoneAt(db *sql.DB, lat, lng float64, stateCode string) (*string, error) {
+func timezoneFromZipCentroids(db *sql.DB, lat, lng float64, stateCode string) (*string, error) {
 	var zone string
 	var err error
 	if stateCode != "" {
@@ -168,7 +216,7 @@ func timezoneAtPoint(db *sql.DB, lat, lng float64, stateCode string) (*string, s
 		return nil, "", fmt.Errorf("failed to find the timezone boundary: %w", err)
 	}
 
-	fallback, err := timezoneAt(db, lat, lng, stateCode)
+	fallback, err := timezoneFromZipCentroids(db, lat, lng, stateCode)
 	if err != nil || fallback == nil {
 		return nil, "", err
 	}

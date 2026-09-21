@@ -81,10 +81,7 @@ func ParseEnrichmentFields(raw string) (EnrichmentRequest, error) {
 
 	req := EnrichmentRequest{Timezone: len(want) == 0 || want["timezone"]}
 	for _, l := range BoundaryLayers {
-		// The timezone layer answers through Timezone rather than as a
-		// boundary: a caller wants the zone, not the polygon's id and name,
-		// which are both the zone again.
-		if l.Group == "timezone" {
+		if l.AnswersAsTimezone() {
 			continue
 		}
 		if len(want) == 0 || want[l.Group] {

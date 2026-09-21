@@ -13,6 +13,19 @@ A Go-based REST API for geocoding location lookup using US ZIP codes and Ohio ad
 - 🐳 Docker support with Docker Compose
 - 📊 Comprehensive location data including population, density, coordinates, and county information
 
+## Data Sources and Attribution
+
+- **Census geographies** — tracts, block groups, blocks, congressional and
+  state legislative districts, school districts, places, states and counties:
+  US Census Bureau TIGER/Line 2025, public domain.
+- **Timezone boundaries** — [timezone-boundary-builder](https://github.com/evansiroky/timezone-boundary-builder),
+  derived from [OpenStreetMap](https://www.openstreetmap.org/copyright) and
+  licensed under the [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
+  A response says so in `timezone_source`, and `GET /api/v1/admin/boundaries`
+  reports which release is loaded.
+- **ZIP codes and cities** — simplemaps / Opendatasoft georeferenced datasets.
+
+
 ## Prerequisites
 
 ### Required

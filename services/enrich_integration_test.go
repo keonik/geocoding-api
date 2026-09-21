@@ -23,22 +23,17 @@ import (
 
 const enrichSchema = "enrich_probe"
 
-// boundaryTableDDL creates the tables the timezone lookup reads. A fixture
-// whose schema lacks them resolves them through public and answers from
-// whatever a real deployment had loaded, which is how two of these tests
-// passed against an empty schema and failed against a populated one.
-func boundaryTableDDL() []string {
-	return []string{
-		`CREATE TABLE boundaries (
-			layer VARCHAR(32) NOT NULL, geoid VARCHAR(64) NOT NULL, state_fips CHAR(2) NOT NULL,
-			name TEXT NOT NULL, attrs JSONB NOT NULL DEFAULT '{}'::jsonb,
-			geom GEOMETRY(MULTIPOLYGON, 4326) NOT NULL, PRIMARY KEY (layer, geoid))`,
-		`CREATE TABLE boundary_loads (
-			layer VARCHAR(32) NOT NULL, state_fips CHAR(2) NOT NULL, status VARCHAR(10) NOT NULL,
-			claim_id VARCHAR(36), available BOOLEAN NOT NULL DEFAULT false,
-			features INTEGER NOT NULL DEFAULT 0, source_url TEXT NOT NULL, error TEXT,
-			started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TIMESTAMP,
-			PRIMARY KEY (layer, state_fips))`,
+// createBoundaryTables builds the boundary schema the way a deployment does:
+// the real migrations, not a copy of their DDL. A copy drifts -- and one that
+// left out the GIST index would let the polygon lookup quietly lose it with
+// every test still passing.
+func createBoundaryTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if err := database.CreateBoundaryTables(db); err != nil {
+		t.Fatalf("migration 26: %v", err)
+	}
+	if err := database.WidenBoundaryGeoIDs(db); err != nil {
+		t.Fatalf("migration 27: %v", err)
 	}
 }
 
@@ -236,10 +231,7 @@ func setupEnrichDB(t *testing.T) (*sql.DB, *tigerFixture) {
 			t.Fatalf("setup failed on %.60q: %v", stmt, err)
 		}
 	}
-	// The real migration, not a copy of it, so the test fails if they drift.
-	if err := database.CreateBoundaryTables(db); err != nil {
-		t.Fatalf("migration 26: %v", err)
-	}
+	createBoundaryTables(t, db)
 	return db, fixture
 }
 
@@ -606,6 +598,8 @@ func zoneFeatures() []shapeFeature {
 }
 
 // serveZones points the timezone layer at the fixture server for this test.
+// It mutates the package-level registry, which is safe only because none of
+// these tests call t.Parallel.
 func serveZones(t *testing.T, fx *tigerFixture) {
 	t.Helper()
 	fx.set("/timezones.shapefile.zip", shapefileZip(t, zoneColumns, zoneFeatures()))

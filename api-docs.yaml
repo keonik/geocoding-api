@@ -50,7 +50,20 @@ info:
     - **GeoJSON Format**: Ready for Leaflet, Mapbox, OpenLayers
     - **Spatial Queries**: Bounding box intersections and proximity searches
     - **Statistics**: Address counts and administrative metadata
-    
+
+    ## 📎 Data Sources and Attribution
+
+    - **Census geographies** (tracts, block groups, blocks, congressional and
+      state legislative districts, school districts, places, states,
+      counties): US Census Bureau TIGER/Line 2025, public domain.
+    - **Timezone boundaries**: [timezone-boundary-builder](https://github.com/evansiroky/timezone-boundary-builder),
+      derived from [OpenStreetMap](https://www.openstreetmap.org/copyright)
+      data and licensed under the
+      [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
+      Responses whose `timezone_source` is `timezone-boundary-builder` carry
+      this data; `GET /admin/boundaries` reports the loaded release.
+    - **ZIP codes and cities**: simplemaps / Opendatasoft georeferenced data.
+
   version: 1.0.0
   contact:
     name: API Support
@@ -2354,6 +2367,22 @@ components:
               to: { type: string, example: "Main Street" }
               reason: { type: string, example: abbreviation expanded }
 
+    TimezoneSource:
+      type: string
+      enum: [timezone-boundary-builder, zip_centroid]
+      description: >-
+        Which answer a timezone is. `timezone-boundary-builder` is the zone
+        polygon containing the point, exact to the line, including lines that
+        run through a state; the data is from timezone-boundary-builder,
+        derived from OpenStreetMap and licensed ODbL, and which release is
+        loaded is in GET /admin/boundaries. `zip_centroid` is the fallback
+        used when that layer is not loaded, or for a point outside every zone:
+        the zone of the nearest ZIP centroid in the state, which near such a
+        line can be the neighbouring zone. Measured over 2,235 points spread
+        across every state, the two disagreed on 0.58% of them, concentrated
+        in the states a zone line crosses.
+      example: timezone-boundary-builder
+
     Enrichment:
       type: object
       properties:
@@ -2403,17 +2432,7 @@ components:
             in unavailable instead.
           example: America/Indiana/Tell_City
         timezone_source:
-          type: string
-          description: >-
-            Which answer the timezone is. `timezone-boundary-builder <release>
-            (ODbL)` is the exact zone polygon, right to the line, including
-            lines that run through a state. `zip_centroid` is the fallback
-            used when the timezone layer is not loaded, or for a point outside
-            every zone: the zone of the nearest ZIP centroid in the state,
-            which near such a line can be the neighbouring zone. Measured over
-            2,235 points spread across every state, the two disagreed on 0.58%
-            of them, concentrated in the states a zone line crosses.
-          example: timezone-boundary-builder 2026d (ODbL)
+          $ref: '#/components/schemas/TimezoneSource' 
 
     Accuracy:
       type: string
@@ -2478,9 +2497,7 @@ components:
             neither answers. timezone_source says which it is.
           example: "America/New_York"
         timezone_source:
-          type: string
-          description: The provenance of timezone; see Enrichment.timezone_source.
-          example: timezone-boundary-builder 2026d (ODbL)
+          $ref: '#/components/schemas/TimezoneSource' 
         search_radius_meters: { type: number, format: double, example: 2000 }
         enrichment:
           description: Present only when fields was given.
@@ -2585,12 +2602,15 @@ components:
           type: string
           nullable: true
           description: >-
-            IANA timezone, from the address's ZIP code, or from the nearest ZIP
-            in the same state within 50km when the address has no known
-            postcode. Null when no ZIP data covers it. ZIP-level: an address
-            within a few kilometres of a zone line can carry the neighbouring
-            zone.
+            IANA timezone at the address. With the timezone boundary layer
+            loaded this is the zone polygon containing it, exact to the line;
+            otherwise it is the address's own ZIP code's zone, or the nearest
+            ZIP in the same state within 50km when there is no usable
+            postcode. Null when nothing covers it. timezone_source says which
+            it is.
           example: "America/New_York"
+        timezone_source:
+          $ref: '#/components/schemas/TimezoneSource' 
 
     AddressSearchResponse:
       type: object
