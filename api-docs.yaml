@@ -2367,6 +2367,35 @@ components:
               to: { type: string, example: "Main Street" }
               reason: { type: string, example: abbreviation expanded }
 
+    TimezoneDetails:
+      type: object
+      description: >-
+        What a caller needs to use a zone without the IANA database to hand.
+        Returned beside timezone on /enrich and /reverse. Address results
+        carry the zone name without it: a page of them would repeat one zone's
+        description on every row, and this is derived from the name. Absent
+        when the zone is not in the tz data the server was built with.
+      properties:
+        utc_offset:
+          type: number
+          description: >-
+            Standard-time offset in hours, so -5 for US Eastern -- not the
+            offset in force right now, which changes twice a year. Fractional
+            for the zones that need it (Pacific/Marquesas is -9.5).
+          example: -5
+        observes_dst:
+          type: boolean
+          description: >-
+            Whether the zone shifts at all during the year. False for Arizona
+            and Hawaii. It does not say whether DST is in force at this moment.
+          example: true
+        abbreviation:
+          type: string
+          description: >-
+            Standard-time abbreviation. Zones without one of their own carry
+            the numeric form the IANA database gives, such as "+0530".
+          example: EST
+
     TimezoneSource:
       type: string
       enum: [timezone-boundary-builder, zip_centroid]
@@ -2432,7 +2461,9 @@ components:
             in unavailable instead.
           example: America/Indiana/Tell_City
         timezone_source:
-          $ref: '#/components/schemas/TimezoneSource' 
+          $ref: '#/components/schemas/TimezoneSource'
+        timezone_details:
+          $ref: '#/components/schemas/TimezoneDetails'
 
     Accuracy:
       type: string
@@ -2497,7 +2528,9 @@ components:
             neither answers. timezone_source says which it is.
           example: "America/New_York"
         timezone_source:
-          $ref: '#/components/schemas/TimezoneSource' 
+          $ref: '#/components/schemas/TimezoneSource'
+        timezone_details:
+          $ref: '#/components/schemas/TimezoneDetails'
         search_radius_meters: { type: number, format: double, example: 2000 }
         enrichment:
           description: Present only when fields was given.
@@ -2610,7 +2643,7 @@ components:
             it is.
           example: "America/New_York"
         timezone_source:
-          $ref: '#/components/schemas/TimezoneSource' 
+          $ref: '#/components/schemas/TimezoneSource'
 
     AddressSearchResponse:
       type: object

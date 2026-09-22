@@ -429,3 +429,34 @@ func TestAddressesUseTheZonePolygons(t *testing.T) {
 		t.Errorf("address outside the zones: %s from %q", zoneOf(away.Timezone), away.TimezoneSource)
 	}
 }
+
+// The zone name is the answer; the details are what a caller needs to use it.
+func TestTimezoneDetailsRideAlong(t *testing.T) {
+	db := setupTimezoneDB(t, true)
+
+	e := enrichAt(t, db, borderLat, borderLng, "timezone")
+	if e.Timezone == nil || *e.Timezone != "America/Indiana/Indianapolis" {
+		t.Fatalf("timezone = %v", e.Timezone)
+	}
+	if e.TimezoneDetails == nil {
+		t.Fatal("no timezone_details beside the zone")
+	}
+	if e.TimezoneDetails.UTCOffset != -5 || !e.TimezoneDetails.ObservesDST || e.TimezoneDetails.Abbreviation != "EST" {
+		t.Errorf("details = %+v", e.TimezoneDetails)
+	}
+
+	rev, err := ReverseGeocode(db, borderLat, borderLng, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.TimezoneDetails == nil || rev.TimezoneDetails.Abbreviation != "EST" {
+		t.Errorf("reverse details = %+v", rev.TimezoneDetails)
+	}
+
+	// No zone, no details invented for one: well outside the fixture's
+	// states, and no ZIP within the stateless bound.
+	sea := enrichAt(t, db, 25.0, -100.0, "timezone")
+	if sea.Timezone != nil || sea.TimezoneDetails != nil {
+		t.Errorf("details without a zone: %v %+v", sea.Timezone, sea.TimezoneDetails)
+	}
+}

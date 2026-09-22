@@ -6,6 +6,10 @@ import (
 	"os"
 	"strings"
 	"time"
+	// The runtime image installs tzdata, and embedding Go's copy means a
+	// rebuild that drops it costs nothing rather than silently emptying every
+	// timezone offset in the API.
+	_ "time/tzdata"
 
 	"geocoding-api/database"
 	"geocoding-api/handlers"
