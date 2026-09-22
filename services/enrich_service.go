@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+
+	"geocoding-api/models"
 
 	"github.com/lib/pq"
 )
@@ -52,6 +55,12 @@ type Enrichment struct {
 	// known, it is listed in Unavailable, like a layer.
 	Timezone       *string `json:"timezone,omitempty"`
 	TimezoneSource string  `json:"timezone_source,omitempty"`
+
+	// TimezoneDetails is the offset, DST observance and abbreviation of that
+	// zone, so a caller can use it without the IANA database to hand. Present
+	// whenever Timezone is, and absent when the zone is not in the tz data
+	// the binary was built with.
+	TimezoneDetails *models.TimezoneDetails `json:"timezone_details,omitempty"`
 }
 
 // ParseEnrichmentFields turns "census,cd" into a request. An empty string
@@ -128,6 +137,8 @@ func Enrich(db *sql.DB, lat, lng float64, req EnrichmentRequest) (*Enrichment, e
 		}
 		if e.Timezone == nil {
 			e.Unavailable = append(e.Unavailable, "timezone")
+		} else {
+			e.TimezoneDetails = timezoneDetails(*e.Timezone, time.Now())
 		}
 	}
 	if fips == "" {

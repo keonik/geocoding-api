@@ -3,6 +3,7 @@ package services
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"geocoding-api/database"
 	"geocoding-api/models"
@@ -62,6 +63,12 @@ type ReverseResult struct {
 	// ZIP data.
 	Timezone       *string `json:"timezone"`
 	TimezoneSource string  `json:"timezone_source,omitempty"`
+
+	// TimezoneDetails describes that zone: its standard offset, whether it
+	// observes DST, and its abbreviation. This is the zone at the queried
+	// point; the address below carries its own, which can differ when the
+	// two fall either side of a zone line.
+	TimezoneDetails *models.TimezoneDetails `json:"timezone_details,omitempty"`
 
 	SearchRadiusMeters float64 `json:"search_radius_meters"`
 
@@ -240,5 +247,8 @@ func (r *ReverseResult) findTimezone(db *sql.DB, lat, lng float64) error {
 	}
 	zone, source, err := timezoneAtPoint(db, lat, lng, state)
 	r.Timezone, r.TimezoneSource = zone, source
+	if zone != nil {
+		r.TimezoneDetails = timezoneDetails(*zone, time.Now())
+	}
 	return err
 }

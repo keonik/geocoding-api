@@ -2367,6 +2367,45 @@ components:
               to: { type: string, example: "Main Street" }
               reason: { type: string, example: abbreviation expanded }
 
+    TimezoneDetails:
+      type: object
+      required: [utc_offset, observes_dst, abbreviation]
+      description: >-
+        What a caller needs to use a zone without the IANA database to hand,
+        returned beside `timezone` wherever one is reported: /enrich,
+        /reverse, and address results. Absent when the zone is not in the tz
+        data the server was built with.
+
+        Describes the zone as of the current year, because zones change --
+        Mexico City observed DST until 2022 and does not now. It is read from
+        the tz database at request time rather than stored.
+
+        Geocodio returns these inside one `timezone` object. Here `timezone`
+        is a string and this is a sibling, because that string shipped first
+        and turning it into an object would break every caller already
+        reading it. Note also that our `timezone_source` is the provenance of
+        the answer, not Geocodio's attribution string of the same name.
+      properties:
+        utc_offset:
+          type: number
+          description: >-
+            Standard-time offset in hours, so -5 for US Eastern -- not the
+            offset in force right now, which changes twice a year. Fractional
+            for the zones that need it (Pacific/Marquesas is -9.5).
+          example: -5
+        observes_dst:
+          type: boolean
+          description: >-
+            Whether the zone shifts at all during the year. False for Arizona
+            and Hawaii. It does not say whether DST is in force at this moment.
+          example: true
+        abbreviation:
+          type: string
+          description: >-
+            Standard-time abbreviation. Zones without one of their own carry
+            the numeric form the IANA database gives, such as "+0530".
+          example: EST
+
     TimezoneSource:
       type: string
       enum: [timezone-boundary-builder, zip_centroid]
@@ -2432,7 +2471,9 @@ components:
             in unavailable instead.
           example: America/Indiana/Tell_City
         timezone_source:
-          $ref: '#/components/schemas/TimezoneSource' 
+          $ref: '#/components/schemas/TimezoneSource'
+        timezone_details:
+          $ref: '#/components/schemas/TimezoneDetails'
 
     Accuracy:
       type: string
@@ -2497,7 +2538,9 @@ components:
             neither answers. timezone_source says which it is.
           example: "America/New_York"
         timezone_source:
-          $ref: '#/components/schemas/TimezoneSource' 
+          $ref: '#/components/schemas/TimezoneSource'
+        timezone_details:
+          $ref: '#/components/schemas/TimezoneDetails'
         search_radius_meters: { type: number, format: double, example: 2000 }
         enrichment:
           description: Present only when fields was given.
@@ -2610,7 +2653,9 @@ components:
             it is.
           example: "America/New_York"
         timezone_source:
-          $ref: '#/components/schemas/TimezoneSource' 
+          $ref: '#/components/schemas/TimezoneSource'
+        timezone_details:
+          $ref: '#/components/schemas/TimezoneDetails'
 
     AddressSearchResponse:
       type: object
