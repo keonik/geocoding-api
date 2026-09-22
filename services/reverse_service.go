@@ -138,8 +138,7 @@ func ReverseGeocode(db *sql.DB, lat, lng, radiusMeters float64) (*ReverseResult,
 func (r *ReverseResult) findAddress(db *sql.DB, lat, lng, radius float64) error {
 	var a NearestAddress
 	err := db.QueryRow(`
-		SELECT id, hash, house_number, street, unit, city, district, region,
-		       postcode, county, full_address,
+		SELECT `+addressColumns+`,
 		       ST_Y(geom), ST_X(geom), created_at,
 		       ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, false)
 		FROM ohio_addresses
