@@ -38,7 +38,7 @@ var (
 	rateLimitRejections = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "geocoding_rate_limit_rejections_total",
-			Help: "Requests refused for exceeding a quota, by which period ran out.",
+			Help: "Rate limit rejections by the limit that tripped: monthly, daily, key_monthly, key_daily or burst",
 		},
 		[]string{"scope"},
 	)

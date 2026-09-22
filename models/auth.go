@@ -227,15 +227,19 @@ var PlanLimits = map[string]Plan{
 		DisplayFeatures: []string{"All Starter features", "Bulk operations", "Priority support", "SLA"},
 	},
 	"enterprise": {
-		Key:             "enterprise",
-		Name:            "Enterprise",
-		MonthlyLimit:    Unlimited,
-		DailyLimit:      Unlimited,
-		BurstPerSecond:  50,
-		PricePerCall:    0.0005,
-		PriceMonthly:    500,
-		Features:        []string{"geocode", "search", "distance", "bulk", "priority"},
-		DisplayFeatures: []string{"Unlimited usage", "All Pro features", "Custom integrations", "Dedicated support", "99.9% SLA"},
+		Key:            "enterprise",
+		Name:           "Enterprise",
+		MonthlyLimit:   Unlimited,
+		DailyLimit:     Unlimited,
+		BurstPerSecond: 50,
+		PricePerCall:   0.0005,
+		PriceMonthly:   500,
+		Features:       []string{"geocode", "search", "distance", "bulk", "priority"},
+		// "Unlimited" is the monthly allowance, and saying so matters now
+		// that a rate limit exists: an unqualified "Unlimited usage" beside a
+		// published 50/s ceiling is a contradiction a customer would be right
+		// to complain about.
+		DisplayFeatures: []string{"Unlimited monthly usage", "50 requests/second", "All Pro features", "Custom integrations", "Dedicated support", "99.9% SLA"},
 	},
 }
 

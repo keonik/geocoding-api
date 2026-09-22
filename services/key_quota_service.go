@@ -21,6 +21,10 @@ const (
 	ScopeBurst = "burst"
 )
 
+// BurstLimitKey is the echo context key under which APIKeyAuth publishes the
+// caller's per-second rate, for the handlers and headers that need it.
+const BurstLimitKey = "burst_limit_per_second"
+
 // KeyLimitStatusKey is the echo context key under which APIKeyAuth publishes
 // a capped key's status, for handlers that spend more than one unit.
 const KeyLimitStatusKey = "key_limit_status"
