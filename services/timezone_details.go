@@ -1,31 +1,24 @@
 package services
 
-import "time"
+import (
+	"strconv"
+	"sync"
+	"time"
 
-// TimezoneDetails is what a caller needs to do arithmetic with a zone without
-// shipping a copy of the IANA database.
-//
-// The name alone is the honest identifier, and the one thing that stays true
-// as rules change -- but a caller formatting a timestamp or labelling a column
-// needs the offset and the abbreviation, and Geocodio returns them, so an
-// integration moving across should not have to look them up.
-type TimezoneDetails struct {
-	// UTCOffset is the standard-time offset in hours, so -5 for US Eastern.
-	// Not the offset in force right now: that changes twice a year, and a
-	// value that means something different depending on when it was fetched
-	// is a poor thing to store. Fractional for the zones that need it --
-	// Pacific/Marquesas is -9.5.
-	UTCOffset float64 `json:"utc_offset"`
+	// Imported here rather than only in main: without it these lookups read
+	// the host's zoneinfo, so the details would be empty on an image or a
+	// test runner that ships none, and the tests would be attesting to the
+	// machine they ran on.
+	_ "time/tzdata"
 
-	// ObservesDST is whether the zone shifts at all during the year. It says
-	// nothing about whether DST is in force at this moment.
-	ObservesDST bool `json:"observes_dst"`
+	"geocoding-api/models"
+)
 
-	// Abbreviation is the standard-time abbreviation, "EST" for US Eastern.
-	// Some zones have no abbreviation of their own and the IANA database
-	// gives a numeric one such as "+0530", which is passed through as it is.
-	Abbreviation string `json:"abbreviation"`
-}
+// detailsCache holds what has already been worked out, keyed by zone and
+// year. time.LoadLocation parses the zone file on every call, and a page of
+// addresses asks about the same handful of zones over and over; the answers
+// only change when the year does.
+var detailsCache sync.Map
 
 // timezoneDetails describes a zone as of the year containing at.
 //
@@ -35,14 +28,33 @@ type TimezoneDetails struct {
 // Nil when the name is not in the database -- a deployment without tzdata, or
 // a zone newer than the binary -- which leaves the zone name to stand alone
 // rather than inventing an offset for it.
-func timezoneDetails(name string, at time.Time) *TimezoneDetails {
+func timezoneDetails(name string, at time.Time) *models.TimezoneDetails {
+	key := name + "@" + strconv.Itoa(at.Year())
+	if cached, ok := detailsCache.Load(key); ok {
+		return cached.(*models.TimezoneDetails)
+	}
+	details := computeTimezoneDetails(name, at)
+	detailsCache.Store(key, details)
+	return details
+}
+
+// computeTimezoneDetails is timezoneDetails without the cache.
+func computeTimezoneDetails(name string, at time.Time) *models.TimezoneDetails {
 	loc, err := time.LoadLocation(name)
 	if err != nil {
 		return nil
 	}
 
 	// January and July catch the shift in either hemisphere. Standard time is
-	// the smaller offset of the two: DST only ever moves clocks forward.
+	// the smaller offset of the two: DST only ever moves clocks forward, and
+	// that holds even where the tz database models it the other way round --
+	// Europe/Dublin calls summer standard and winter negative DST, and this
+	// still reports GMT, observing DST, which is what a caller means.
+	//
+	// Two samples can miss a shift that happens outside them: Africa/Casablanca
+	// steps back for Ramadan, on a lunar date, and reads here as observing no
+	// DST. The zones this API serves are US ones, where January and July
+	// straddle every transition.
 	jan := time.Date(at.Year(), time.January, 15, 12, 0, 0, 0, loc)
 	jul := time.Date(at.Year(), time.July, 15, 12, 0, 0, 0, loc)
 	janName, janOffset := jan.Zone()
@@ -53,7 +65,7 @@ func timezoneDetails(name string, at time.Time) *TimezoneDetails {
 		standardName, standardOffset = julName, julOffset
 	}
 
-	return &TimezoneDetails{
+	return &models.TimezoneDetails{
 		UTCOffset:    float64(standardOffset) / 3600,
 		ObservesDST:  janOffset != julOffset,
 		Abbreviation: standardName,

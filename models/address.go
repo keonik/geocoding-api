@@ -40,6 +40,11 @@ type OhioAddress struct {
 	Timezone       *string `json:"timezone"`
 	TimezoneSource string  `json:"timezone_source,omitempty"`
 
+	// TimezoneDetails is that zone's offset, DST observance and abbreviation,
+	// so an address result carries what a caller needs to use the zone
+	// without looking it up. Same shape as on /reverse and /enrich.
+	TimezoneDetails *TimezoneDetails `json:"timezone_details,omitempty"`
+
 	// Match describes why this row was returned. Populated by the /addresses
 	// search path; absent on a lookup by id, where there is nothing to have
 	// matched, and absent on /addresses/search, which runs a different set of

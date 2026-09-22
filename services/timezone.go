@@ -3,6 +3,7 @@ package services
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"geocoding-api/models"
 
@@ -124,15 +125,17 @@ func describeAddresses(q querier, addrs []models.OhioAddress) error {
 		return fmt.Errorf("failed to read address timezones: %w", err)
 	}
 
+	now := time.Now()
 	for i := range addrs {
 		if zone, ok := zones[addrs[i].ID]; ok {
 			addrs[i].Timezone = &zone
 			addrs[i].TimezoneSource = TimezoneBoundarySource
-			continue
-		}
-		if zone, ok := zipZones[addrs[i].ID]; ok {
+		} else if zone, ok := zipZones[addrs[i].ID]; ok {
 			addrs[i].Timezone = &zone
 			addrs[i].TimezoneSource = TimezoneZIPSource
+		}
+		if addrs[i].Timezone != nil {
+			addrs[i].TimezoneDetails = timezoneDetails(*addrs[i].Timezone, now)
 		}
 	}
 	return nil

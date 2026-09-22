@@ -2369,12 +2369,22 @@ components:
 
     TimezoneDetails:
       type: object
+      required: [utc_offset, observes_dst, abbreviation]
       description: >-
-        What a caller needs to use a zone without the IANA database to hand.
-        Returned beside timezone on /enrich and /reverse. Address results
-        carry the zone name without it: a page of them would repeat one zone's
-        description on every row, and this is derived from the name. Absent
-        when the zone is not in the tz data the server was built with.
+        What a caller needs to use a zone without the IANA database to hand,
+        returned beside `timezone` wherever one is reported: /enrich,
+        /reverse, and address results. Absent when the zone is not in the tz
+        data the server was built with.
+
+        Describes the zone as of the current year, because zones change --
+        Mexico City observed DST until 2022 and does not now. It is read from
+        the tz database at request time rather than stored.
+
+        Geocodio returns these inside one `timezone` object. Here `timezone`
+        is a string and this is a sibling, because that string shipped first
+        and turning it into an object would break every caller already
+        reading it. Note also that our `timezone_source` is the provenance of
+        the answer, not Geocodio's attribution string of the same name.
       properties:
         utc_offset:
           type: number
@@ -2644,6 +2654,8 @@ components:
           example: "America/New_York"
         timezone_source:
           $ref: '#/components/schemas/TimezoneSource'
+        timezone_details:
+          $ref: '#/components/schemas/TimezoneDetails'
 
     AddressSearchResponse:
       type: object

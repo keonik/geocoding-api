@@ -65,10 +65,10 @@ type ReverseResult struct {
 	TimezoneSource string  `json:"timezone_source,omitempty"`
 
 	// TimezoneDetails describes that zone: its standard offset, whether it
-	// observes DST, and its abbreviation. Address results carry the zone name
-	// without this, since a page of them would repeat one zone's description
-	// on every row; the name is the identifier, and this is derived from it.
-	TimezoneDetails *TimezoneDetails `json:"timezone_details,omitempty"`
+	// observes DST, and its abbreviation. This is the zone at the queried
+	// point; the address below carries its own, which can differ when the
+	// two fall either side of a zone line.
+	TimezoneDetails *models.TimezoneDetails `json:"timezone_details,omitempty"`
 
 	SearchRadiusMeters float64 `json:"search_radius_meters"`
 

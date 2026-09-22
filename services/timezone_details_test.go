@@ -78,3 +78,33 @@ func TestTimezoneDetailsFollowTheYear(t *testing.T) {
 		t.Error("2026 Mexico City should not observe DST")
 	}
 }
+
+// The cache is keyed by year as well as zone, so an answer for one year
+// cannot be served for another.
+func TestTimezoneDetailsCacheIsKeyedByYear(t *testing.T) {
+	zone := "America/Mexico_City"
+	before := timezoneDetails(zone, time.Date(2020, time.June, 1, 0, 0, 0, 0, time.UTC))
+	after := timezoneDetails(zone, time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC))
+	again := timezoneDetails(zone, time.Date(2020, time.September, 9, 0, 0, 0, 0, time.UTC))
+	if before == nil || after == nil || again == nil {
+		t.Fatal("no details")
+	}
+	if before.ObservesDST == after.ObservesDST {
+		t.Error("both years answered the same; the cache is ignoring the year")
+	}
+	if again.ObservesDST != before.ObservesDST {
+		t.Error("a second look at the same year disagreed with the first")
+	}
+}
+
+// An unknown zone is cached as "no details" rather than parsed again on
+// every row of every page.
+func TestTimezoneDetailsCachesMisses(t *testing.T) {
+	at := time.Now()
+	if d := timezoneDetails("Mars/Olympus_Mons", at); d != nil {
+		t.Fatalf("invented details: %+v", d)
+	}
+	if d := timezoneDetails("Mars/Olympus_Mons", at); d != nil {
+		t.Fatalf("invented details on the second call: %+v", d)
+	}
+}

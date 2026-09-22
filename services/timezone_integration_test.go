@@ -460,3 +460,42 @@ func TestTimezoneDetailsRideAlong(t *testing.T) {
 		t.Errorf("details without a zone: %v %+v", sea.Timezone, sea.TimezoneDetails)
 	}
 }
+
+// Address results carry the details too: Geocodio's timezone append rides on
+// address geocoding, which is the endpoint being competed with.
+func TestAddressResultsCarryTimezoneDetails(t *testing.T) {
+	db := setupTimezoneDB(t, true)
+
+	addr := addressByHash(t, db, "zip4")
+	if zoneOf(addr.Timezone) != "America/Indiana/Indianapolis" {
+		t.Fatalf("timezone = %s", zoneOf(addr.Timezone))
+	}
+	if addr.TimezoneDetails == nil {
+		t.Fatal("no timezone_details on an address result")
+	}
+	if addr.TimezoneDetails.UTCOffset != -5 || !addr.TimezoneDetails.ObservesDST ||
+		addr.TimezoneDetails.Abbreviation != "EST" {
+		t.Errorf("details = %+v", addr.TimezoneDetails)
+	}
+
+	// A page of them, through search: every row described, none left to the
+	// caller to work out.
+	found, _, err := NewAddressService(db).SearchAddresses(models.AddressSearchParams{State: "IN", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) == 0 {
+		t.Fatal("no addresses")
+	}
+	for _, a := range found {
+		if a.Timezone != nil && a.TimezoneDetails == nil {
+			t.Errorf("%s has a zone but no details", a.FullAddress)
+		}
+	}
+
+	// An address with no zone gets no invented details.
+	remote := addressByHash(t, db, "remote")
+	if remote.Timezone != nil || remote.TimezoneDetails != nil {
+		t.Errorf("remote address: %v %+v", remote.Timezone, remote.TimezoneDetails)
+	}
+}

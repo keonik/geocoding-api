@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"geocoding-api/models"
+
 	"github.com/lib/pq"
 )
 
@@ -58,7 +60,7 @@ type Enrichment struct {
 	// zone, so a caller can use it without the IANA database to hand. Present
 	// whenever Timezone is, and absent when the zone is not in the tz data
 	// the binary was built with.
-	TimezoneDetails *TimezoneDetails `json:"timezone_details,omitempty"`
+	TimezoneDetails *models.TimezoneDetails `json:"timezone_details,omitempty"`
 }
 
 // ParseEnrichmentFields turns "census,cd" into a request. An empty string
