@@ -18,6 +18,29 @@ func NewAddressService(db *sql.DB) *AddressService {
 	return &AddressService{db: db}
 }
 
+// addressColumns is what every query reading an address from ohio_addresses
+// selects.
+//
+// Every text column but region is nullable, and the scans target plain
+// strings: one matched row with a NULL in any of them failed the scan and
+// turned the whole response into a 500. County extracts that ship without a
+// ZIP column are ordinary, so the rows exist -- /addresses/search returned
+// nothing but errors for any query that touched one.
+//
+// COALESCE here rather than sql.NullString at seven scan sites: the empty
+// string is what an absent field already means everywhere else in this API,
+// and a query that forgets it is the bug coming back.
+const addressColumns = `id, hash,
+	COALESCE(house_number, '') AS house_number,
+	COALESCE(street, '') AS street,
+	COALESCE(unit, '') AS unit,
+	COALESCE(city, '') AS city,
+	COALESCE(district, '') AS district,
+	region,
+	COALESCE(postcode, '') AS postcode,
+	COALESCE(county, '') AS county,
+	COALESCE(full_address, '') AS full_address`
+
 // querier is the subset of *sql.DB and *sql.Tx that the search path needs, so
 // the same builder can run against a plain connection or inside a transaction.
 type querier interface {
@@ -113,7 +136,7 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	}
 
 	// Build the base query (will add relevance_score if needed)
-	baseFields := `id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+	baseFields := addressColumns + `,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at`
 
 	// Build WHERE conditions and relevance scoring
@@ -476,7 +499,7 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 func (s *AddressService) GetAddressByID(id int64) (*models.OhioAddress, error) {
 	query := `
 		SELECT 
-			id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+			` + addressColumns + `,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at
 		FROM ohio_addresses 
 		WHERE id = $1
@@ -682,7 +705,7 @@ func (s *AddressService) searchWithFallback(exactQuery, fallbackQuery string, li
 	searchQuery := fmt.Sprintf(`
 		WITH exact_matches AS (
 			SELECT 
-				id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+				`+addressColumns+`,
 				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
 				1 as priority
 			FROM ohio_addresses
@@ -690,7 +713,7 @@ func (s *AddressService) searchWithFallback(exactQuery, fallbackQuery string, li
 		),
 		fallback_matches AS (
 			SELECT 
-				id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+				`+addressColumns+`,
 				ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at,
 				2 as priority
 			FROM ohio_addresses
@@ -827,7 +850,7 @@ func (s *AddressService) searchByComponents(parsed *utils.ParsedAddress, limit i
 
 	// Build tiers dynamically based on which components we have.
 	// Each tier is more relaxed than the previous one.
-	selectFields := `id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+	selectFields := addressColumns + `,
 		ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at`
 
 	var tierCTEs []string
@@ -985,7 +1008,7 @@ func (s *AddressService) searchAddressesByPrefix(query string, limit int) ([]mod
 
 	searchQuery := `
 		SELECT 
-			id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+			` + addressColumns + `,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at
 		FROM ohio_addresses
 		WHERE fts @@ to_tsquery('simple', $1)
@@ -1056,7 +1079,7 @@ func (s *AddressService) searchAddressesWithVariants(query string, limit int) ([
 	// Search using the full_address column with trigram index
 	searchQuery := fmt.Sprintf(`
 		SELECT 
-			id, hash, house_number, street, unit, city, district, region, postcode, county, full_address,
+			`+addressColumns+`,
 			ST_Y(geom) as latitude, ST_X(geom) as longitude, created_at
 		FROM ohio_addresses
 		WHERE %s
