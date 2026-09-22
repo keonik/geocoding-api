@@ -85,11 +85,28 @@ func dbStats() sql.DBStats {
 	return statsSource()
 }
 
+// sessionCalls counts autocomplete calls by whether they were billed. The
+// ratio is what says whether session tokens are doing their job: all billed
+// means clients are not sending tokens, and it is also the number revenue
+// moves with.
+var sessionCalls = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "geocoding_session_calls_total",
+		Help: "Autocomplete calls carrying a session token, by whether the call was billed",
+	},
+	[]string{"billed"},
+)
+
 func init() {
 	prometheus.MustRegister(
-		requestsTotal, requestDuration, rateLimitRejections,
+		requestsTotal, requestDuration, rateLimitRejections, sessionCalls,
 		dbOpenConnections, dbInUseConnections, dbWaitCount,
 	)
+}
+
+// RecordSessionCall notes an autocomplete call made under a session token.
+func RecordSessionCall(billed bool) {
+	sessionCalls.WithLabelValues(strconv.FormatBool(billed)).Inc()
 }
 
 // RecordRateLimitRejection notes that a request was refused for quota.
