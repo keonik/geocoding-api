@@ -51,6 +51,28 @@ info:
     - **Spatial Queries**: Bounding box intersections and proximity searches
     - **Statistics**: Address counts and administrative metadata
 
+    ## ⏱️ Rate Limits
+
+    Three limits apply, and they answer different questions:
+
+    - **Monthly** and **daily** are the allowance — how much a plan may use.
+      They reset at the start of the period.
+    - **Per-second** is the rate — how fast a key may call. It protects the
+      service rather than the bill, so every plan has one, including plans
+      with no monthly cap. The bucket holds one second's worth, so a client
+      may arrive in a burst and then proceeds at the steady rate. Each API
+      key has its own bucket: one runaway script does not throttle its
+      owner's other keys.
+
+    Current per-second rates: free 5, starter 10, pro 25, enterprise 50.
+    `GET /api/v1/auth/plans` reports them as `burst_per_second`.
+
+    Every 429 carries `Retry-After` in seconds and `X-RateLimit-Scope`, which
+    says which limit tripped: `monthly`, `daily`, `key_monthly`, `key_daily`
+    or `burst`. A burst rejection also carries `X-RateLimit-Limit-Second`, and
+    is the one worth retrying immediately after the stated wait -- it refills
+    in a second, where a daily cap holds until midnight UTC.
+
     ## 📎 Data Sources and Attribution
 
     - **Census geographies** (tracts, block groups, blocks, congressional and

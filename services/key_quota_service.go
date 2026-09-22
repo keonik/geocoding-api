@@ -13,6 +13,12 @@ import (
 const (
 	ScopeKeyDaily   = "key_daily"
 	ScopeKeyMonthly = "key_monthly"
+
+	// ScopeBurst is the per-second guard, which is not a quota at all: it
+	// refills in a second and costs the caller nothing but a wait, so a
+	// client that backs off gets through where a daily cap would have held
+	// it until midnight.
+	ScopeBurst = "burst"
 )
 
 // KeyLimitStatusKey is the echo context key under which APIKeyAuth publishes

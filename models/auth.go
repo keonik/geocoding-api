@@ -163,6 +163,11 @@ type Plan struct {
 	// Both are enforced; whichever trips first wins.
 	MonthlyLimit int
 	DailyLimit   int
+	// BurstPerSecond caps how fast a key may call, as opposed to how much it
+	// may call in a month. The periodic limits are the bill; this one is the
+	// service's own protection, so even a plan with no monthly cap has one --
+	// an unlimited allowance is not permission to arrive all at once.
+	BurstPerSecond int
 	// PricePerCall is in cents. PriceMonthly is in dollars.
 	PricePerCall float64
 	PriceMonthly float64
@@ -189,6 +194,7 @@ var PlanLimits = map[string]Plan{
 		Name:            "Free",
 		MonthlyLimit:    3000,
 		DailyLimit:      500,
+		BurstPerSecond:  5,
 		PricePerCall:    0,
 		PriceMonthly:    0,
 		Features:        []string{"geocode", "search"},
@@ -199,6 +205,7 @@ var PlanLimits = map[string]Plan{
 		Name:            "Starter",
 		MonthlyLimit:    30000,
 		DailyLimit:      5000,
+		BurstPerSecond:  10,
 		PricePerCall:    0.001, // $0.001 per call
 		PriceMonthly:    10,
 		Features:        []string{"geocode", "search", "distance"},
@@ -213,6 +220,7 @@ var PlanLimits = map[string]Plan{
 		// 500,000 monthly allowance in five days and made the daily cap
 		// useless as a burst guard. The advertised number wins.
 		DailyLimit:      20000,
+		BurstPerSecond:  25,
 		PricePerCall:    0.0008,
 		PriceMonthly:    80,
 		Features:        []string{"geocode", "search", "distance", "bulk"},
@@ -223,6 +231,7 @@ var PlanLimits = map[string]Plan{
 		Name:            "Enterprise",
 		MonthlyLimit:    Unlimited,
 		DailyLimit:      Unlimited,
+		BurstPerSecond:  50,
 		PricePerCall:    0.0005,
 		PriceMonthly:    500,
 		Features:        []string{"geocode", "search", "distance", "bulk", "priority"},

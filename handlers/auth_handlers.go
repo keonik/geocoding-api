@@ -503,12 +503,15 @@ func GetPlansHandler(c echo.Context) error {
 	plans := make(map[string]interface{}, len(models.PlanLimits))
 	for key, plan := range models.PlanLimits {
 		plans[key] = map[string]interface{}{
-			"name":           plan.Name,
-			"monthly_limit":  plan.MonthlyLimit,
-			"daily_limit":    plan.DailyLimit,
-			"price_per_call": plan.PricePerCall,
-			"price_monthly":  plan.PriceMonthly,
-			"features":       plan.DisplayFeatures,
+			"name":          plan.Name,
+			"monthly_limit": plan.MonthlyLimit,
+			"daily_limit":   plan.DailyLimit,
+			// The rate, as opposed to the allowance. A caller sizing a bulk
+			// job needs both: how much it may do this month, and how fast.
+			"burst_per_second": plan.BurstPerSecond,
+			"price_per_call":   plan.PricePerCall,
+			"price_monthly":    plan.PriceMonthly,
+			"features":         plan.DisplayFeatures,
 		}
 	}
 

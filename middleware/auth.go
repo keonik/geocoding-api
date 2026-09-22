@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"geocoding-api/handlers"
+	"geocoding-api/models"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
@@ -93,6 +94,20 @@ func APIKeyAuth() echo.MiddlewareFunc {
 					Success: false,
 					Error:   "Invalid API key",
 				})
+			}
+
+			// The burst guard, before the quota queries below. It is the cheap
+			// check -- in memory, no round trip -- so a flood is shed before
+			// it costs a database read, which is the point of having it.
+			//
+			// A rejection here is deliberately not written to usage_records:
+			// a row per refusal would turn a flood into exactly the database
+			// load this is shedding, and the caller was not served. The
+			// metric counts them.
+			if perSecond := burstLimitFor(user.PlanType); perSecond > 0 {
+				if ok, wait := keyBursts.allow(keyRecord.ID, perSecond, time.Now()); !ok {
+					return denyBurst(c, perSecond, user.PlanType, wait)
+				}
 			}
 
 			// Check rate limits. The result is stashed on the context below so
@@ -500,4 +515,46 @@ func RequireAdminAuth() echo.MiddlewareFunc {
 			return next(c)
 		}
 	}
+}
+
+// denyBurst answers a caller who is going too fast.
+//
+// The headers go on before the body is written. Setting them afterwards is
+// how this codebase once dropped an entire header block on the wire while the
+// tests, which read them off the recorder, stayed green.
+func denyBurst(c echo.Context, perSecond int, planType string, wait time.Duration) error {
+	retryAfter := int(wait.Seconds())
+	if retryAfter < 1 {
+		// Sub-second waits round to one: a Retry-After of 0 invites an
+		// immediate retry, which is the behaviour being throttled.
+		retryAfter = 1
+	}
+	RecordRateLimitRejection(services.ScopeBurst)
+	c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	c.Response().Header().Set("X-RateLimit-Scope", services.ScopeBurst)
+	c.Response().Header().Set("X-RateLimit-Limit-Second", strconv.Itoa(perSecond))
+	return c.JSON(http.StatusTooManyRequests, handlers.GeocodeResponse{
+		Success: false,
+		Error:   "Too many requests per second for this API key",
+		Data: map[string]interface{}{
+			"limit_per_second":    perSecond,
+			"limit_scope":         services.ScopeBurst,
+			"retry_after_seconds": retryAfter,
+			"plan_type":           planType,
+		},
+	})
+}
+
+// burstLimitFor is how many calls a second a key on this plan may make.
+//
+// BURST_PER_SECOND overrides every plan, for a deployment that wants one
+// number; 0 disables the guard, which is worth having for load testing and
+// should not be the production setting.
+func burstLimitFor(planType string) int {
+	if raw := os.Getenv("BURST_PER_SECOND"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			return v
+		}
+	}
+	return models.PlanFor(planType).BurstPerSecond
 }
