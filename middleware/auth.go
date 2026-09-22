@@ -266,6 +266,42 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				})
 			}
 
+			// A session token collapses a typeahead's keystrokes into the one
+			// lookup the person is actually making. Decided before the
+			// handler runs so the headers below can say what happened, and
+			// so the answer is the same one RecordUsage bills on.
+			billable := true
+			if token := c.QueryParam("session"); token != "" {
+				if !services.SessionEligible(path) {
+					return c.JSON(http.StatusBadRequest, handlers.GeocodeResponse{
+						Success: false,
+						Error:   "Session tokens apply to /addresses/search only",
+						Data: map[string]interface{}{
+							"endpoint": path,
+							"message":  "Drop the session parameter, or send this call to /addresses/search",
+						},
+					})
+				}
+				if !services.ValidSessionToken(token) {
+					return c.JSON(http.StatusBadRequest, handlers.GeocodeResponse{
+						Success: false,
+						Error:   "Malformed session token",
+						Data: map[string]interface{}{
+							"message": "8 to 64 characters of letters, digits, and _.:- -- a UUID is ideal",
+						},
+					})
+				}
+				state := services.Sessions.Count(keyRecord.ID, token, time.Now())
+				billable = state.Billed
+				RecordSessionCall(state.Billed)
+				c.Response().Before(func() {
+					h := c.Response().Header()
+					h.Set("X-Session-Billed", strconv.FormatBool(state.Billed))
+					h.Set("X-Session-Calls-Remaining", strconv.Itoa(state.Remaining))
+					h.Set("X-Session-Expires-In", strconv.Itoa(int(state.ExpiresIn.Seconds())))
+				})
+			}
+
 			// Store user and key info in context for handlers
 			c.Set("user", user)
 			c.Set("api_key", keyRecord)
@@ -291,7 +327,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 			go func() {
 				err := services.Auth.RecordUsage(
 					user.ID, keyRecord.ID, endpoint, method,
-					statusCode, responseTime, ipAddress, userAgent, true, units,
+					statusCode, responseTime, ipAddress, userAgent, billable, units,
 				)
 				if err != nil {
 					log.Printf("Failed to record usage: %v", err)
