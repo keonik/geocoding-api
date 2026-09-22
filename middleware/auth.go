@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"geocoding-api/handlers"
+	"geocoding-api/models"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
@@ -93,6 +95,33 @@ func APIKeyAuth() echo.MiddlewareFunc {
 					Success: false,
 					Error:   "Invalid API key",
 				})
+			}
+
+			// The burst guard, before the quota queries below. It is the cheap
+			// check -- in memory, no round trip -- so a flood is shed before
+			// it costs a database read, which is the point of having it.
+			//
+			// A rejection here is deliberately not written to usage_records:
+			// a row per refusal would turn a flood into exactly the database
+			// load this is shedding, and the caller was not served. The
+			// metric counts them.
+			if perSecond := burstLimitFor(user.PlanType); perSecond > 0 {
+				// One token here, where the request's weight is not yet known.
+				// A batch charges the rest of its items in the handler, the
+				// same way it re-checks the quota against its real size.
+				if ok, wait := services.KeyBursts.AllowN(keyRecord.ID, perSecond, 1, time.Now()); !ok {
+					return denyBurst(c, perSecond, user.PlanType, wait)
+				}
+				// Published so the batch handler can charge the rest, and so
+				// UsageHeader can tell every caller their rate rather than
+				// leaving them to discover it by being refused.
+				//
+				// A burst 429 returns above this point and so carries no
+				// X-API-Usage block: those numbers come from a quota query
+				// this path exists to skip. Retry-After and the scope header
+				// are on it, and the usage block returns with the next call
+				// that is served.
+				c.Set(services.BurstLimitKey, perSecond)
 			}
 
 			// Check rate limits. The result is stashed on the context below so
@@ -391,12 +420,20 @@ func UsageHeader() echo.MiddlewareFunc {
 			// A Before hook runs at WriteHeader time, so the values land while
 			// the block can still be changed.
 			c.Response().Before(func() {
+				h := c.Response().Header()
+
+				// The rate, on every served response. Without it a caller
+				// learns their per-second limit only by being refused, which
+				// is a poor way to find out what pace to keep.
+				if perSecond, ok := c.Get(services.BurstLimitKey).(int); ok && perSecond > 0 {
+					h.Set("X-RateLimit-Limit-Second", strconv.Itoa(perSecond))
+				}
+
 				status, ok := c.Get(rateLimitStatusKey).(*services.RateLimitStatus)
 				if !ok {
 					return
 				}
 
-				h := c.Response().Header()
 				h.Set("X-API-Usage-Current", strconv.Itoa(status.MonthlyUsage))
 				h.Set("X-API-Usage-Limit", strconv.Itoa(status.MonthlyLimit))
 				h.Set("X-API-Usage-Daily", strconv.Itoa(status.DailyUsage))
@@ -500,4 +537,57 @@ func RequireAdminAuth() echo.MiddlewareFunc {
 			return next(c)
 		}
 	}
+}
+
+// denyBurst answers a caller who is going too fast.
+//
+// The headers go on before the body is written. Setting them afterwards is
+// how this codebase once dropped an entire header block on the wire while the
+// tests, which read them off the recorder, stayed green.
+func denyBurst(c echo.Context, perSecond int, planType string, wait time.Duration) error {
+	// Rounded up: a wait of 1.2s reported as 1 invites a retry that is
+	// refused again. A batch charging many tokens at once can wait several
+	// seconds, so this is not always the one-second case.
+	retryAfter := int(math.Ceil(wait.Seconds()))
+	if retryAfter < 1 {
+		// Sub-second waits round to one: a Retry-After of 0 invites an
+		// immediate retry, which is the behaviour being throttled.
+		retryAfter = 1
+	}
+	RecordRateLimitRejection(services.ScopeBurst)
+	c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	c.Response().Header().Set("X-RateLimit-Scope", services.ScopeBurst)
+	c.Response().Header().Set("X-RateLimit-Limit-Second", strconv.Itoa(perSecond))
+	// retry_after and limit, not names of this path's own invention: both
+	// sibling 429s in this file use them, and a client parsing 429s
+	// generically should not need a third case. The scope says what the
+	// limit is per.
+	return c.JSON(http.StatusTooManyRequests, handlers.GeocodeResponse{
+		Success: false,
+		Error:   "Too many requests per second for this API key",
+		Data: map[string]interface{}{
+			"limit":       perSecond,
+			"limit_scope": services.ScopeBurst,
+			"retry_after": retryAfter,
+			"plan_type":   planType,
+		},
+	})
+}
+
+// burstOverride is BURST_PER_SECOND, or -1 when it is unset. Read once:
+// AuthRateLimiter resolves its environment at construction for the same
+// reason, and os.Getenv takes a process-wide lock that has no business on a
+// path every authenticated request walks.
+var burstOverride = envInt("BURST_PER_SECOND", -1)
+
+// burstLimitFor is how many calls a second a key on this plan may make.
+//
+// BURST_PER_SECOND overrides every plan, for a deployment that wants one
+// number; 0 disables the guard, which is worth having for load testing and
+// should not be the production setting.
+func burstLimitFor(planType string) int {
+	if burstOverride >= 0 {
+		return burstOverride
+	}
+	return models.PlanFor(planType).BurstPerSecond
 }

@@ -163,6 +163,11 @@ type Plan struct {
 	// Both are enforced; whichever trips first wins.
 	MonthlyLimit int
 	DailyLimit   int
+	// BurstPerSecond caps how fast a key may call, as opposed to how much it
+	// may call in a month. The periodic limits are the bill; this one is the
+	// service's own protection, so even a plan with no monthly cap has one --
+	// an unlimited allowance is not permission to arrive all at once.
+	BurstPerSecond int
 	// PricePerCall is in cents. PriceMonthly is in dollars.
 	PricePerCall float64
 	PriceMonthly float64
@@ -189,6 +194,7 @@ var PlanLimits = map[string]Plan{
 		Name:            "Free",
 		MonthlyLimit:    3000,
 		DailyLimit:      500,
+		BurstPerSecond:  5,
 		PricePerCall:    0,
 		PriceMonthly:    0,
 		Features:        []string{"geocode", "search"},
@@ -199,6 +205,7 @@ var PlanLimits = map[string]Plan{
 		Name:            "Starter",
 		MonthlyLimit:    30000,
 		DailyLimit:      5000,
+		BurstPerSecond:  10,
 		PricePerCall:    0.001, // $0.001 per call
 		PriceMonthly:    10,
 		Features:        []string{"geocode", "search", "distance"},
@@ -213,20 +220,26 @@ var PlanLimits = map[string]Plan{
 		// 500,000 monthly allowance in five days and made the daily cap
 		// useless as a burst guard. The advertised number wins.
 		DailyLimit:      20000,
+		BurstPerSecond:  25,
 		PricePerCall:    0.0008,
 		PriceMonthly:    80,
 		Features:        []string{"geocode", "search", "distance", "bulk"},
 		DisplayFeatures: []string{"All Starter features", "Bulk operations", "Priority support", "SLA"},
 	},
 	"enterprise": {
-		Key:             "enterprise",
-		Name:            "Enterprise",
-		MonthlyLimit:    Unlimited,
-		DailyLimit:      Unlimited,
-		PricePerCall:    0.0005,
-		PriceMonthly:    500,
-		Features:        []string{"geocode", "search", "distance", "bulk", "priority"},
-		DisplayFeatures: []string{"Unlimited usage", "All Pro features", "Custom integrations", "Dedicated support", "99.9% SLA"},
+		Key:            "enterprise",
+		Name:           "Enterprise",
+		MonthlyLimit:   Unlimited,
+		DailyLimit:     Unlimited,
+		BurstPerSecond: 50,
+		PricePerCall:   0.0005,
+		PriceMonthly:   500,
+		Features:       []string{"geocode", "search", "distance", "bulk", "priority"},
+		// "Unlimited" is the monthly allowance, and saying so matters now
+		// that a rate limit exists: an unqualified "Unlimited usage" beside a
+		// published 50/s ceiling is a contradiction a customer would be right
+		// to complain about.
+		DisplayFeatures: []string{"Unlimited monthly usage", "50 requests/second", "All Pro features", "Custom integrations", "Dedicated support", "99.9% SLA"},
 	},
 }
 

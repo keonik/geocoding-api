@@ -51,6 +51,44 @@ info:
     - **Spatial Queries**: Bounding box intersections and proximity searches
     - **Statistics**: Address counts and administrative metadata
 
+    ## ⏱️ Rate Limits
+
+    Three limits apply, and they answer different questions:
+
+    - **Monthly** and **daily** are the allowance — how much a plan may use.
+      They reset at the start of the period.
+    - **Per-second** is the rate — how fast a key may call. It protects the
+      service rather than the bill, so every plan has one, including plans
+      with no monthly cap. Each API key has its own allowance: one runaway
+      script does not throttle its owner's other keys.
+
+    Current per-second rates: free 5, starter 10, pro 25, enterprise 50.
+    `GET /api/v1/auth/plans` reports them as `burst_per_second`, and every
+    served response carries `X-RateLimit-Limit-Second`.
+
+    **The rate counts lookups, not requests.** An ordinary call is one; a
+    batch is one per item, because a hundred-item batch is a hundred lookups
+    however few HTTP requests carry it. The allowance holds one full batch
+    (100), so any plan can submit one — a free key may send a batch of 100 and
+    then waits 20 seconds for it to refill at 5/s. A batch beyond the rate is
+    refused before the work, with `Retry-After` set to the real wait, which
+    for a large batch on a small plan is several seconds rather than one.
+
+    Every 429 carries `Retry-After` in seconds and `X-RateLimit-Scope`, which
+    says which limit tripped: `monthly`, `daily`, `key_monthly`, `key_daily`
+    or `burst`. A burst rejection also carries `X-RateLimit-Limit-Second`. It
+    is the one worth retrying soonest — the allowance refills continuously,
+    where a daily cap holds until midnight UTC — and it is the one 429 that
+    carries no `X-API-Usage-*` block, because those numbers come from a quota
+    query this limit exists to skip.
+
+    Per-second rates come from the plan. Unlike the monthly and daily caps,
+    they cannot yet be set per key.
+
+    The limit is enforced per instance. This deployment runs one, so the
+    published rate is the rate; behind several, the effective ceiling is that
+    many times it.
+
     ## 📎 Data Sources and Attribution
 
     - **Census geographies** (tracts, block groups, blocks, congressional and
