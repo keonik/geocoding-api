@@ -57,6 +57,9 @@ info:
 
     - **Monthly** and **daily** are the allowance — how much a plan may use.
       They reset at the start of the period.
+    Autocomplete is the exception to the allowance: calls made inside a
+    session token bill once for the whole sequence. See `/addresses/search`.
+
     - **Per-second** is the rate — how fast a key may call. It protects the
       service rather than the bill, so every plan has one, including plans
       with no monthly cap. Each API key has its own allowance: one runaway
@@ -988,6 +991,35 @@ paths:
         - You need to filter by specific fields (county, city, ZIP)
         - You want proximity/radius search
         - You need pagination for large result sets
+
+        ## Session tokens: one lookup, not one per keystroke
+
+        A typeahead calls this endpoint after every keystroke, and billing
+        each one charges twenty calls for the one address the person is
+        actually looking up. Pass a `session` token and the whole sequence
+        bills once.
+
+        Generate a token per lookup — a UUID is ideal — send it with every
+        keystroke, and stop using it once the user picks a result. The first
+        call bills; the rest are free until the session ends, which is after
+        20 calls or 2 minutes, whichever comes first. The next call after
+        that starts a new session and bills again.
+
+        Every response tells you where the session stands:
+
+        | Header | Meaning |
+        |---|---|
+        | `X-Session-Billed` | Whether this call was charged |
+        | `X-Session-Calls-Remaining` | Free calls left in this session |
+        | `X-Session-Expires-In` | Seconds until the session ends |
+
+        Free calls are not counted against monthly or daily quotas. The
+        per-second rate limit still applies to every call, since that one
+        protects the service rather than the bill.
+
+        Sessions are tracked per API key, so a token is worth nothing without
+        the key that opened it, and per instance: behind several instances a
+        session can bill once on each.
       operationId: fullTextSearchAddresses
       security:
         - ApiKeyAuth: []
@@ -1012,6 +1044,18 @@ paths:
             maximum: 500
             default: 50
             example: 10
+        - name: session
+          in: query
+          required: false
+          description: >-
+            Session token grouping one lookup's keystrokes into a single
+            billed call. 8 to 64 characters of letters, digits and `_.:-`; a
+            UUID is ideal. Rejected with 400 on any other endpoint, since a
+            session stands for one address being typed towards.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_.:-]{8,64}$'
+            example: 8f14e45f-ea8d-4c1b-9b47-1f4b0ac96b23
       responses:
         '200':
           description: Search completed successfully

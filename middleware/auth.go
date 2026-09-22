@@ -294,12 +294,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				state := services.Sessions.Count(keyRecord.ID, token, time.Now())
 				billable = state.Billed
 				RecordSessionCall(state.Billed)
-				c.Response().Before(func() {
-					h := c.Response().Header()
-					h.Set("X-Session-Billed", strconv.FormatBool(state.Billed))
-					h.Set("X-Session-Calls-Remaining", strconv.Itoa(state.Remaining))
-					h.Set("X-Session-Expires-In", strconv.Itoa(int(state.ExpiresIn.Seconds())))
-				})
+				c.Response().Before(func() { setSessionHeaders(c, state) })
 			}
 
 			// Store user and key info in context for handlers
@@ -626,4 +621,13 @@ func burstLimitFor(planType string) int {
 		return burstOverride
 	}
 	return models.PlanFor(planType).BurstPerSecond
+}
+
+// setSessionHeaders tells a client where its session stands, so it can pace
+// itself rather than discovering the end of one from a bill.
+func setSessionHeaders(c echo.Context, state services.SessionState) {
+	h := c.Response().Header()
+	h.Set("X-Session-Billed", strconv.FormatBool(state.Billed))
+	h.Set("X-Session-Calls-Remaining", strconv.Itoa(state.Remaining))
+	h.Set("X-Session-Expires-In", strconv.Itoa(int(state.ExpiresIn.Seconds())))
 }
