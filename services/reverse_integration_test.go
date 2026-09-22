@@ -76,6 +76,10 @@ func setupReverseDB(t *testing.T) *sql.DB {
 		}
 	}
 
+	// The timezone lookup reads the boundary tables; without them here it
+	// would resolve them through public and answer from real data.
+	createBoundaryTables(t, db)
+
 	t.Cleanup(func() {
 		if _, err := db.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", reverseSchema)); err != nil {
 			t.Logf("cleanup: %v", err)

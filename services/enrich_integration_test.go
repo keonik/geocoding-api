@@ -23,6 +23,20 @@ import (
 
 const enrichSchema = "enrich_probe"
 
+// createBoundaryTables builds the boundary schema the way a deployment does:
+// the real migrations, not a copy of their DDL. A copy drifts -- and one that
+// left out the GIST index would let the polygon lookup quietly lose it with
+// every test still passing.
+func createBoundaryTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if err := database.CreateBoundaryTables(db); err != nil {
+		t.Fatalf("migration 26: %v", err)
+	}
+	if err := database.WidenBoundaryGeoIDs(db); err != nil {
+		t.Fatalf("migration 27: %v", err)
+	}
+}
+
 // shapeFeature is one polygon for a fixture shapefile: its rings, and its DBF
 // row keyed by column name.
 type shapeFeature struct {
@@ -179,14 +193,31 @@ func setupEnrichDB(t *testing.T) (*sql.DB, *tigerFixture) {
 		// public for PostGIS only; every table read is created here.
 		fmt.Sprintf("SET search_path TO %s, public", enrichSchema),
 		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW())`,
-		fmt.Sprintf(`INSERT INTO schema_migrations (version) SELECT generate_series(1, %d)`, database.SchemaVersionBoundaries),
+		fmt.Sprintf(`INSERT INTO schema_migrations (version) SELECT generate_series(1, %d)`, database.SchemaVersionBoundaryGeoIDs),
 		`CREATE TABLE us_states (
 			id BIGSERIAL PRIMARY KEY, state_fips VARCHAR(2) NOT NULL UNIQUE,
 			state_abbr VARCHAR(2) NOT NULL UNIQUE, state_name VARCHAR(255) NOT NULL UNIQUE,
 			geometry GEOMETRY(MULTIPOLYGON, 4326))`,
+		// Kentucky is a triangle, not an envelope, so a feature can sit
+		// inside its bounds and outside the state -- which is the difference
+		// between the two filters a national layer passes through.
 		`INSERT INTO us_states (state_fips, state_abbr, state_name, geometry) VALUES
 		 ('39','OH','Ohio',   ST_Multi(ST_MakeEnvelope(-84.8,38.4,-80.5,42.0,4326))),
-		 ('18','IN','Indiana',ST_Multi(ST_MakeEnvelope(-88.1,37.8,-84.8,41.8,4326)))`,
+		 ('18','IN','Indiana',ST_Multi(ST_MakeEnvelope(-88.1,37.8,-84.8,41.8,4326))),
+		 ('21','KY','Kentucky',ST_Multi(ST_GeomFromText(
+			'POLYGON((-89 33, -84 33, -89 37, -89 33))', 4326)))`,
+		// Reverse reads these; empty is enough, since what is tested here is
+		// the timezone it reports.
+		`CREATE TABLE ohio_addresses (
+			id BIGSERIAL PRIMARY KEY, hash VARCHAR(255) NOT NULL,
+			house_number VARCHAR(50), street VARCHAR(255), unit VARCHAR(50),
+			city VARCHAR(255), district VARCHAR(10), region VARCHAR(2) NOT NULL,
+			postcode VARCHAR(10), county VARCHAR(255),
+			geom GEOMETRY(POINT, 4326) NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, full_address TEXT)`,
+		`CREATE TABLE ohio_counties (
+			id BIGSERIAL PRIMARY KEY, county_name VARCHAR(255) NOT NULL,
+			bounds_geometry GEOMETRY(MULTIPOLYGON, 4326))`,
 		// ZIPs for the timezone field. geog as migration 21 generates it.
 		`CREATE TABLE zip_codes (
 			zip_code VARCHAR(10) PRIMARY KEY, state_code VARCHAR(2) NOT NULL,
@@ -200,10 +231,7 @@ func setupEnrichDB(t *testing.T) (*sql.DB, *tigerFixture) {
 			t.Fatalf("setup failed on %.60q: %v", stmt, err)
 		}
 	}
-	// The real migration, not a copy of it, so the test fails if they drift.
-	if err := database.CreateBoundaryTables(db); err != nil {
-		t.Fatalf("migration 26: %v", err)
-	}
+	createBoundaryTables(t, db)
 	return db, fixture
 }
 
@@ -510,8 +538,15 @@ func TestSharedEdgeIsDeterministic(t *testing.T) {
 }
 
 func TestParseEnrichmentFields(t *testing.T) {
+	// Every layer but the timezone one, which answers through Timezone.
+	boundaryLayers := 0
+	for _, l := range BoundaryLayers {
+		if l.Group != "timezone" {
+			boundaryLayers++
+		}
+	}
 	all, err := ParseEnrichmentFields("")
-	if err != nil || len(all.Layers) != len(BoundaryLayers) || !all.Timezone {
+	if err != nil || len(all.Layers) != boundaryLayers || !all.Timezone {
 		t.Errorf("empty fields: %d layers, timezone=%v, %v", len(all.Layers), all.Timezone, err)
 	}
 	cd, err := ParseEnrichmentFields(" CD , ")
@@ -543,5 +578,141 @@ func TestRingsWKTRejectsCorruptParts(t *testing.T) {
 	ok := shp.Polygon{NumParts: 2, Parts: []int32{0, 5}, Points: append(append([]shp.Point{}, ring...), ring[:3]...)}
 	if wkt, err := ringsWKT(&ok); err != nil || strings.Count(wkt, "(") != 2 {
 		t.Errorf("degenerate ring beside a real one: %q, %v", wkt, err)
+	}
+}
+
+// zoneColumns is the timezone shapefile's single field.
+var zoneColumns = []string{"tzid"}
+
+// The fixture splits "Indiana" at -87.53 the way the real Indiana is split,
+// and puts a zone in West Africa to be filtered out.
+func zoneFeatures() []shapeFeature {
+	return []shapeFeature{
+		{rings: [][]shp.Point{square(-89, 37, -87.53, 42)}, attrs: map[string]string{"tzid": "America/Chicago"}},
+		{rings: [][]shp.Point{square(-87.53, 37, -84.8, 42)}, attrs: map[string]string{"tzid": "America/Indiana/Vincennes"}},
+		{rings: [][]shp.Point{square(-5, 4, 0, 6)}, attrs: map[string]string{"tzid": "Africa/Abidjan"}},
+		// Inside Kentucky's bounding box, outside Kentucky: rejected by
+		// ST_Intersects after the cheap bounds filter lets it through.
+		{rings: [][]shp.Point{square(-85, 36.5, -84.5, 36.9)}, attrs: map[string]string{"tzid": "America/Nowhere"}},
+	}
+}
+
+// serveZones points the timezone layer at the fixture server for this test.
+// It mutates the package-level registry, which is safe only because none of
+// these tests call t.Parallel.
+func serveZones(t *testing.T, fx *tigerFixture) {
+	t.Helper()
+	fx.set("/timezones.shapefile.zip", shapefileZip(t, zoneColumns, zoneFeatures()))
+	for i := range BoundaryLayers {
+		if BoundaryLayers[i].Name == "timezone" {
+			prev := BoundaryLayers[i].URL
+			BoundaryLayers[i].URL = tigerBaseURL + "/timezones.shapefile.zip"
+			t.Cleanup(func() { BoundaryLayers[i].URL = prev })
+			return
+		}
+	}
+	t.Fatal("no timezone layer")
+}
+
+// The zone polygons put the line where the line is, including lines that run
+// through a state, which the nearest-ZIP fallback cannot.
+func TestTimezoneBoundariesAnswerExactly(t *testing.T) {
+	db, fx := setupEnrichDB(t)
+	serveZones(t, fx)
+
+	n, err := load(t, db, "timezone", "39")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two of the four zones touch a state. The West African one is rejected
+	// by the bounds filter; America/Nowhere clears that filter, sitting
+	// inside Kentucky's bounding box, and is rejected by ST_Intersects.
+	if n != 2 {
+		t.Fatalf("kept %d zones, want the 2 that touch a state", n)
+	}
+	var kept []string
+	rows, err := db.Query(`SELECT geoid FROM boundaries WHERE layer = 'timezone' ORDER BY geoid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var z string
+		if err := rows.Scan(&z); err != nil {
+			t.Fatal(err)
+		}
+		kept = append(kept, z)
+	}
+	rows.Close()
+	if strings.Join(kept, ",") != "America/Chicago,America/Indiana/Vincennes" {
+		t.Errorf("kept %v", kept)
+	}
+	// National: loaded once, recorded against NationalScope rather than the
+	// state that happened to ask for it.
+	if status, available, features := loadRow(t, db, "timezone", NationalScope); status != "loaded" || !available || features != 2 {
+		t.Errorf("boundary_loads = %s available=%v features=%d", status, available, features)
+	}
+
+	// Two points a few kilometres apart inside one state, either side of the
+	// line. The ZIP fixture only knows America/New_York, so a ZIP-derived
+	// answer could not tell these apart.
+	east := enrichAt(t, db, 39.58, -87.52, "timezone")
+	if east.Timezone == nil || *east.Timezone != "America/Indiana/Vincennes" {
+		t.Errorf("east of the line: %v", east.Timezone)
+	}
+	if east.TimezoneSource != TimezoneBoundarySource {
+		t.Errorf("timezone_source = %q, want the boundary source", east.TimezoneSource)
+	}
+	west := enrichAt(t, db, 39.58, -87.60, "timezone")
+	if west.Timezone == nil || *west.Timezone != "America/Chicago" {
+		t.Errorf("west of the line: %v", west.Timezone)
+	}
+
+	// Reverse reports the same zone, and says where it came from.
+	rev, err := ReverseGeocode(db, 39.58, -87.52, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Timezone == nil || *rev.Timezone != "America/Indiana/Vincennes" || rev.TimezoneSource != TimezoneBoundarySource {
+		t.Errorf("reverse: %v from %q", rev.Timezone, rev.TimezoneSource)
+	}
+}
+
+// Without the layer, the ZIP fallback still answers, and says it is the one
+// answering.
+func TestTimezoneFallsBackToZipCentroids(t *testing.T) {
+	db, fx := setupEnrichDB(t)
+
+	e := enrichAt(t, db, 39.97, -83.01, "timezone")
+	if e.Timezone == nil || *e.Timezone != "America/New_York" || e.TimezoneSource != TimezoneZIPSource {
+		t.Errorf("without the layer: %v from %q", e.Timezone, e.TimezoneSource)
+	}
+
+	// With the layer loaded but the point outside every zone -- the polygons
+	// stop at the coast -- the fallback answers rather than nothing.
+	serveZones(t, fx)
+	if _, err := load(t, db, "timezone", "39"); err != nil {
+		t.Fatal(err)
+	}
+	sea := enrichAt(t, db, 39.97, -83.01, "timezone")
+	if sea.Timezone == nil || *sea.Timezone != "America/New_York" || sea.TimezoneSource != TimezoneZIPSource {
+		t.Errorf("outside every zone: %v from %q", sea.Timezone, sea.TimezoneSource)
+	}
+}
+
+// A national layer is loaded once, not once per state, so a routine load of a
+// state must not re-fetch 80 MB of zones.
+func TestNationalLayersAreNotInTheDefaultLoad(t *testing.T) {
+	for _, l := range DefaultBoundaryLayers() {
+		if l.URL != "" {
+			t.Errorf("national layer %s is in the default load", l.Name)
+		}
+	}
+	tz, ok := BoundaryLayerByName("timezone")
+	if !ok || tz.Scope("39") != NationalScope {
+		t.Errorf("timezone layer scope = %q", tz.Scope("39"))
+	}
+	// It is still loadable by name, which is how it gets loaded at all.
+	if _, ok := BoundaryLayerByName("timezone"); !ok {
+		t.Error("the timezone layer cannot be named in a load")
 	}
 }

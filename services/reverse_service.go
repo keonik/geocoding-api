@@ -52,13 +52,16 @@ type ReverseResult struct {
 	County  *string         `json:"county"`
 	State   *ReverseState   `json:"state"`
 
-	// Timezone is the IANA zone at the queried point, from the nearest ZIP
-	// centroid in the containing state, or within 50km when the point is in
-	// no state. Null when there is none -- open water, or a state with no ZIP
-	// data. ZIP-level, so a point within a few kilometres of a zone line
-	// inside one state (the Florida panhandle, western Kentucky) can report
-	// the neighbouring zone.
-	Timezone *string `json:"timezone"`
+	// Timezone is the IANA zone at the queried point, and TimezoneSource says
+	// how it was found. With the timezone layer loaded it is the containing
+	// zone polygon, exact to the line. Without it, the fallback is the zone
+	// of the nearest ZIP centroid in the containing state, which is
+	// ZIP-level: a point within a few kilometres of a zone line that runs
+	// through a state (the Florida panhandle, western Kentucky) can report
+	// the neighbouring zone. Null when neither answers -- open water, or no
+	// ZIP data.
+	Timezone       *string `json:"timezone"`
+	TimezoneSource string  `json:"timezone_source,omitempty"`
 
 	SearchRadiusMeters float64 `json:"search_radius_meters"`
 
@@ -235,7 +238,7 @@ func (r *ReverseResult) findTimezone(db *sql.DB, lat, lng float64) error {
 	if r.State != nil {
 		state = r.State.Code
 	}
-	zone, err := timezoneAt(db, lat, lng, state)
-	r.Timezone = zone
+	zone, source, err := timezoneAtPoint(db, lat, lng, state)
+	r.Timezone, r.TimezoneSource = zone, source
 	return err
 }

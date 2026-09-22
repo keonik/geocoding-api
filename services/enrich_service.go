@@ -46,11 +46,12 @@ type Enrichment struct {
 	Boundaries  map[string]*Boundary `json:"boundaries"`
 	Unavailable []string             `json:"unavailable"`
 
-	// Timezone is present when fields= asked for it and it is known. It is
-	// the zone /reverse reports, ZIP-derived; see ReverseResult.Timezone.
-	// Asked for and not known -- no ZIP data near the point -- it is listed
-	// in Unavailable, like a layer.
-	Timezone *string `json:"timezone,omitempty"`
+	// Timezone is present when fields= asked for it and it is known, with
+	// TimezoneSource saying which answer it is: the exact zone polygon, or
+	// the nearest ZIP's zone when those are not loaded. Asked for and not
+	// known, it is listed in Unavailable, like a layer.
+	Timezone       *string `json:"timezone,omitempty"`
+	TimezoneSource string  `json:"timezone_source,omitempty"`
 }
 
 // ParseEnrichmentFields turns "census,cd" into a request. An empty string
@@ -80,6 +81,9 @@ func ParseEnrichmentFields(raw string) (EnrichmentRequest, error) {
 
 	req := EnrichmentRequest{Timezone: len(want) == 0 || want["timezone"]}
 	for _, l := range BoundaryLayers {
+		if l.AnswersAsTimezone() {
+			continue
+		}
 		if len(want) == 0 || want[l.Group] {
 			req.Layers = append(req.Layers, l)
 		}
@@ -119,7 +123,7 @@ func Enrich(db *sql.DB, lat, lng float64, req EnrichmentRequest) (*Enrichment, e
 		return nil, fmt.Errorf("failed to find the containing state: %w", err)
 	}
 	if req.Timezone {
-		if e.Timezone, err = timezoneAt(db, lat, lng, abbr); err != nil {
+		if e.Timezone, e.TimezoneSource, err = timezoneAtPoint(db, lat, lng, abbr); err != nil {
 			return nil, err
 		}
 		if e.Timezone == nil {

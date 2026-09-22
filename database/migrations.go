@@ -3,13 +3,17 @@ package database
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"geocoding-api/utils"
+
+	"github.com/lib/pq"
 )
 
 // MigrationStatus tracks the status of async migrations
@@ -178,6 +182,12 @@ func RunMigrations() error {
 			Description: "Hold Census boundary layers for enrichment: tracts, districts, school districts",
 			Up:          func() error { return CreateBoundaryTables(DB) },
 			Down:        removeBoundaries,
+		},
+		{
+			Version:     27,
+			Description: "Widen boundaries.geoid: IANA timezone ids are longer than Census GEOIDs",
+			Up:          func() error { return WidenBoundaryGeoIDs(DB) },
+			Down:        narrowBoundaryGeoIDs,
 		},
 	} // Create migrations table if it doesn't exist
 	if err := createMigrationsTable(); err != nil {
@@ -2097,8 +2107,14 @@ func removePerKeyQuotas() error {
 }
 
 // SchemaVersionBoundaries is the migration that creates boundaries and
-// boundary_loads. The loader writes to both and checks for it first.
+// boundary_loads. Enrichment reads both and degrades before it.
 const SchemaVersionBoundaries = 26
+
+// SchemaVersionBoundaryGeoIDs widened boundaries.geoid to hold an IANA zone
+// id. The loader checks for it: "America/Indiana/Indianapolis" does not fit
+// the original column, and a load that found out mid-file would roll back
+// after doing the work.
+const SchemaVersionBoundaryGeoIDs = 27
 
 // CreateBoundaryTables creates one table for every Census layer rather than one per
 // layer.
@@ -2180,4 +2196,82 @@ func removeBoundaries() error {
 		}
 	}
 	return tx.Commit()
+}
+
+// widenBoundaryGeoIDs makes room for identifiers that are not Census GEOIDs.
+//
+// A Census GEOID is at most 15 digits, so the column was sized for one. The
+// timezone layer stores an IANA zone id -- "America/Indiana/Indianapolis" is
+// 28 characters, and "America/Argentina/ComodRivadavia" is 32.
+//
+// Exported and taking its handle for the same reason as CreateBoundaryTables:
+// an integration test builds the real schema by running the real migrations.
+func WidenBoundaryGeoIDs(db *sql.DB) error {
+	// ALTER TABLE takes ACCESS EXCLUSIVE. It needs no rewrite for a widening,
+	// so it is quick -- but migrations run at boot while the server already
+	// serves, and a boundary load holds its transaction open for as long as
+	// the load takes. Waiting on that lock would be bad enough; a *queued*
+	// ACCESS EXCLUSIVE request also blocks every reader behind it, so every
+	// /enrich and /reverse would hang while /health went on reporting
+	// healthy. A short lock_timeout means this gives up and retries instead.
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		err := func() error {
+			tx, err := db.Begin()
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			if _, err := tx.Exec(`SET LOCAL lock_timeout = '3s'`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`ALTER TABLE boundaries ALTER COLUMN geoid TYPE VARCHAR(64)`); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isLockTimeout(err) {
+			return fmt.Errorf("failed to widen boundaries.geoid: %w", err)
+		}
+		log.Printf("Migration 27: boundaries is locked by another transaction, retrying (%d/10)", attempt+1)
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("failed to widen boundaries.geoid: it stayed locked: %w", lastErr)
+}
+
+// isLockTimeout reports whether err is Postgres 55P03, raised when a statement
+// gives up waiting for a lock.
+func isLockTimeout(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "55P03"
+	}
+	return false
+}
+
+func narrowBoundaryGeoIDs() error {
+	// Only the rows that still fit can come back, so anything longer is
+	// removed first rather than failing the rollback. A layer that loses rows
+	// this way stops being available: half a layer answering "no zone here"
+	// would be read as fact rather than as the damage it is.
+	if _, err := DB.Exec(`
+		WITH gone AS (
+			DELETE FROM boundaries WHERE length(geoid) > 20
+			RETURNING layer, state_fips
+		)
+		UPDATE boundary_loads l
+		SET available = false, status = 'failed',
+		    error = 'rolled back by migration 27: the geoid no longer fits, so rows were dropped'
+		WHERE (l.layer, l.state_fips) IN (SELECT DISTINCT layer, state_fips FROM gone)
+	`); err != nil {
+		return fmt.Errorf("failed to drop over-long geoids: %w", err)
+	}
+	if _, err := DB.Exec(`ALTER TABLE boundaries ALTER COLUMN geoid TYPE VARCHAR(20)`); err != nil {
+		return fmt.Errorf("failed to narrow boundaries.geoid: %w", err)
+	}
+	return nil
 }

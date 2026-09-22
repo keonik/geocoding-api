@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"geocoding-api/services"
@@ -106,10 +107,6 @@ func LoadBoundariesHandler(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{Success: false, Error: "Malformed body"})
 	}
 	db := services.GetDB()
-	fips, err := services.ResolveStateFIPS(db, req.State)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{Success: false, Error: err.Error()})
-	}
 
 	layers := services.DefaultBoundaryLayers()
 	if len(req.Layers) > 0 {
@@ -120,6 +117,23 @@ func LoadBoundariesHandler(c echo.Context) error {
 				return c.JSON(http.StatusBadRequest, GeocodeResponse{Success: false, Error: "unknown layer " + strconv.Quote(name)})
 			}
 			layers = append(layers, l)
+		}
+	}
+
+	// A national layer covers the country in one file, so it needs no state.
+	// Asking for one alongside per-state layers is fine; the state applies to
+	// those, and the national layer ignores it.
+	perState := false
+	for _, l := range layers {
+		if !l.IsNational() {
+			perState = true
+		}
+	}
+	fips := services.NationalScope
+	if perState || strings.TrimSpace(req.State) != "" {
+		var err error
+		if fips, err = services.ResolveStateFIPS(db, req.State); err != nil {
+			return c.JSON(http.StatusBadRequest, GeocodeResponse{Success: false, Error: err.Error()})
 		}
 	}
 

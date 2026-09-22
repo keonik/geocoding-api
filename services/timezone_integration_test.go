@@ -130,6 +130,10 @@ func setupTimezoneDB(t *testing.T, withGeog bool) *sql.DB {
 		}
 	}
 
+	// The timezone lookup reads the boundary tables; without them here it
+	// would resolve them through public and answer from real data.
+	createBoundaryTables(t, db)
+
 	prev := database.DB
 	database.DB = db
 	t.Cleanup(func() {
@@ -373,5 +377,55 @@ func TestTimezoneDegradesBeforeGeogExists(t *testing.T) {
 	}
 	if rev.Timezone != nil {
 		t.Errorf("reverse timezone %s without geog", *rev.Timezone)
+	}
+}
+
+// An address gets the same exact zone as a point at the same place. Without
+// this, one /reverse response could carry an exact timezone and a ZIP-level
+// address.timezone that disagreed with it.
+func TestAddressesUseTheZonePolygons(t *testing.T) {
+	db := setupTimezoneDB(t, true)
+
+	// A zone covering the Illinois side of the fixture's line, loaded and
+	// available. The border address sits in it; its ZIP-derived answer is
+	// Indiana's, so the two cannot be confused.
+	for _, stmt := range []string{
+		`INSERT INTO boundaries (layer, geoid, state_fips, name, geom) VALUES
+		 ('timezone', 'America/Chicago', '00', 'America/Chicago',
+		  ST_Multi(ST_MakeEnvelope(-89, 37, -87.5, 42, 4326)))`,
+		`INSERT INTO boundary_loads (layer, state_fips, status, available, features, source_url)
+		 VALUES ('timezone', '00', 'loaded', true, 1, 'fixture')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+
+	border := addressByHash(t, db, "border")
+	if zoneOf(border.Timezone) != "America/Chicago" {
+		t.Errorf("address timezone = %s, want the containing zone polygon", zoneOf(border.Timezone))
+	}
+	if border.TimezoneSource != TimezoneBoundarySource {
+		t.Errorf("timezone_source = %q, want %q", border.TimezoneSource, TimezoneBoundarySource)
+	}
+
+	// The same coordinate through /reverse: both halves of the response now
+	// agree, and both say where the answer came from.
+	rev, err := ReverseGeocode(db, borderLat, borderLng, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zoneOf(rev.Timezone) != "America/Chicago" || rev.TimezoneSource != TimezoneBoundarySource {
+		t.Errorf("reverse point: %s from %q", zoneOf(rev.Timezone), rev.TimezoneSource)
+	}
+	if rev.Address == nil || zoneOf(rev.Address.Timezone) != zoneOf(rev.Timezone) {
+		t.Errorf("reverse address timezone %v disagrees with the point's %v",
+			rev.Address.Timezone, rev.Timezone)
+	}
+
+	// An address outside every loaded zone keeps the ZIP answer, and says so.
+	away := addressByHash(t, db, "zip4")
+	if zoneOf(away.Timezone) != "America/Indiana/Indianapolis" || away.TimezoneSource != TimezoneZIPSource {
+		t.Errorf("address outside the zones: %s from %q", zoneOf(away.Timezone), away.TimezoneSource)
 	}
 }

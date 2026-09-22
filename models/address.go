@@ -30,11 +30,15 @@ type OhioAddress struct {
 	// knowing which endpoint produced which.
 	Accuracy Accuracy `json:"accuracy"`
 
-	// Timezone is the IANA zone, taken from the address's ZIP code, or from
-	// the nearest ZIP in the same state within 50km when the address has
-	// none. Null when no ZIP data covers it. ZIP-level, so an address within
-	// a few kilometres of a zone boundary can carry its neighbour's zone.
-	Timezone *string `json:"timezone"`
+	// Timezone is the IANA zone, and TimezoneSource says how it was found.
+	// With the timezone boundary layer loaded it is the zone polygon
+	// containing the address, exact to the line. Otherwise it is the
+	// address's own ZIP code's zone, or the nearest ZIP in the same state
+	// within 50km when the address has no usable postcode -- ZIP-level, so
+	// an address within a few kilometres of a zone line can carry its
+	// neighbour's zone. Null when nothing covers it.
+	Timezone       *string `json:"timezone"`
+	TimezoneSource string  `json:"timezone_source,omitempty"`
 
 	// Match describes why this row was returned. Populated by the /addresses
 	// search path; absent on a lookup by id, where there is nothing to have
