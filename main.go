@@ -4,6 +4,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	gopath "path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -382,23 +384,7 @@ func main() {
 
 	// SPA fallback - MUST be registered AFTER all API routes
 	// This serves the React app for all non-API routes
-	e.GET("/*", func(c echo.Context) error {
-		path := c.Request().URL.Path
-
-		// Don't handle API routes here - they're already registered above
-		if len(path) >= 4 && path[:4] == "/api" {
-			return echo.ErrNotFound
-		}
-
-		// Serve static files if they exist
-		filePath := staticDir + path
-		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
-			return c.File(filePath)
-		}
-
-		// Otherwise serve index.html for SPA routing
-		return c.File(staticDir + "/index.html")
-	})
+	e.GET("/*", spaHandler(staticDir))
 
 	// Get port from environment variable or default to 8080
 	port := os.Getenv("PORT")
@@ -431,5 +417,43 @@ func main() {
 	log.Printf("Starting HTTP server...")
 	if err := e.StartServer(server); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+
+// spaHandler serves the built frontend, falling back to index.html so the
+// client router can handle unknown paths.
+func spaHandler(staticDir string) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		urlPath := c.Request().URL.Path
+
+		// Don't handle API routes here - they're already registered above
+		if strings.HasPrefix(urlPath, "/api") {
+			return echo.ErrNotFound
+		}
+
+		// The request path is joined onto a directory and handed to the
+		// filesystem, so it has to be confined to that directory first.
+		// Pasting it on raw served whatever was above: GET /../go.mod
+		// returned this repository's go.mod, and from the container, where
+		// the working directory is /app, GET /../../etc/passwd was
+		// /etc/passwd -- unauthenticated, since this route sits outside
+		// APIKeyAuth. /proc/self/environ was the database password.
+		//
+		// Rooting the path at "/" before cleaning is what makes it safe:
+		// path.Clean resolves ".." against that root and cannot climb past
+		// it, so "/../../etc/passwd" becomes "/etc/passwd" and lands inside
+		// staticDir, where it does not exist. Cleaning after joining would
+		// not do this -- "static-new/../go.mod" cleans to "go.mod", which is
+		// the bug.
+		clean := gopath.Clean("/" + strings.TrimPrefix(urlPath, "/"))
+
+		// Serve static files if they exist
+		filePath := filepath.Join(staticDir, filepath.FromSlash(clean))
+		if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+			return c.File(filePath)
+		}
+
+		// Otherwise serve index.html for SPA routing
+		return c.File(filepath.Join(staticDir, "index.html"))
 	}
 }
