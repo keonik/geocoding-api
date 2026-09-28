@@ -1,18 +1,13 @@
 package middleware
 
 import (
-	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
-	"geocoding-api/database"
-
 	"github.com/labstack/echo/v4"
-	_ "github.com/lib/pq"
 )
 
 const sessionBillingSchema = "session_billing_probe"
@@ -25,87 +20,8 @@ const sessionBillingSchema = "session_billing_probe"
 // computed the right answer and then recorded every call as billable anyway
 // would pass everything else.
 func TestSessionCallsAreRecordedUnbilled(t *testing.T) {
-	dsn := os.Getenv("PROBE_DSN")
-	if dsn == "" {
-		t.Skip("PROBE_DSN not set")
-	}
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	if err := db.Ping(); err != nil {
-		t.Skipf("probe database unreachable: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := db.Exec("DROP SCHEMA IF EXISTS " + sessionBillingSchema + " CASCADE"); err != nil {
-			t.Logf("cleanup: %v", err)
-		}
-		db.Close()
-	})
-
-	// The key's secret is hashed the way the service hashes it, so
-	// ValidateAPIKey finds this row rather than a real one.
-	const (
-		secret = "gk_session_billing_probe_key_value_0000000000000000000000000000"
-		// A second customer's key, to prove a token opens a session for the
-		// key that used it rather than for everyone.
-		otherSecret = "gk_session_billing_probe_other_key_00000000000000000000000000"
-	)
-	for _, stmt := range []string{
-		"DROP SCHEMA IF EXISTS " + sessionBillingSchema + " CASCADE",
-		"CREATE SCHEMA " + sessionBillingSchema,
-		"SET search_path TO " + sessionBillingSchema,
-		`CREATE TABLE users (
-			id SERIAL PRIMARY KEY, email VARCHAR(255) NOT NULL UNIQUE,
-			password_hash VARCHAR(255) NOT NULL, name VARCHAR(255), company VARCHAR(255),
-			plan_type VARCHAR(50) DEFAULT 'free',
-			is_active BOOLEAN DEFAULT true, is_admin BOOLEAN DEFAULT false,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-		`CREATE TABLE api_keys (
-			id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-			name VARCHAR(255) NOT NULL, key_hash VARCHAR(255) NOT NULL UNIQUE,
-			permissions TEXT[], is_active BOOLEAN DEFAULT true, last_used_at TIMESTAMP,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			key_preview VARCHAR(255), expires_at TIMESTAMP,
-			monthly_limit INTEGER, daily_limit INTEGER)`,
-		// The rate-limit check left-joins this, so it has to exist even empty.
-		`CREATE TABLE subscriptions (
-			id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-			plan_type VARCHAR(50), monthly_limit INTEGER, is_active BOOLEAN DEFAULT true)`,
-		`CREATE TABLE usage_records (
-			id SERIAL PRIMARY KEY, user_id INTEGER, api_key_id INTEGER,
-			endpoint VARCHAR(100), method VARCHAR(10), status_code INTEGER,
-			response_time_ms INTEGER, ip_address VARCHAR(64), user_agent TEXT,
-			billable BOOLEAN DEFAULT true, units INTEGER NOT NULL DEFAULT 1,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-		`CREATE TABLE usage_counters (
-			user_id INTEGER NOT NULL, period_kind VARCHAR(5) NOT NULL,
-			period_start DATE NOT NULL, count BIGINT NOT NULL DEFAULT 0,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (user_id, period_kind, period_start))`,
-		`CREATE TABLE api_key_counters (
-			api_key_id INTEGER NOT NULL, period_kind VARCHAR(5) NOT NULL,
-			period_start DATE NOT NULL, count BIGINT NOT NULL DEFAULT 0,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (api_key_id, period_kind, period_start))`,
-		`INSERT INTO users (id, email, password_hash, name, company, plan_type)
-			VALUES (1, 'probe@example.test', 'x', 'Probe', 'Probe Co', 'free')`,
-		`INSERT INTO users (id, email, password_hash, name, company, plan_type)
-			VALUES (2, 'other@example.test', 'x', 'Other', 'Other Co', 'free')`,
-		fmt.Sprintf(`INSERT INTO api_keys (id, user_id, name, key_hash, permissions, is_active, key_preview)
-			VALUES (1, 1, 'probe', encode(sha256(%s), 'hex'), ARRAY['search','addresses'], true, 'gk_probe...'),
-			       (2, 2, 'other', encode(sha256(%s), 'hex'), ARRAY['search','addresses'], true, 'gk_other...')`,
-			quoteBytes(secret), quoteBytes(otherSecret)),
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("setup failed on %.70q: %v", stmt, err)
-		}
-	}
-
-	prev := database.DB
-	database.DB = db
-	t.Cleanup(func() { database.DB = prev })
+	db := setupKeyFixture(t, sessionBillingSchema)
+	const secret, otherSecret = probeSecret, probeOtherSecret
 
 	e := echo.New()
 	e.Use(APIKeyAuth())
@@ -179,9 +95,4 @@ func TestSessionCallsAreRecordedUnbilled(t *testing.T) {
 	if counted != 3 {
 		t.Errorf("quota counted %d calls across both users, want 3", counted)
 	}
-}
-
-// quoteBytes renders a Go string as a Postgres bytea literal for sha256().
-func quoteBytes(s string) string {
-	return fmt.Sprintf("'\\x%x'::bytea", s)
 }

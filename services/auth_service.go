@@ -601,11 +601,21 @@ func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string
 		units = 1
 	}
 
+	// The handle is read once and used for all three writes below. Reading
+	// the global again between them means the audit row and the counters can
+	// go to different places, and this runs in a goroutine after the
+	// response, where a nil handle panics the whole process -- echo's
+	// recovery does not reach there.
+	db := database.DB
+	if db == nil {
+		return fmt.Errorf("no database handle; usage for %s not recorded", endpoint)
+	}
+
 	// Deliberately silent on success. This runs once per authenticated request,
 	// so logging the happy path put two lines in the log for every API call --
 	// log volume proportional to traffic, with nothing in it that a usage_records
 	// query could not answer better.
-	_, err := database.DB.Exec(`
+	_, err := db.Exec(`
 		INSERT INTO usage_records (user_id, api_key_id, endpoint, method, status_code, response_time_ms, ip_address, user_agent, billable, units, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
 	`, userID, apiKeyID, endpoint, method, statusCode, responseTime, ipAddress, userAgent, billable, units)
@@ -624,11 +634,11 @@ func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string
 
 	// The key's own counters move alongside the owner's. Independent writes:
 	// a failure in one must not skip the other.
-	if err := as.incrementKeyCounters(apiKeyID, units); err != nil {
+	if err := as.incrementKeyCounters(db, apiKeyID, units); err != nil {
 		log.Printf("Failed to increment key counters for key %d: %v", apiKeyID, err)
 	}
 
-	if err := as.incrementUsageCounters(userID, units); err != nil {
+	if err := as.incrementUsageCounters(db, userID, units); err != nil {
 		// The audit row is already written, which is the durable record, so a
 		// counter failure is logged rather than returned -- failing here would
 		// make the caller think the call went unrecorded. It does mean the
@@ -646,8 +656,8 @@ func (as *AuthService) RecordUsage(userID, apiKeyID int, endpoint, method string
 // round trip, and the increment happens inside the database rather than as a
 // read-modify-write, so concurrent requests cannot lose counts against each
 // other.
-func (as *AuthService) incrementUsageCounters(userID, units int) error {
-	_, err := database.DB.Exec(`
+func (as *AuthService) incrementUsageCounters(db *sql.DB, userID, units int) error {
+	_, err := db.Exec(`
 		INSERT INTO usage_counters (user_id, period_kind, period_start, count, updated_at)
 		VALUES
 			($1, 'month', date_trunc('month', CURRENT_DATE)::date, $2, NOW()),

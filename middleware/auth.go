@@ -252,9 +252,11 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				})
 			}
 
-			// Check endpoint permissions
-			endpoint := endpointFor(c)
-			if !services.Auth.HasPermission(keyRecord, endpoint) {
+			// Check endpoint permissions. A request that matched no route is
+			// left alone: there is no endpoint to hold a permission for, and
+			// echo's 404 is the useful answer.
+			endpoint, routed := ScopeForRequest(c)
+			if routed && !services.Auth.HasPermission(keyRecord, endpoint) {
 				return c.JSON(http.StatusForbidden, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "API key does not have permission for this endpoint",
@@ -272,7 +274,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 			// so the answer is the same one RecordUsage bills on.
 			billable := true
 			if token := c.QueryParam("session"); token != "" {
-				if !services.SessionEligible(path) {
+				if !services.SessionEligible(c.Path()) {
 					return c.JSON(http.StatusBadRequest, handlers.GeocodeResponse{
 						Success: false,
 						Error:   "Session tokens apply to /addresses/search only",

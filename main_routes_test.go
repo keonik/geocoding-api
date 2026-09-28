@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -9,38 +11,18 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// protectedRoutes are the ones APIKeyAuth guards: everything under /api/v1
-// except health, the auth endpoints, and the two groups that authenticate
-// with a JWT instead of a key.
-func protectedRoutes(t *testing.T) []echo.Route {
+// protectedRoutes are the routes APIKeyAuth guards, as the protected group
+// recorded them while registering. Taken from the registration rather than
+// inferred from path shapes: a protected route under /user or /admin would
+// look exempt to a prefix filter and escape the check below.
+func protectedRoutes(t *testing.T) []string {
 	t.Helper()
-	e := echo.New()
-	registerRoutes(e, "static")
-
-	var routes []echo.Route
-	for _, r := range e.Routes() {
-		rest, ok := strings.CutPrefix(r.Path, "/api/v1/")
-		if !ok {
-			continue
-		}
-		// Echo registers internal entries for its own not-found handling;
-		// they are not endpoints anybody can call.
-		if r.Method == "echo_route_not_found" {
-			continue
-		}
-		switch {
-		case rest == "health",
-			strings.HasPrefix(rest, "auth/"),
-			strings.HasPrefix(rest, "user/"),
-			strings.HasPrefix(rest, "admin/"):
-			continue
-		}
-		routes = append(routes, *r)
+	protectedRoutePaths = nil
+	registerRoutes(echo.New(), "static")
+	if len(protectedRoutePaths) == 0 {
+		t.Fatal("no protected routes recorded; has the router moved?")
 	}
-	if len(routes) == 0 {
-		t.Fatal("no protected routes found; has the router moved?")
-	}
-	return routes
+	return protectedRoutePaths
 }
 
 // Every endpoint an API key can reach must say which scope it needs.
@@ -50,18 +32,17 @@ func protectedRoutes(t *testing.T) []echo.Route {
 // scope its path happened to resemble, and nothing failed if that was the
 // wrong one or none at all.
 func TestEveryProtectedRouteDeclaresAScope(t *testing.T) {
-	for _, r := range protectedRoutes(t) {
+	for _, route := range protectedRoutes(t) {
 		layer := ""
-		if strings.Contains(r.Path, ":layer") {
+		if strings.Contains(route, ":layer") {
 			// Tiles carry their scope in the layer; the layers themselves are
 			// covered in the middleware tests.
 			layer = "counties"
 		}
-		if scope, ok := middleware.ScopeForRoute(r.Path, layer); !ok {
-			t.Errorf("%s %s has no scope: add it to routeScopes, or it is closed to every key",
-				r.Method, r.Path)
+		if scope, ok := middleware.ScopeForRoute(route, layer); !ok {
+			t.Errorf("%s has no scope: add it to routeScopes, or it is closed to every key", route)
 		} else if scope == "" {
-			t.Errorf("%s %s declares an empty scope", r.Method, r.Path)
+			t.Errorf("%s declares an empty scope", route)
 		}
 	}
 }
@@ -70,8 +51,8 @@ func TestEveryProtectedRouteDeclaresAScope(t *testing.T) {
 // which would quietly keep a deleted endpoint's rules alive.
 func TestScopeTableHasNoStaleRoutes(t *testing.T) {
 	live := map[string]bool{}
-	for _, r := range protectedRoutes(t) {
-		live[r.Path] = true
+	for _, route := range protectedRoutes(t) {
+		live[route] = true
 	}
 	for _, route := range middleware.ScopedRoutes() {
 		if !live[route] {
@@ -106,4 +87,30 @@ func TestAdminRebuildRouteIsRegistered(t *testing.T) {
 		}
 	}
 	t.Errorf("no route at %s: counter drift would be uncorrectable", want)
+}
+
+// A request that matches no route must keep its 404. Telling a caller their
+// key lacks a permission for an endpoint that does not exist hides what is
+// actually wrong, and the route table did exactly that at first: echo
+// registers catch-alls inside a group that carries middleware, so an
+// unmatched path reaches the scope check with no scope to find.
+func TestUnmatchedPathsKeepTheir404(t *testing.T) {
+	e := echo.New()
+	registerRoutes(e, "static")
+
+	for _, r := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/no-such-endpoint"},
+		{http.MethodGet, "/api/v1/counties/franklin/boundary/extra"},
+		{http.MethodPost, "/api/v1/counties"}, // wrong verb for a real route
+		{http.MethodGet, "/api/v1/"},
+	} {
+		req := httptest.NewRequest(r.method, r.path, nil)
+		// No key: an unmatched path should not be reporting on permissions,
+		// and 401 here would be the auth layer answering before routing.
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		if rec.Code == http.StatusForbidden {
+			t.Errorf("%s %s -> 403; an unmatched path should not answer about permissions", r.method, r.path)
+		}
+	}
 }

@@ -134,6 +134,11 @@ func TestSessionEligibility(t *testing.T) {
 	if !SessionEligible("/api/v1/addresses/search") {
 		t.Error("the autocomplete endpoint should take a session")
 	}
+	// The route, not the URL: an address id that happens to spell the
+	// autocomplete path must not buy session billing.
+	if SessionEligible("/api/v1/addresses/:id") {
+		t.Error("the by-id route should not take a session")
+	}
 	for _, path := range []string{
 		"/api/v1/addresses",
 		"/api/v1/geocode/43215",

@@ -53,7 +53,13 @@ func registerRoutes(e *echo.Echo, staticDir string) {
 	user.GET("/usage/keys", handlers.GetKeyUsageHandler)
 
 	// Protected API endpoints (require API key)
-	protected := api.Group("")
+	//
+	// Wrapped in a recorder so a test can ask which routes APIKeyAuth guards
+	// instead of guessing from their paths. Guessing was wrong in a way that
+	// mattered: a protected route registered under /user or /admin looked
+	// exempt, and so escaped the check that every guarded route declares a
+	// permission scope.
+	protected := &recordingGroup{group: api.Group("")}
 	protected.Use(middleware.APIKeyAuth())
 	protected.Use(middleware.UsageHeader())
 
@@ -136,4 +142,31 @@ func registerRoutes(e *echo.Echo, staticDir string) {
 	// This serves the React app for all non-API routes
 	e.GET("/*", spaHandler(staticDir))
 
+}
+
+// protectedRoutePaths is every route the protected group registered, in
+// registration order. Read by the test that checks each one declares a scope.
+var protectedRoutePaths []string
+
+// recordingGroup registers routes on a group and remembers their full paths.
+// It carries only the methods the protected group uses; a new verb has to be
+// added here, which is the point -- an unrecorded route is an unchecked one.
+type recordingGroup struct {
+	group *echo.Group
+}
+
+func (r *recordingGroup) Use(m ...echo.MiddlewareFunc) { r.group.Use(m...) }
+
+func (r *recordingGroup) GET(path string, h echo.HandlerFunc, m ...echo.MiddlewareFunc) {
+	r.record(path)
+	r.group.GET(path, h, m...)
+}
+
+func (r *recordingGroup) POST(path string, h echo.HandlerFunc, m ...echo.MiddlewareFunc) {
+	r.record(path)
+	r.group.POST(path, h, m...)
+}
+
+func (r *recordingGroup) record(path string) {
+	protectedRoutePaths = append(protectedRoutePaths, "/api/v1"+path)
 }

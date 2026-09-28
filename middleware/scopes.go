@@ -1,6 +1,10 @@
 package middleware
 
-import "github.com/labstack/echo/v4"
+import (
+	"strings"
+
+	"github.com/labstack/echo/v4"
+)
 
 // routeScopes says which permission scope each API-key route demands, keyed
 // by the route as echo registered it.
@@ -10,11 +14,18 @@ import "github.com/labstack/echo/v4"
 // happened to be written in. Two of the answers below are that coincidence
 // showing: /addresses/search demands "search" rather than "addresses", and
 // /counties/bounds/search demands "search" rather than "counties", because
-// the "/search" check sat above the others. They are kept exactly as they
-// were -- an issued key either carries the scope it has been using or it does
-// not, and silently moving the requirement would lock working integrations
-// out or open ones that were closed. They are written down here so the next
-// person can decide deliberately rather than inherit an accident.
+// the "/search" check sat above the others. Those two are kept as they were --
+// an issued key either carries the scope it has been using or it does not, and
+// silently moving the requirement would lock working integrations out or open
+// ones that were closed. They are written down here so the next person can
+// decide deliberately rather than inherit an accident.
+//
+// What does change is any answer that depended on a parameter's value. The old
+// ladder read the URL, so a county actually named Searcy -- /counties/searcy,
+// containing "search" -- demanded the search scope: a search-only key could
+// read it and a counties-only key could not. The scope now comes from the
+// route, so those calls demand "counties" like every other county, and their
+// usage_records.endpoint moves to match.
 //
 // A route missing from this table resolves to no scope and is refused, so a
 // new endpoint is closed until it says what it needs. The test in package
@@ -68,6 +79,34 @@ var tileLayerScopes = map[string]string{
 	"states":   "states",
 }
 
+// unroutedSuffix marks echo's own not-found entries.
+//
+// A group carrying middleware makes echo register catch-all routes so that
+// middleware still runs for paths matching nothing, and a request on one of
+// those has c.Path() ending in "*". No endpoint matched it, so there is no
+// scope to check: it is a 404. Answering 403 instead -- which this table did
+// at first -- tells a caller their key lacks a permission for a route that
+// does not exist, and hides the 404 that says what is really wrong. No real
+// route here ends in "*"; the tile route ends in its coordinate parameters.
+const unroutedSuffix = "*"
+
+// ScopeForRequest returns the scope the request's route demands.
+//
+// routed is false when the request matched no endpoint, in which case there is
+// nothing to authorise and the caller should let the 404 through.
+func ScopeForRequest(c echo.Context) (scope string, routed bool) {
+	route := c.Path()
+	// Empty when nothing matched at all, and ending in "*" when echo's own
+	// catch-all did. Both mean the request found no endpoint.
+	if route == "" || strings.HasSuffix(route, unroutedSuffix) {
+		return "unknown", false
+	}
+	if scope, ok := ScopeForRoute(route, c.Param("layer")); ok {
+		return scope, true
+	}
+	return "unknown", true
+}
+
 // ScopeForRoute returns the scope a route demands. ok is false when the route
 // is not one an API key can reach, which callers treat as a refusal.
 func ScopeForRoute(route, tileLayer string) (string, bool) {
@@ -79,17 +118,15 @@ func ScopeForRoute(route, tileLayer string) (string, bool) {
 	return scope, ok
 }
 
-// endpointFor is the scope for the request in hand.
+// endpointFor is the scope for the request in hand, which is also the
+// endpoint name recorded against its usage.
 //
 // c.Path() is the route echo matched, not the URL: "/api/v1/geocode/:zipcode"
 // rather than "/api/v1/geocode/43215". That is what makes this a lookup
 // instead of a guess -- there is one entry per route, and a ZIP code that
 // happens to contain the word "search" cannot change the answer.
 func endpointFor(c echo.Context) string {
-	scope, ok := ScopeForRoute(c.Path(), c.Param("layer"))
-	if !ok {
-		return "unknown"
-	}
+	scope, _ := ScopeForRequest(c)
 	return scope
 }
 

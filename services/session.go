@@ -2,7 +2,6 @@ package services
 
 import (
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 )
@@ -49,14 +48,21 @@ func ValidSessionToken(token string) bool {
 	return sessionTokenPattern.MatchString(token)
 }
 
-// SessionEligible reports whether a path bills by session.
+// SessionEligible reports whether a route bills by session.
 //
 // Only the autocomplete endpoint. A session stands for one lookup that a
 // person is typing towards; letting any endpoint take one would sell twenty
 // unrelated lookups for the price of one.
-func SessionEligible(path string) bool {
-	return strings.Contains(path, "/addresses/search")
+//
+// Takes the route echo matched rather than the URL, for the same reason the
+// permission scopes do: a parameter value should not decide how a call is
+// billed.
+func SessionEligible(route string) bool {
+	return route == sessionRoute
 }
+
+// sessionRoute is the autocomplete endpoint, as it is registered.
+const sessionRoute = "/api/v1/addresses/search"
 
 // SessionState is what a caller is told about their session.
 type SessionState struct {
