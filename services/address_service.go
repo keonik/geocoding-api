@@ -141,16 +141,17 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 
 	// Build WHERE conditions and relevance scoring
 	var conditions []string
-	var args []interface{}
 	var selectFields []string
-	argIndex := 1
+	// Every parameter is bound through this, which numbers it as it goes; see
+	// argBinder for why that is not done by hand.
+	bound := &argBinder{}
 	hasRelevanceScore := false
 	hasFuzzySimilarity := false
-	// Where the predicate's own parameters landed, so relevance can be scored
-	// on exactly what matched rather than on a parallel expression that is
-	// free to disagree with it.
-	tsQueryArg := 0
-	var fuzzyWordArgs []int
+	// The predicate's own parameters, so relevance can be scored on exactly
+	// what matched rather than on a parallel expression that is free to
+	// disagree with it.
+	tsQueryPlaceholder := ""
+	var fuzzyWordPlaceholders []string
 
 	// queryWords outlives this block. The relevance score it feeds lives in the
 	// SELECT clause, and its parameters have to be numbered after every WHERE
@@ -189,16 +190,13 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 				// `column %> pattern` against the full_address GIN trigram
 				// index (idx_ohio_addresses_full_address_trgm, migration 15).
 				for _, word := range queryWords {
-					conditions = append(conditions, fmt.Sprintf("$%d <%% full_address", argIndex))
-					args = append(args, word)
-					fuzzyWordArgs = append(fuzzyWordArgs, argIndex)
-					argIndex++
+					placeholder := bound.one(word)
+					conditions = append(conditions, fmt.Sprintf("%s <%% full_address", placeholder))
+					fuzzyWordPlaceholders = append(fuzzyWordPlaceholders, placeholder)
 				}
 			} else {
-				conditions = append(conditions, fmt.Sprintf("fts @@ to_tsquery('simple', $%d)", argIndex))
-				args = append(args, buildPrefixTSQuery(queryWords))
-				tsQueryArg = argIndex
-				argIndex++
+				tsQueryPlaceholder = bound.one(buildPrefixTSQuery(queryWords))
+				conditions = append(conditions, fmt.Sprintf("fts @@ to_tsquery('simple', %s)", tsQueryPlaceholder))
 			}
 		}
 	}
@@ -206,17 +204,13 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	// State filter. Exact match on the indexed region column, upper-cased so a
 	// caller passing "oh" is not silently told there is no data.
 	if state := strings.ToUpper(strings.TrimSpace(params.State)); state != "" {
-		conditions = append(conditions, fmt.Sprintf("region = $%d", argIndex))
-		args = append(args, state)
-		argIndex++
+		conditions = append(conditions, fmt.Sprintf("region = %s", bound.one(state)))
 	}
 
 	// Bounding box.
 	if params.BBox != nil {
 		conditions = append(conditions, fmt.Sprintf(BBoxPredicateSQL,
-			argIndex, argIndex+1, argIndex+2, argIndex+3))
-		args = append(args, params.BBox.MinLng, params.BBox.MinLat, params.BBox.MaxLng, params.BBox.MaxLat)
-		argIndex += 4
+			bound.bind(params.BBox.MinLng, params.BBox.MinLat, params.BBox.MaxLng, params.BBox.MaxLat)...))
 	}
 
 	// Arbitrary polygon. ST_Intersects is index-assisted: the planner uses &&
@@ -227,37 +221,27 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	// ST_GeomFromGeoJSON raises on malformed input, so the shape is validated
 	// in the handler and never reaches here unchecked.
 	if params.Polygon != "" {
-		conditions = append(conditions, fmt.Sprintf(PolygonPredicateSQL, argIndex))
-		args = append(args, params.Polygon)
-		argIndex++
+		conditions = append(conditions, fmt.Sprintf(PolygonPredicateSQL, bound.one(params.Polygon)))
 	}
 
 	// County filter
 	if params.County != "" {
-		conditions = append(conditions, fmt.Sprintf("county ILIKE $%d", argIndex))
-		args = append(args, "%"+params.County+"%")
-		argIndex++
+		conditions = append(conditions, fmt.Sprintf("county ILIKE %s", bound.one("%"+params.County+"%")))
 	}
 
 	// City filter
 	if params.City != "" {
-		conditions = append(conditions, fmt.Sprintf("city ILIKE $%d", argIndex))
-		args = append(args, "%"+params.City+"%")
-		argIndex++
+		conditions = append(conditions, fmt.Sprintf("city ILIKE %s", bound.one("%"+params.City+"%")))
 	}
 
 	// Postcode filter
 	if params.Postcode != "" {
-		conditions = append(conditions, fmt.Sprintf("postcode = $%d", argIndex))
-		args = append(args, params.Postcode)
-		argIndex++
+		conditions = append(conditions, fmt.Sprintf("postcode = %s", bound.one(params.Postcode)))
 	}
 
 	// Street filter
 	if params.Street != "" {
-		conditions = append(conditions, fmt.Sprintf("street ILIKE $%d", argIndex))
-		args = append(args, "%"+params.Street+"%")
-		argIndex++
+		conditions = append(conditions, fmt.Sprintf("street ILIKE %s", bound.one("%"+params.Street+"%")))
 	}
 
 	// Proximity filter. This is the last thing to contribute a WHERE parameter.
@@ -266,11 +250,9 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		conditions = append(conditions, fmt.Sprintf(`
 			ST_DWithin(
 				geom, 
-				ST_SetSRID(ST_MakePoint($%d, $%d), 4326)::geography,
-				$%d
-			)`, argIndex, argIndex+1, argIndex+2))
-		args = append(args, params.Lng, params.Lat, params.Radius*1000) // Convert km to meters
-		argIndex += 3
+				ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+				%s
+			)`, bound.bind(params.Lng, params.Lat, params.Radius*1000)...)) // Radius in km, bound as metres
 	}
 
 	// Every WHERE parameter has now been assigned, so $1..$whereArgCount are
@@ -279,7 +261,7 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	// query is what broke it in production: Postgres infers a parameter's type
 	// from where it is used, so an argument the statement never mentions fails
 	// to parse with "could not determine data type of parameter $1".
-	whereArgCount := len(args)
+	whereArgCount := bound.count()
 
 	// Relevance.
 	//
@@ -302,9 +284,9 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	// scored 0 on a row it had correctly matched. Normalisation flag 32
 	// divides the rank by itself plus one, bounding it to 0..1 with no
 	// hand-maintained maximum to drift out of sync.
-	if len(queryWords) > 0 && tsQueryArg > 0 {
+	if len(queryWords) > 0 && tsQueryPlaceholder != "" {
 		selectFields = append(selectFields,
-			fmt.Sprintf("ts_rank_cd(fts, to_tsquery('simple', $%d), 32) as relevance_score", tsQueryArg))
+			fmt.Sprintf("ts_rank_cd(fts, to_tsquery('simple', %s), 32) as relevance_score", tsQueryPlaceholder))
 		hasRelevanceScore = true
 	}
 
@@ -316,10 +298,10 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	//
 	// LEAST is the right aggregate for an AND: a row is only as trustworthy as
 	// its weakest matching word.
-	if len(fuzzyWordArgs) > 0 {
-		parts := make([]string, 0, len(fuzzyWordArgs))
-		for _, argPos := range fuzzyWordArgs {
-			parts = append(parts, fmt.Sprintf("word_similarity($%d, full_address)", argPos))
+	if len(fuzzyWordPlaceholders) > 0 {
+		parts := make([]string, 0, len(fuzzyWordPlaceholders))
+		for _, placeholder := range fuzzyWordPlaceholders {
+			parts = append(parts, fmt.Sprintf("word_similarity(%s, full_address)", placeholder))
 		}
 		expr := parts[0]
 		if len(parts) > 1 {
@@ -343,16 +325,14 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 	// key is free: the unfiltered browse keeps its incremental sort off
 	// idx_ohio_addresses_county and stays at ~82ms.
 	var orderBy string
-	var orderByArgs []interface{}
 	if params.Lat != 0 && params.Lng != 0 {
-		// Order by distance - store args separately for count query
+		// Bound after the WHERE parameters, so the count query -- which takes
+		// only the first whereArgCount of them -- never sees these.
 		orderBy = fmt.Sprintf(`
 			ORDER BY ST_Distance(
 				geom, 
-				ST_SetSRID(ST_MakePoint($%d, $%d), 4326)::geography
-			) ASC, id`, argIndex, argIndex+1)
-		orderByArgs = append(orderByArgs, params.Lng, params.Lat)
-		argIndex += 2
+				ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
+			) ASC, id`, bound.bind(params.Lng, params.Lat)...)
 	} else if hasFuzzySimilarity {
 		// Fuzzy rows score 0 on relevance_score by construction, so ordering by
 		// it put the alphabetically-first county on top while the reported
@@ -411,19 +391,13 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 
 	baseQuery := fmt.Sprintf("SELECT %s FROM ohio_addresses", selectClause)
 
-	// Main query with pagination - now add ORDER BY args
-	fullQueryArgs := make([]interface{}, len(args))
-	copy(fullQueryArgs, args)
-	fullQueryArgs = append(fullQueryArgs, orderByArgs...)
-
 	fullQuery := fmt.Sprintf(`
 		%s %s %s
-		LIMIT $%d OFFSET $%d
-	`, baseQuery, whereClause, orderBy, argIndex, argIndex+1)
+		LIMIT %s OFFSET %s
+	`, append([]interface{}{baseQuery, whereClause, orderBy},
+		bound.bind(params.Limit, params.Offset)...)...)
 
-	fullQueryArgs = append(fullQueryArgs, params.Limit, params.Offset)
-
-	rows, err := q.Query(fullQuery, fullQueryArgs...)
+	rows, err := q.Query(fullQuery, bound.values()...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to execute address search query: %w", err)
 	}
@@ -487,7 +461,7 @@ func (s *AddressService) searchAddresses(q querier, params models.AddressSearchP
 		// ORDER BY args it never mentions fails to parse with "could not
 		// determine data type of parameter $1".
 		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM ohio_addresses %s", whereClause)
-		if err := q.QueryRow(countQuery, args[:whereArgCount]...).Scan(&total); err != nil {
+		if err := q.QueryRow(countQuery, bound.values()[:whereArgCount]...).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("failed to get total count: %w", err)
 		}
 	}
@@ -1313,6 +1287,6 @@ func clamp01(v float64) float64 {
 // candidate exactly, which is what county_service.go already does for the same
 // job.
 const (
-	BBoxPredicateSQL    = "ST_Intersects(geom, ST_MakeEnvelope($%d, $%d, $%d, $%d, 4326))"
-	PolygonPredicateSQL = "ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON($%d), 4326))"
+	BBoxPredicateSQL    = "ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
+	PolygonPredicateSQL = "ST_Intersects(geom, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326))"
 )
