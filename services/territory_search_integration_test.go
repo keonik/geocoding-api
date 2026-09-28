@@ -218,9 +218,10 @@ func TestTerritorySearchCanUseTheSpatialIndex(t *testing.T) {
 	// Built from the same constants the query builder uses, so changing the
 	// predicate to a non-indexable shape fails here instead of quietly passing
 	// against a stale hand-copied duplicate.
-	bbox := fmt.Sprintf(strings.NewReplacer("$%d", "%s").Replace(BBoxPredicateSQL),
-		"-84.1", "39.0", "-84.0", "39.1")
-	polygon := fmt.Sprintf(strings.NewReplacer("$%d", "%s").Replace(PolygonPredicateSQL),
+	// The constants take placeholders, so literals drop straight in -- this
+	// used to rewrite "$%d" into "%s" first.
+	bbox := fmt.Sprintf(BBoxPredicateSQL, "-84.1", "39.0", "-84.0", "39.1")
+	polygon := fmt.Sprintf(PolygonPredicateSQL,
 		`'{"type":"Polygon","coordinates":[[[-84.1,39.0],[-84.0,39.0],[-84.0,39.1],[-84.1,39.1],[-84.1,39.0]]]}'`)
 
 	for _, tc := range []struct {
