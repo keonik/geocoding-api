@@ -40,9 +40,14 @@ func ReverseBatchHandler(c echo.Context) error {
 		return err
 	}
 
+	// refuseBatch has already rejected an empty or oversized batch, and each
+	// item's coordinates are checked per item, so what fails here is the
+	// server -- as on /reverse, which answers 500 for the same faults. This
+	// returned 400 at first, which told a caller their request was wrong when
+	// a table was missing.
 	result, err := services.ReverseGeocodeBatch(services.GetDB(), req.Items, req.Radius)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{Success: false, Error: err.Error()})
+		return c.JSON(http.StatusInternalServerError, GeocodeResponse{Success: false, Error: err.Error()})
 	}
 
 	// Billed and rate-limited as the lookups it performed, like the forward

@@ -665,19 +665,33 @@ paths:
         -90..90 or -180..180 fails its own item and the rest are still
         answered: one typo in item 40 should not throw away the other 99.
 
-        `found` says whether the coordinate resolved to a place -- a containing
-        county or state, or an address within the radius. The nearest ZIP alone
-        does not count: that lookup is unbounded and reports how far away it
-        is, so a point in the Atlantic gets a real ZIP four thousand kilometres
-        off. The field is still there, because /reverse returns it.
+        `found` says whether the coordinate resolved to a place: a containing
+        county or state, or an address or ZIP centroid within the radius asked
+        for. Anywhere in a state with boundaries loaded is therefore found even
+        with no address nearby, so a caller who needs an address should test
+        `address` rather than `found`. The nearest ZIP is reported however far
+        away it is -- that lookup is unbounded, and a point in the Atlantic
+        gets a real ZIP four thousand kilometres off -- but a centroid outside
+        the radius does not make the point found.
 
         Billed per item, like /geocode/batch: a hundred coordinates is a
-        hundred lookups however few requests carry them. It also counts as a
-        hundred against the per-second rate, so a batch larger than the rate
-        allows is refused before the work with the wait in `Retry-After`.
+        hundred lookups however few requests carry them. Items refused for an
+        impossible coordinate are billed too, since the batch was charged for
+        what it asked rather than what it got.
+
+        The same hundred count against the per-second rate. One full batch
+        always fits -- the allowance holds a batch for every plan -- so a batch
+        is refused only when the allowance is already spent, and then
+        `Retry-After` carries the wait.
+
+        Enrichment is not available here: `/reverse` takes `fields=` for census
+        and district appends, and this endpoint does not, so a caller needing
+        those still makes one request per coordinate.
 
         The work is a fixed handful of queries whatever the batch size, rather
-        than per item -- which is the only reason to have the endpoint.
+        than per item -- which is the only reason to have the endpoint. The
+        100-item cap is shared with /geocode/batch and is what one round of
+        those queries is sized for.
       requestBody:
         required: true
         content:
@@ -719,24 +733,42 @@ paths:
               schema:
                 type: object
                 properties:
-                  results:
-                    type: array
-                    items:
-                      allOf:
-                        - type: object
-                          properties:
-                            id: { type: string }
-                            found: { type: boolean }
-                            error: { type: string, description: "Why this item was refused, when it was" }
-                        - $ref: '#/components/schemas/ReverseResult'
-                  total: { type: integer, example: 2 }
-                  found: { type: integer, example: 2 }
-                  billable_units: { type: integer, example: 2 }
-                  search_radius_meters: { type: number, format: double, example: 2000 }
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      results:
+                        type: array
+                        items:
+                          allOf:
+                            - type: object
+                              properties:
+                                id: { type: string }
+                                found: { type: boolean }
+                                error:
+                                  type: string
+                                  description: >-
+                                    Why this item was refused, when it was. An
+                                    item with an error carries no answer
+                                    fields, so it is identified by its id or
+                                    its position.
+                            - $ref: '#/components/schemas/ReverseResult'
+                          description: >-
+                            The same shape /reverse returns, flattened into the
+                            item -- except enrichment, which this endpoint does
+                            not offer.
+                      total: { type: integer, example: 2 }
+                      found: { type: integer, example: 2 }
+                      billable_units: { type: integer, example: 2 }
+                      search_radius_meters: { type: number, format: double, example: 2000 }
         "400":
           description: Empty batch, more than 100 items, or a malformed body
         "429":
-          description: Batch is larger than the remaining allowance, or than the per-second rate
+          description: >-
+            Batch is larger than the caller's remaining monthly, daily or
+            per-key allowance, or than what is left of the per-second rate
+        "500":
+          description: The lookup failed
 
   /user/api-keys/{id}/limits:
     put:

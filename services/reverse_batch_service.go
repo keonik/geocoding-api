@@ -75,10 +75,11 @@ func ReverseGeocodeBatch(db querier, items []ReverseBatchItem, radiusMeters floa
 		SearchRadiusMeters: radiusMeters,
 	}
 
-	// Positions of the items worth querying for, and their coordinates. An
-	// item rejected here contributes nothing to the queries below.
-	var at []int
-	var lngs, lats []float64
+	// The items worth querying for. One rejected here contributes nothing to
+	// the queries below, so the queries see a shorter list than the caller
+	// sent -- which is why each point remembers which result it belongs to
+	// rather than being matched back by its position in the request.
+	var points []batchPoint
 	for i, item := range items {
 		resp.Results[i].ID = item.ID
 		switch {
@@ -90,14 +91,12 @@ func ReverseGeocodeBatch(db querier, items []ReverseBatchItem, radiusMeters floa
 			resp.Results[i].ReverseResult = &ReverseResult{
 				Lat: item.Lat, Lng: item.Lng, SearchRadiusMeters: radiusMeters,
 			}
-			at = append(at, i)
-			lngs = append(lngs, item.Lng)
-			lats = append(lats, item.Lat)
+			points = append(points, batchPoint{at: i, lng: item.Lng, lat: item.Lat})
 		}
 	}
 
-	if len(at) > 0 {
-		if err := resolveReverseBatch(db, resp, at, lngs, lats, radiusMeters); err != nil {
+	if len(points) > 0 {
+		if err := resolveReverseBatch(db, resp, points, radiusMeters); err != nil {
 			return nil, err
 		}
 	}
@@ -122,12 +121,39 @@ const pointsCTE = `
 		FROM unnest($1::float8[], $2::float8[]) WITH ORDINALITY AS t(lng, lat, n)
 	)`
 
+// batchPoint is one coordinate being resolved, and where its answer belongs.
+//
+// The alternative -- parallel slices of positions, longitudes and latitudes --
+// is what made the mapping from query rows back to results hard to audit, and
+// the ordinality arithmetic had to be repeated at each use.
+type batchPoint struct {
+	at       int // index into the response's results
+	lng, lat float64
+}
+
+// ordinal is the point's position in the arrays handed to unnest, which
+// numbers from one.
+func (p batchPoint) ordinal(i int) int { return i + 1 }
+
+// coordinateArrays renders points as the two arrays every query below takes.
+func coordinateArrays(points []batchPoint) []interface{} {
+	lngs := make([]float64, len(points))
+	lats := make([]float64, len(points))
+	for i, p := range points {
+		lngs[i], lats[i] = p.lng, p.lat
+	}
+	return []interface{}{pq.Array(lngs), pq.Array(lats)}
+}
+
 // resolveReverseBatch fills in every answer, one query per concern.
-func resolveReverseBatch(db querier, resp *ReverseBatchResponse, at []int, lngs, lats []float64, radius float64) error {
-	points := []interface{}{pq.Array(lngs), pq.Array(lats)}
+func resolveReverseBatch(db querier, resp *ReverseBatchResponse, points []batchPoint, radius float64) error {
+	coords := coordinateArrays(points)
 
 	// Nearest address. LATERAL runs the same KNN walk /reverse does, once per
 	// point, inside one statement.
+	//
+	// addressColumns is spliced in unqualified, so it must not name a column
+	// the points CTE also has -- n or geom -- or the reference is ambiguous.
 	rows, err := db.Query(pointsCTE+`
 		SELECT p.n, `+addressColumns+`,
 		       ST_Y(a.geom), ST_X(a.geom), a.created_at,
@@ -138,12 +164,19 @@ func resolveReverseBatch(db querier, resp *ReverseBatchResponse, at []int, lngs,
 			WHERE ST_DWithin(a.geom::geography, p.geom::geography, $3, false)
 			ORDER BY a.geom <-> p.geom
 			LIMIT 1
-		) a ON true`, append(points, radius)...)
+		) a ON true`, append(coords, radius)...)
 	if err != nil {
-		return fmt.Errorf("failed to find the nearest addresses: %w", err)
+		if isUndefinedTable(err) || isUndefinedColumn(err) {
+			// No address data loaded. Every other field still answers, which
+			// is how /reverse treats each of its lookups: a missing table
+			// empties one field rather than the response.
+			rows = nil
+		} else {
+			return fmt.Errorf("failed to find the nearest addresses: %w", err)
+		}
 	}
 	addresses := map[int]*NearestAddress{}
-	for rows.Next() {
+	for rows != nil && rows.Next() {
 		var n int
 		var a NearestAddress
 		if err := rows.Scan(&n, &a.ID, &a.Hash, &a.HouseNumber, &a.Street, &a.Unit, &a.City,
@@ -155,9 +188,11 @@ func resolveReverseBatch(db querier, resp *ReverseBatchResponse, at []int, lngs,
 		found := a
 		addresses[n] = &found
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("failed to read the nearest addresses: %w", err)
+	if rows != nil {
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("failed to read the nearest addresses: %w", err)
+		}
 	}
 
 	// The addresses carry their accuracy and timezone like every other address
@@ -175,7 +210,7 @@ func resolveReverseBatch(db querier, resp *ReverseBatchResponse, at []int, lngs,
 		addresses[n].OhioAddress = described[i]
 	}
 
-	counties, err := containingValues(db, points, `
+	counties, err := containingValues(db, coords, "containing counties", `
 		SELECT p.n, c.county_name
 		FROM points p
 		JOIN LATERAL (
@@ -184,7 +219,7 @@ func resolveReverseBatch(db querier, resp *ReverseBatchResponse, at []int, lngs,
 			LIMIT 1
 		) c ON true`)
 	if err != nil {
-		return fmt.Errorf("failed to find the containing counties: %w", err)
+		return err
 	}
 
 	states := map[int]*ReverseState{}
@@ -195,11 +230,15 @@ func resolveReverseBatch(db querier, resp *ReverseBatchResponse, at []int, lngs,
 			SELECT state_abbr, state_name FROM us_states
 			WHERE geometry IS NOT NULL AND ST_Contains(geometry, p.geom)
 			LIMIT 1
-		) s ON true`, points...)
+		) s ON true`, coords...)
 	if err != nil {
-		return fmt.Errorf("failed to find the containing states: %w", err)
+		if isUndefinedTable(err) || isUndefinedColumn(err) {
+			stateRows = nil
+		} else {
+			return fmt.Errorf("failed to find the containing states: %w", err)
+		}
 	}
-	for stateRows.Next() {
+	for stateRows != nil && stateRows.Next() {
 		var n int
 		var st ReverseState
 		if err := stateRows.Scan(&n, &st.Code, &st.Name); err != nil {
@@ -209,20 +248,22 @@ func resolveReverseBatch(db querier, resp *ReverseBatchResponse, at []int, lngs,
 		found := st
 		states[n] = &found
 	}
-	stateRows.Close()
-	if err := stateRows.Err(); err != nil {
-		return fmt.Errorf("failed to read the containing states: %w", err)
+	if stateRows != nil {
+		stateRows.Close()
+		if err := stateRows.Err(); err != nil {
+			return fmt.Errorf("failed to read the containing states: %w", err)
+		}
 	}
 
-	zips, err := nearestZipsBatch(db, points)
+	zips, err := nearestZipsBatch(db, coords)
 	if err != nil {
 		return err
 	}
 
 	// Assign, then fill in each point's timezone from what was found.
-	for i, position := range at {
-		n := i + 1 // WITH ORDINALITY counts from one
-		result := resp.Results[position].ReverseResult
+	for i, point := range points {
+		n := point.ordinal(i)
+		result := resp.Results[point.at].ReverseResult
 		result.Address = addresses[n]
 		result.Zip = zips[n]
 		if county, ok := counties[n]; ok {
@@ -231,7 +272,7 @@ func resolveReverseBatch(db querier, resp *ReverseBatchResponse, at []int, lngs,
 		result.State = states[n]
 	}
 
-	return fillBatchTimezones(db, resp, at, lngs, lats)
+	return fillBatchTimezones(db, resp, points)
 }
 
 // statefulPointsCTE is pointsCTE with each point's state alongside it, for the
@@ -243,25 +284,31 @@ const statefulPointsCTE = `
 	)`
 
 // containingValues runs a one-column LATERAL lookup over the batch's points.
-func containingValues(db querier, points []interface{}, query string) (map[int]string, error) {
+//
+// what names the thing being looked up, so a read fault is reported as one
+// rather than inheriting the caller's "failed to find ..." wording.
+func containingValues(db querier, points []interface{}, what, query string) (map[int]string, error) {
 	values := map[int]string{}
 	rows, err := db.Query(pointsCTE+query, points...)
 	if err != nil {
-		if isUndefinedTable(err) {
+		if isUndefinedTable(err) || isUndefinedColumn(err) {
 			return values, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to look up %s: %w", what, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var n int
 		var value string
 		if err := rows.Scan(&n, &value); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read %s: %w", what, err)
 		}
 		values[n] = value
 	}
-	return values, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read %s: %w", what, err)
+	}
+	return values, nil
 }
 
 // nearestZipsBatch finds the nearest ZIP centroid to each point.
@@ -307,9 +354,9 @@ func nearestZipsBatch(db querier, points []interface{}) (map[int]*NearestZip, er
 // need different queries. Doing the fallback per point instead cost two
 // queries each, which is what a batch endpoint exists to avoid: measured at
 // 107 queries for 50 items before this, and 9 after.
-func fillBatchTimezones(db querier, resp *ReverseBatchResponse, at []int, lngs, lats []float64) error {
-	points := []interface{}{pq.Array(lngs), pq.Array(lats)}
-	zones, err := containingValues(db, points, `
+func fillBatchTimezones(db querier, resp *ReverseBatchResponse, points []batchPoint) error {
+	coords := coordinateArrays(points)
+	zones, err := containingValues(db, coords, "timezone boundaries", `
 		SELECT p.n, b.geoid
 		FROM points p
 		JOIN LATERAL (
@@ -321,43 +368,47 @@ func fillBatchTimezones(db querier, resp *ReverseBatchResponse, at []int, lngs, 
 		WHERE EXISTS (SELECT 1 FROM boundary_loads l
 		              WHERE l.layer = 'timezone' AND l.state_fips = '`+NationalScope+`' AND l.available)`)
 	if err != nil {
-		return fmt.Errorf("failed to find the timezone boundaries: %w", err)
+		return err
 	}
 
 	now := time.Now()
-	// What the polygons answered, and what is left for the fallback.
-	var withState, withoutState []int
-	for i, position := range at {
-		n := i + 1 // WITH ORDINALITY counts from one
-		result := resp.Results[position].ReverseResult
-		if zone, ok := zones[n]; ok {
+	// What the polygons answered, and what is left for the fallback. The two
+	// groups need different queries, so they are gathered rather than asked
+	// point by point.
+	var inState, stateless []batchPoint
+	for i, point := range points {
+		result := resp.Results[point.at].ReverseResult
+		if zone, ok := zones[point.ordinal(i)]; ok {
 			result.Timezone = &zone
 			result.TimezoneSource = TimezoneBoundarySource
 			result.TimezoneDetails = timezoneDetails(zone, now)
 			continue
 		}
 		if result.State != nil {
-			withState = append(withState, position)
+			inState = append(inState, point)
 		} else {
-			withoutState = append(withoutState, position)
+			stateless = append(stateless, point)
 		}
 	}
 
 	for _, group := range []struct {
-		positions []int
-		inState   bool
-	}{{withState, true}, {withoutState, false}} {
-		if len(group.positions) == 0 {
+		points []batchPoint
+		zones  func(querier, *ReverseBatchResponse, []batchPoint) (map[int]string, error)
+	}{
+		{inState, zipZonesInState},
+		{stateless, zipZonesNearby},
+	} {
+		if len(group.points) == 0 {
 			continue
 		}
-		fallback, err := zipZonesForPoints(db, resp, group.positions, group.inState)
+		fallback, err := group.zones(db, resp, group.points)
 		if err != nil {
 			return err
 		}
-		for _, position := range group.positions {
-			result := resp.Results[position].ReverseResult
-			if zone, ok := fallback[position]; ok {
+		for _, point := range group.points {
+			if zone, ok := fallback[point.at]; ok {
 				zone := zone
+				result := resp.Results[point.at].ReverseResult
 				result.Timezone = &zone
 				result.TimezoneSource = TimezoneZIPSource
 				result.TimezoneDetails = timezoneDetails(zone, now)
@@ -367,28 +418,11 @@ func fillBatchTimezones(db querier, resp *ReverseBatchResponse, at []int, lngs, 
 	return nil
 }
 
-// zipZonesForPoints is the ZIP-derived zone for a group of points, in one
-// query.
-//
-// inState says which query: a point inside a state takes the nearest ZIP in
-// that state, unbounded, and a point in none takes the nearest within
-// timezoneSearchMeters. They are separate statements rather than one with a
-// CASE because a CASE hides the distance bound from the index -- the same
-// mistake, measured at 556ms against 0.5ms, that timezoneSearchMeters
-// documents.
-func zipZonesForPoints(db querier, resp *ReverseBatchResponse, positions []int, inState bool) (map[int]string, error) {
-	lngs := make([]float64, len(positions))
-	lats := make([]float64, len(positions))
-	states := make([]string, len(positions))
-	for i, position := range positions {
-		r := resp.Results[position].ReverseResult
-		lngs[i], lats[i] = r.Lng, r.Lat
-		if r.State != nil {
-			states[i] = r.State.Code
-		}
-	}
-
-	query := `
+// zipZonesInState is the nearest same-state ZIP's zone for each point, in one
+// query. Unbounded, like the single-point lookup: inside a known state the
+// nearest ZIP in it is the best answer at any distance.
+func zipZonesInState(db querier, resp *ReverseBatchResponse, points []batchPoint) (map[int]string, error) {
+	return zipZones(db, resp, points, `
 		SELECT p.n, z.timezone
 		FROM points p
 		JOIN LATERAL (
@@ -396,45 +430,67 @@ func zipZonesForPoints(db querier, resp *ReverseBatchResponse, positions []int, 
 			WHERE z.timezone <> '' AND z.state_code = p.state
 			ORDER BY z.geog <-> p.geom::geography
 			LIMIT 1
-		) z ON true`
-	args := []interface{}{pq.Array(lngs), pq.Array(lats), pq.Array(states)}
-	if !inState {
-		query = `
+		) z ON true`)
+}
+
+// zipZonesNearby is the same for points in no state, where the search is
+// bounded instead: a distant centroid is no evidence about a point at sea.
+//
+// A separate statement rather than a CASE inside one, because a CASE hides the
+// distance bound from the index -- the mistake timezoneSearchMeters documents,
+// measured at 556ms against 0.5ms.
+func zipZonesNearby(db querier, resp *ReverseBatchResponse, points []batchPoint) (map[int]string, error) {
+	return zipZones(db, resp, points, `
 		SELECT p.n, z.timezone
 		FROM points p
 		JOIN LATERAL (
 			SELECT timezone FROM zip_codes z
 			WHERE z.timezone <> ''
-			  AND ST_DWithin(z.geog, p.geom::geography, $4, false)
+			  AND ST_DWithin(z.geog, p.geom::geography, `+fmt.Sprintf("%g", timezoneSearchMeters)+`, false)
 			ORDER BY z.geog <-> p.geom::geography
 			LIMIT 1
-		) z ON true`
-		args = append(args, timezoneSearchMeters)
+		) z ON true`)
+}
+
+// zipZones runs one of those queries and keys the answers by the result each
+// point belongs to.
+func zipZones(db querier, resp *ReverseBatchResponse, points []batchPoint, query string) (map[int]string, error) {
+	lngs := make([]float64, len(points))
+	lats := make([]float64, len(points))
+	states := make([]string, len(points))
+	for i, point := range points {
+		lngs[i], lats[i] = point.lng, point.lat
+		if state := resp.Results[point.at].ReverseResult.State; state != nil {
+			states[i] = state.Code
+		}
 	}
 
-	rows, err := db.Query(statefulPointsCTE+query, args...)
+	rows, err := db.Query(statefulPointsCTE+query, pq.Array(lngs), pq.Array(lats), pq.Array(states))
 	if err != nil {
 		if isUndefinedColumn(err) || isUndefinedTable(err) {
 			// Before migration 21 there is no geog to order by, and a
 			// deployment may carry no ZIP data at all.
 			return map[int]string{}, nil
 		}
-		return nil, fmt.Errorf("failed to find the nearest ZIP timezones: %w", err)
+		return nil, fmt.Errorf("failed to look up nearest ZIP timezones: %w", err)
 	}
 	defer rows.Close()
 
-	byPosition := map[int]string{}
+	byResult := map[int]string{}
 	for rows.Next() {
 		var n int
 		var zone string
 		if err := rows.Scan(&n, &zone); err != nil {
 			return nil, fmt.Errorf("failed to read a nearest ZIP timezone: %w", err)
 		}
-		if n >= 1 && n <= len(positions) {
-			byPosition[positions[n-1]] = zone
+		if n >= 1 && n <= len(points) {
+			byResult[points[n-1].at] = zone
 		}
 	}
-	return byPosition, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read nearest ZIP timezones: %w", err)
+	}
+	return byResult, nil
 }
 
 // resolvedSomewhere is whether an answer amounts to a place.
@@ -443,8 +499,12 @@ func zipZonesForPoints(db querier, resp *ReverseBatchResponse, positions []int, 
 // The nearest ZIP is not on its own: that lookup is unbounded -- it reports the
 // nearest centroid and how far away it is, which for a point in the Atlantic is
 // a real ZIP four thousand kilometres away. The field stays, because /reverse
-// returns it and the two must agree, but it only counts as a hit within the
-// radius a caller could plausibly mean.
+// returns it and the two must agree, but it only counts as a hit inside the
+// radius the caller asked for, which is what the documentation promises.
+//
+// Measured against the cap rather than that radius, as this first did, a point
+// 45km off the Florida coast came back found with every field null and a
+// requested radius of one metre.
 //
 // So a caller can total the hits instead of comparing five fields and deciding
 // for themselves what an ocean looks like.
@@ -455,5 +515,5 @@ func resolvedSomewhere(r *ReverseResult) bool {
 	if r.Address != nil || r.County != nil || r.State != nil {
 		return true
 	}
-	return r.Zip != nil && r.Zip.DistanceMeters <= maxReverseRadiusMeters
+	return r.Zip != nil && r.Zip.DistanceMeters <= r.SearchRadiusMeters
 }

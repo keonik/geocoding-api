@@ -242,3 +242,168 @@ func TestReverseBatchQueryCountDoesNotGrowWithItems(t *testing.T) {
 		t.Errorf("a single item took %d queries", one)
 	}
 }
+
+// Each lookup degrades on its own, as /reverse's fields do. A deployment part
+// way through its migrations must still get the answers it can rather than
+// losing all hundred to one lookup that cannot run yet.
+//
+// Simulated by dropping the column each query depends on, which is what a
+// pending migration looks like -- and which stays inside the private schema.
+// Dropping the table instead would expose the real one in public: this test
+// passed against an empty database and answered "Franklin" from production
+// data against a populated one.
+func TestReverseBatchDegradesPerLookup(t *testing.T) {
+	for _, tc := range []struct {
+		table, column string
+	}{
+		{"ohio_counties", "bounds_geometry"},
+		{"us_states", "geometry"},
+		{"zip_codes", "geog"},
+		{"ohio_addresses", "geom"},
+	} {
+		t.Run("without "+tc.table+"."+tc.column, func(t *testing.T) {
+			db := setupReverseDB(t)
+			if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s CASCADE", tc.table, tc.column)); err != nil {
+				t.Fatalf("drop %s.%s: %v", tc.table, tc.column, err)
+			}
+
+			batch, err := ReverseGeocodeBatch(db, []ReverseBatchItem{
+				{ID: "a", Lat: 39.9613, Lng: -83.0008},
+				{ID: "b", Lat: 41.5045, Lng: -81.6931},
+			}, 0)
+			if err != nil {
+				t.Fatalf("the whole batch failed for want of %s.%s: %v", tc.table, tc.column, err)
+			}
+			if len(batch.Results) != 2 {
+				t.Fatalf("got %d results", len(batch.Results))
+			}
+			for _, r := range batch.Results {
+				if r.Error != "" {
+					t.Errorf("%s carried an error: %s", r.ID, r.Error)
+				}
+				if r.ReverseResult == nil {
+					t.Fatalf("%s has no result", r.ID)
+				}
+			}
+
+			// The field backed by the missing column is empty; the others are
+			// not the caller's problem.
+			first := batch.Results[0]
+			switch tc.table {
+			case "ohio_counties":
+				if first.County != nil {
+					t.Errorf("county answered without its geometry: %v", *first.County)
+				}
+				if first.Address == nil {
+					t.Error("addresses stopped answering because counties could not")
+				}
+			case "us_states":
+				if first.State != nil {
+					t.Errorf("state answered without its geometry: %+v", first.State)
+				}
+				if first.Address == nil {
+					t.Error("addresses stopped answering because states could not")
+				}
+			case "zip_codes":
+				if first.Zip != nil {
+					t.Errorf("zip answered without geog: %+v", first.Zip)
+				}
+				if first.County == nil {
+					t.Error("counties stopped answering because ZIPs could not")
+				}
+			case "ohio_addresses":
+				if first.Address != nil {
+					t.Errorf("address answered without geom: %+v", first.Address)
+				}
+				if first.County == nil {
+					t.Error("counties stopped answering because addresses could not")
+				}
+			}
+		})
+	}
+}
+
+// Two items at the same coordinate must get the same answer, and each must get
+// its own -- the queries return one row per point, and a mapping that keyed by
+// coordinate rather than by position would collapse them.
+func TestReverseBatchHandlesDuplicateCoordinates(t *testing.T) {
+	db := setupReverseDB(t)
+
+	batch, err := ReverseGeocodeBatch(db, []ReverseBatchItem{
+		{ID: "first", Lat: 39.9613, Lng: -83.0008},
+		{ID: "second", Lat: 39.9613, Lng: -83.0008},
+		{ID: "third", Lat: 41.5045, Lng: -81.6931},
+		{ID: "fourth", Lat: 39.9613, Lng: -83.0008},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Results) != 4 {
+		t.Fatalf("got %d results for 4 items", len(batch.Results))
+	}
+	for _, i := range []int{0, 1, 3} {
+		r := batch.Results[i]
+		if r.ReverseResult == nil || r.Address == nil {
+			t.Fatalf("result %d (%s) did not resolve", i, r.ID)
+		}
+		if r.Address.FullAddress != batch.Results[0].Address.FullAddress {
+			t.Errorf("%s resolved to %s, but the identical coordinate at 0 gave %s",
+				r.ID, r.Address.FullAddress, batch.Results[0].Address.FullAddress)
+		}
+	}
+	// And the odd one out kept its own answer rather than a neighbour's.
+	if batch.Results[2].ReverseResult == nil {
+		t.Fatal("the third item did not resolve")
+	}
+	if batch.Results[2].Address != nil &&
+		batch.Results[2].Address.FullAddress == batch.Results[0].Address.FullAddress {
+		t.Error("a different coordinate got the first item's answer")
+	}
+	// Every item is billed, duplicates included.
+	if batch.BillableUnits != 4 {
+		t.Errorf("billable units = %d, want 4", batch.BillableUnits)
+	}
+}
+
+// found means the coordinate resolved to a place, judged against the radius
+// the caller asked for -- not against the cap. A point 45km off the coast with
+// a one-metre radius is not a hit because a ZIP centroid happens to be 45km
+// away.
+func TestReverseBatchFoundRespectsTheRequestedRadius(t *testing.T) {
+	db := setupReverseDB(t)
+
+	// Just north of the fixture's state envelope (which ends at 42.0), so
+	// nothing contains the point and only the ZIP lookup has anything to say
+	// -- and the nearest ZIP is ~43km off, inside the 50km cap, so a wider
+	// radius can reach it.
+	far := []ReverseBatchItem{{ID: "offshore", Lat: 42.05, Lng: -83.6}}
+
+	tight, err := ReverseGeocodeBatch(db, far, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tight.Results[0].Zip == nil {
+		t.Skip("fixture has no ZIP to be far from")
+	}
+	distance := tight.Results[0].Zip.DistanceMeters
+	if distance <= 1 {
+		t.Skipf("the nearest ZIP is %.0fm away, too close to test the bound", distance)
+	}
+	if tight.Results[0].Found {
+		t.Errorf("found with a 1m radius and the nearest ZIP %.0fm away", distance)
+	}
+
+	if distance >= maxReverseRadiusMeters {
+		t.Skipf("the nearest ZIP is %.0fm away, beyond the %.0fm cap, so no radius reaches it",
+			distance, maxReverseRadiusMeters)
+	}
+
+	// The same point with a radius that reaches it.
+	loose, err := ReverseGeocodeBatch(db, far, distance+1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loose.Results[0].Found {
+		t.Errorf("not found with a radius of %.0fm and the ZIP %.0fm away", distance+1000, distance)
+	}
+}
