@@ -165,8 +165,8 @@ func keyExceededScope(s *KeyLimitStatus) string {
 
 // incrementKeyCounters moves a key's own counters. Best effort, like the user
 // counters: the audit row is the durable record and the rebuild recovers drift.
-func (as *AuthService) incrementKeyCounters(keyID, units int) error {
-	_, err := database.DB.Exec(`
+func (as *AuthService) incrementKeyCounters(db *sql.DB, keyID, units int) error {
+	_, err := db.Exec(`
 		INSERT INTO api_key_counters (api_key_id, period_kind, period_start, count, updated_at)
 		VALUES
 			($1, 'month', date_trunc('month', CURRENT_DATE)::date, $2, NOW()),

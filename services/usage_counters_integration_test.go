@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 
@@ -281,34 +280,9 @@ func TestRebuildCorrectsDrift(t *testing.T) {
 	}
 }
 
-// The rebuild is only a safety net if something can actually call it. It was
-// unreachable when first written -- exported, tested, and wired to nothing --
-// which would have left counter drift permanent in production.
-func TestRebuildIsReachableFromTheAdminRoute(t *testing.T) {
-	routes, err := os.ReadFile("../main.go")
-	if err != nil {
-		t.Fatalf("read main.go: %v", err)
-	}
-	if !strings.Contains(string(routes), "handlers.RebuildUsageCountersHandler") {
-		t.Error("RebuildUsageCounters has no route; counter drift would be uncorrectable")
-	}
-
-	handler, err := os.ReadFile("../handlers/admin_handlers.go")
-	if err != nil {
-		t.Fatalf("read admin_handlers.go: %v", err)
-	}
-	if !strings.Contains(string(handler), "func RebuildUsageCountersHandler") {
-		t.Error("the route names a handler that does not exist")
-	}
-
-	// It must sit on the admin group. Rebuilding recomputes every user's
-	// counters, so an ordinary caller must not be able to trigger it.
-	adminSection := string(routes)
-	idx := strings.Index(adminSection, `admin.POST("/usage-counters/rebuild"`)
-	if idx < 0 {
-		t.Fatal("rebuild route is not registered on the admin group")
-	}
-}
+// Whether the rebuild is reachable is now asserted in package main, against
+// the routing table itself rather than by grepping main.go for the text of a
+// route registration: see TestAdminRebuildRouteIsRegistered.
 
 // withSearchPathOption adds a libpq "options" parameter setting search_path,
 // so the schema scoping rides on each connection rather than on the role.

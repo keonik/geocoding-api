@@ -137,7 +137,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 
 			if !status.Within {
 				// Record over-limit usage (non-billable)
-				overLimitEndpoint := getEndpointName(path)
+				overLimitEndpoint := endpointFor(c)
 				method := c.Request().Method
 				statusCode := http.StatusTooManyRequests
 				responseTime := int(time.Since(startTime).Milliseconds())
@@ -225,7 +225,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 
 				// Recorded as non-billable, like the plan-limit rejection: the
 				// caller did not get what they asked for.
-				endpointName, method, ip, ua := getEndpointName(path), c.Request().Method, c.RealIP(), c.Request().UserAgent()
+				endpointName, method, ip, ua := endpointFor(c), c.Request().Method, c.RealIP(), c.Request().UserAgent()
 				elapsed := int(time.Since(startTime).Milliseconds())
 				go func() {
 					if err := services.Auth.RecordUsage(user.ID, keyRecord.ID, endpointName, method,
@@ -252,9 +252,11 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				})
 			}
 
-			// Check endpoint permissions
-			endpoint := getEndpointName(path)
-			if !services.Auth.HasPermission(keyRecord, endpoint) {
+			// Check endpoint permissions. A request that matched no route is
+			// left alone: there is no endpoint to hold a permission for, and
+			// echo's 404 is the useful answer.
+			endpoint, routed := ScopeForRequest(c)
+			if routed && !services.Auth.HasPermission(keyRecord, endpoint) {
 				return c.JSON(http.StatusForbidden, handlers.GeocodeResponse{
 					Success: false,
 					Error:   "API key does not have permission for this endpoint",
@@ -272,7 +274,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 			// so the answer is the same one RecordUsage bills on.
 			billable := true
 			if token := c.QueryParam("session"); token != "" {
-				if !services.SessionEligible(path) {
+				if !services.SessionEligible(c.Path()) {
 					return c.JSON(http.StatusBadRequest, handlers.GeocodeResponse{
 						Success: false,
 						Error:   "Session tokens apply to /addresses/search only",
@@ -332,53 +334,6 @@ func APIKeyAuth() echo.MiddlewareFunc {
 			return err
 		}
 	}
-}
-
-// getEndpointName extracts the endpoint name from the path for categorization
-func getEndpointName(path string) string {
-	if strings.Contains(path, "/coverage") {
-		return "coverage"
-	}
-	if strings.Contains(path, "/reverse") {
-		return "reverse"
-	}
-	if strings.Contains(path, "/enrich") {
-		return "enrich"
-	}
-	if strings.Contains(path, "/geocode/") {
-		return "geocode"
-	}
-	if strings.Contains(path, "/distance/") {
-		return "distance"
-	}
-	if strings.Contains(path, "/nearby/") {
-		return "nearby"
-	}
-	if strings.Contains(path, "/proximity/") {
-		return "proximity"
-	}
-	if strings.Contains(path, "/search") {
-		return "search"
-	}
-	if strings.Contains(path, "/address/validate") {
-		return "addresses"
-	}
-	if strings.Contains(path, "/addresses") {
-		return "addresses"
-	}
-	if strings.Contains(path, "/counties") {
-		return "counties"
-	}
-	if strings.Contains(path, "/cities") {
-		return "cities"
-	}
-	if strings.Contains(path, "/states") {
-		return "states"
-	}
-	if strings.Contains(path, "/admin/") {
-		return "admin"
-	}
-	return "unknown"
 }
 
 // RequireUserAuth middleware for endpoints that need user authentication (not API key)
