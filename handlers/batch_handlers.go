@@ -1,12 +1,8 @@
 package handlers
 
 import (
-	"math"
 	"net/http"
-	"strconv"
-	"time"
 
-	"geocoding-api/models"
 	"geocoding-api/services"
 
 	"github.com/labstack/echo/v4"
@@ -34,87 +30,8 @@ func BatchGeocodeHandler(c echo.Context) error {
 		})
 	}
 
-	if len(req.Items) == 0 {
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{
-			Success: false,
-			Error:   "items is empty",
-		})
-	}
-	if len(req.Items) > services.MaxBatchItems {
-		return c.JSON(http.StatusBadRequest, GeocodeResponse{
-			Success: false,
-			Error:   "Batch is larger than the limit",
-			Data: map[string]interface{}{
-				"items": len(req.Items), "max_items": services.MaxBatchItems,
-			},
-		})
-	}
-
-	// The quota check in APIKeyAuth ran before this handler, when the batch
-	// size was still unknown -- it only established that the caller had at
-	// least one call left. A caller one call from their limit could otherwise
-	// spend a hundred here, so the remaining allowance is checked against the
-	// actual size before doing the work.
-	if status, ok := c.Get("rate_limit_status").(*services.RateLimitStatus); ok && !status.Unlimited() {
-		if remaining, limited := remainingAllowance(status); limited && len(req.Items) > remaining {
-			return c.JSON(http.StatusTooManyRequests, GeocodeResponse{
-				Success: false,
-				Error:   "Batch is larger than your remaining allowance",
-				Data: map[string]interface{}{
-					"items":     len(req.Items),
-					"remaining": remaining,
-					"message":   "Split the batch or wait for the limit to reset",
-				},
-			})
-		}
-	}
-
-	// The burst bucket counts lookups, and the middleware could only charge
-	// one: the batch's size was still in the unread body. The rest is
-	// charged here, before the work. Without it a batch is a hundred lookups
-	// for the price of one token, and a caller at the allowed request rate
-	// drives a hundred times the allowed lookup rate -- on the heaviest path
-	// there is.
-	if perSecond, ok := c.Get(services.BurstLimitKey).(int); ok && perSecond > 0 && len(req.Items) > 1 {
-		if key, ok := c.Get("api_key").(*models.APIKey); ok {
-			if allowed, wait := services.KeyBursts.AllowN(key.ID, perSecond, len(req.Items)-1, time.Now()); !allowed {
-				retryAfter := int(math.Ceil(wait.Seconds()))
-				if retryAfter < 1 {
-					retryAfter = 1
-				}
-				c.Response().Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				c.Response().Header().Set("X-RateLimit-Scope", services.ScopeBurst)
-				c.Response().Header().Set("X-RateLimit-Limit-Second", strconv.Itoa(perSecond))
-				return c.JSON(http.StatusTooManyRequests, GeocodeResponse{
-					Success: false,
-					Error:   "This batch is more lookups per second than the key's rate allows",
-					Data: map[string]interface{}{
-						"items":       len(req.Items),
-						"limit":       perSecond,
-						"limit_scope": services.ScopeBurst,
-						"retry_after": retryAfter,
-						"message":     "Wait the stated seconds, or send a smaller batch",
-					},
-				})
-			}
-		}
-	}
-
-	// The same check against the key's own cap, which can be tighter than the
-	// plan. Without it a key capped at 50 submits a batch of 100.
-	if ks, ok := c.Get(services.KeyLimitStatusKey).(*services.KeyLimitStatus); ok {
-		if remaining, capped := ks.Remaining(); capped && len(req.Items) > remaining {
-			return c.JSON(http.StatusTooManyRequests, GeocodeResponse{
-				Success: false,
-				Error:   "Batch is larger than this API key's remaining allowance",
-				Data: map[string]interface{}{
-					"items":     len(req.Items),
-					"remaining": remaining,
-					"scope":     "key",
-					"message":   "Split the batch, or raise this key's own cap",
-				},
-			})
-		}
+	if refused, err := refuseBatch(c, len(req.Items)); refused {
+		return err
 	}
 
 	result, err := services.BatchGeocode(services.GetDB(), req.Items)

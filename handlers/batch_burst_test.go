@@ -95,3 +95,53 @@ func TestBatchWithoutABurstLimitIsNotCharged(t *testing.T) {
 		t.Error("a batch was burst-refused with no limit in force")
 	}
 }
+
+// Both batch endpoints share the allowance checks, so both must actually stop
+// when one refuses. c.JSON returns nil on success, so a helper that reported
+// only its error told the caller "no problem" for a refusal it had just
+// written -- and the handler did the work anyway, after answering 429.
+func TestRefusedBatchDoesNotDoTheWork(t *testing.T) {
+	const perSecond = 25
+
+	for _, tc := range []struct {
+		name    string
+		keyID   int
+		path    string
+		body    string
+		handler echo.HandlerFunc
+	}{
+		{"forward", 990002, "/api/v1/geocode/batch", `{"items":[` +
+			strings.TrimSuffix(strings.Repeat(`{"zip_code":"43215"},`, services.MaxBatchItems), ",") + `]}`,
+			BatchGeocodeHandler},
+		{"reverse", 990003, "/api/v1/reverse/batch", `{"items":[` +
+			strings.TrimSuffix(strings.Repeat(`{"lat":39.96,"lng":-83.0},`, services.MaxBatchItems), ",") + `]}`,
+			ReverseBatchHandler},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A drained bucket, so the batch below is refused.
+			// A key of its own per case: a bucket drained by the previous
+			// case cannot be drained again until it refills.
+			if ok, _ := services.KeyBursts.AllowN(tc.keyID, perSecond, services.BurstDepthFor(perSecond), time.Now()); !ok {
+				t.Fatal("could not drain a fresh bucket")
+			}
+
+			e := echo.New()
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.Set(services.BurstLimitKey, perSecond)
+			c.Set("api_key", &models.APIKey{ID: tc.keyID})
+
+			// There is no database in this test, so doing the work would
+			// panic -- which is the assertion: a refused batch must not
+			// reach it.
+			if err := tc.handler(c); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusTooManyRequests {
+				t.Errorf("status = %d, want 429", rec.Code)
+			}
+		})
+	}
+}
