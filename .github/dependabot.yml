@@ -1,0 +1,32 @@
+# Minor/patch bumps are grouped into one PR per ecosystem; each major gets its
+# own PR so a breaking upgrade can be fixed (by hand or agent) in isolation.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directories: [/, /frontend]
+    schedule:
+      interval: daily
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: docker
+    directories: [/, /database]
+    schedule:
+      interval: daily
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
