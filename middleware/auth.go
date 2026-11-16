@@ -13,13 +13,13 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // BillableUnits reports how many lookups the handler performed, defaulting to
 // one. A batch declares its item count via services.BillableUnitsKey, so it is
 // billed and rate-limited as that many calls rather than as a single request.
-func BillableUnits(c echo.Context) int {
+func BillableUnits(c *echo.Context) int {
 	if n, ok := c.Get(services.BillableUnitsKey).(int); ok && n > 1 {
 		return n
 	}
@@ -41,7 +41,7 @@ func scopeLabel(scope string) string {
 // APIKeyAuth middleware validates API keys and enforces rate limits
 func APIKeyAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			// Skip authentication for certain endpoints
 			path := c.Request().URL.Path
 			skipPaths := []string{
@@ -296,7 +296,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 				state := services.Sessions.Count(keyRecord.ID, token, time.Now())
 				billable = state.Billed
 				RecordSessionCall(state.Billed)
-				c.Response().Before(func() { setSessionHeaders(c, state) })
+				echoResponse(c).Before(func() { setSessionHeaders(c, state) })
 			}
 
 			// Store user and key info in context for handlers
@@ -310,7 +310,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 			// Capture needed values before goroutine (don't pass context to goroutine)
 			responseTime := int(time.Since(startTime).Milliseconds())
 			method := c.Request().Method
-			statusCode := c.Response().Status
+			_, statusCode := echo.ResolveResponseStatus(c.Response(), nil)
 			ipAddress := c.RealIP()
 			userAgent := c.Request().UserAgent()
 
@@ -339,7 +339,7 @@ func APIKeyAuth() echo.MiddlewareFunc {
 // RequireUserAuth middleware for endpoints that need user authentication (not API key)
 func RequireUserAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			// Get Authorization header
 			authHeader := c.Request().Header.Get("Authorization")
 			if authHeader == "" {
@@ -393,7 +393,7 @@ func RequireUserAuth() echo.MiddlewareFunc {
 // re-querying as a fallback would quietly reintroduce the cost this removes.
 func UsageHeader() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			// Registered BEFORE next() runs, and deliberately so.
 			//
 			// echo writes the header block on the handler's first write, which
@@ -405,7 +405,7 @@ func UsageHeader() echo.MiddlewareFunc {
 			//
 			// A Before hook runs at WriteHeader time, so the values land while
 			// the block can still be changed.
-			c.Response().Before(func() {
+			echoResponse(c).Before(func() {
 				h := c.Response().Header()
 
 				// The rate, on every served response. Without it a caller
@@ -456,7 +456,7 @@ func isAdminEmail(email string) bool {
 // RequireAdminAuth middleware ensures user is authenticated via JWT and has admin privileges
 func RequireAdminAuth() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			log.Printf("[AdminAuth] Request: %s %s", c.Request().Method, c.Request().URL.Path)
 
 			// Use JWT authentication for admin routes
@@ -530,7 +530,7 @@ func RequireAdminAuth() echo.MiddlewareFunc {
 // The headers go on before the body is written. Setting them afterwards is
 // how this codebase once dropped an entire header block on the wire while the
 // tests, which read them off the recorder, stayed green.
-func denyBurst(c echo.Context, perSecond int, planType string, wait time.Duration) error {
+func denyBurst(c *echo.Context, perSecond int, planType string, wait time.Duration) error {
 	// Rounded up: a wait of 1.2s reported as 1 invites a retry that is
 	// refused again. A batch charging many tokens at once can wait several
 	// seconds, so this is not always the one-second case.
@@ -580,9 +580,16 @@ func burstLimitFor(planType string) int {
 
 // setSessionHeaders tells a client where its session stands, so it can pace
 // itself rather than discovering the end of one from a bill.
-func setSessionHeaders(c echo.Context, state services.SessionState) {
+func setSessionHeaders(c *echo.Context, state services.SessionState) {
 	h := c.Response().Header()
 	h.Set("X-Session-Billed", strconv.FormatBool(state.Billed))
 	h.Set("X-Session-Calls-Remaining", strconv.Itoa(state.Remaining))
 	h.Set("X-Session-Expires-In", strconv.Itoa(int(state.ExpiresIn.Seconds())))
+}
+
+// echoResponse returns the *echo.Response behind c.Response(), which v5
+// exposes only as an http.ResponseWriter. Contexts echo creates always have one.
+func echoResponse(c *echo.Context) *echo.Response {
+	r, _ := echo.UnwrapResponse(c.Response())
+	return r
 }

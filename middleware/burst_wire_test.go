@@ -9,7 +9,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // The 429 a throttled caller actually receives, over a real connection:
@@ -17,7 +17,7 @@ import (
 // dropped on the wire and a recorder-based test would not notice.
 func TestBurstRejectionReachesTheClient(t *testing.T) {
 	e := echo.New()
-	e.GET("/api/v1/geocode/:zip", func(c echo.Context) error {
+	e.GET("/api/v1/geocode/:zip", func(c *echo.Context) error {
 		return denyBurst(c, 25, "pro", 120*time.Millisecond)
 	})
 	srv := httptest.NewServer(e)

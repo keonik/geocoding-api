@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 const sessionBillingSchema = "session_billing_probe"
@@ -25,7 +25,7 @@ func TestSessionCallsAreRecordedUnbilled(t *testing.T) {
 
 	e := echo.New()
 	e.Use(APIKeyAuth())
-	e.GET("/api/v1/addresses/search", func(c echo.Context) error {
+	e.GET("/api/v1/addresses/search", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
 	})
 

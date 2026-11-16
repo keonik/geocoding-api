@@ -14,13 +14,13 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // parseLatLng reads and range-checks the lat and lng query parameters. A
 // non-empty problem is the caller's mistake, for a 400; with the range checked
 // here, any error from the lookup that follows is the server's.
-func parseLatLng(c echo.Context) (lat, lng float64, problem string) {
+func parseLatLng(c *echo.Context) (lat, lng float64, problem string) {
 	latRaw, lngRaw := c.QueryParam("lat"), c.QueryParam("lng")
 	if latRaw == "" || lngRaw == "" {
 		return 0, 0, "Both lat and lng are required"
@@ -56,7 +56,7 @@ type EnrichResponse struct {
 // districts, school districts, and incorporated place.
 //
 // GET /api/v1/enrich?lat=39.9612&lng=-83.0007[&fields=census,cd]
-func EnrichHandler(c echo.Context) error {
+func EnrichHandler(c *echo.Context) error {
 	lat, lng, problem := parseLatLng(c)
 	if problem != "" {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
@@ -101,7 +101,7 @@ const boundaryLoadTimeout = 30 * time.Minute
 // a queue. Progress is read from GET /admin/boundaries.
 //
 // POST /api/v1/admin/boundaries/load {"state": "OH", "layers": ["tract", "congressional_district"]}
-func LoadBoundariesHandler(c echo.Context) error {
+func LoadBoundariesHandler(c *echo.Context) error {
 	var req LoadBoundariesRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{Success: false, Error: "Malformed body"})
@@ -194,7 +194,7 @@ func runBoundaryLoad(db *sql.DB, claim *services.BoundaryClaim) {
 // GetBoundaryLoadsHandler lists every layer load and how it went.
 //
 // GET /api/v1/admin/boundaries
-func GetBoundaryLoadsHandler(c echo.Context) error {
+func GetBoundaryLoadsHandler(c *echo.Context) error {
 	loads, err := services.ListBoundaryLoads(services.GetDB())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{Success: false, Error: err.Error()})

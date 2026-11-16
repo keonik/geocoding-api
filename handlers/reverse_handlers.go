@@ -6,7 +6,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // ReverseGeocodeHandler resolves a coordinate to what is there.
@@ -15,7 +15,7 @@ import (
 // point-to-state, via /states/lookup.
 //
 // GET /api/v1/reverse?lat=39.9612&lng=-83.0007[&radius=2000][&fields=census,cd]
-func ReverseGeocodeHandler(c echo.Context) error {
+func ReverseGeocodeHandler(c *echo.Context) error {
 	lat, lng, problem := parseLatLng(c)
 	if problem != "" {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{

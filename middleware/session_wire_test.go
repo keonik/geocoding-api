@@ -8,7 +8,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // A session token on an endpoint that does not bill by session is refused
@@ -41,7 +41,7 @@ func TestSessionHeadersReachTheClient(t *testing.T) {
 	state := services.SessionState{Billed: false, Remaining: 17, ExpiresIn: 119 * 1e9}
 
 	e := echo.New()
-	e.GET("/api/v1/addresses/search", func(c echo.Context) error {
+	e.GET("/api/v1/addresses/search", func(c *echo.Context) error {
 		setSessionHeaders(c, state)
 		return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
 	})

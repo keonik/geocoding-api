@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // SearchCitiesHandler handles city search requests
-func SearchCitiesHandler(c echo.Context) error {
+func SearchCitiesHandler(c *echo.Context) error {
 	var params models.CitySearchParams
 
 	// Parse query parameters
@@ -95,7 +95,7 @@ func SearchCitiesHandler(c echo.Context) error {
 }
 
 // GetCityHandler retrieves a specific city by ID
-func GetCityHandler(c echo.Context) error {
+func GetCityHandler(c *echo.Context) error {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -122,7 +122,7 @@ func GetCityHandler(c echo.Context) error {
 }
 
 // GetCityZIPCodesHandler returns ZIP codes for a city
-func GetCityZIPCodesHandler(c echo.Context) error {
+func GetCityZIPCodesHandler(c *echo.Context) error {
 	city := c.QueryParam("city")
 	state := c.QueryParam("state")
 

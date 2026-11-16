@@ -7,7 +7,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // mvtContentType is what every vector tile client expects.
@@ -25,7 +25,7 @@ const mvtContentType = "application/vnd.mapbox-vector-tile"
 // Layers are separate rather than combined because the scope a caller needs
 // differs: counties and states are distinct permissions on every other
 // endpoint, and one tile carrying both would have to demand both.
-func GetTileHandler(c echo.Context) error {
+func GetTileHandler(c *echo.Context) error {
 	layerName := c.Param("layer")
 	layer, ok := services.TileLayers[layerName]
 	if !ok {
@@ -76,7 +76,7 @@ func GetTileHandler(c echo.Context) error {
 	return c.Blob(http.StatusOK, mvtContentType, tile)
 }
 
-func tileBadRequest(c echo.Context, message string) error {
+func tileBadRequest(c *echo.Context, message string) error {
 	return c.JSON(http.StatusBadRequest, GeocodeResponse{
 		Success: false,
 		Error:   message,

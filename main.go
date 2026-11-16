@@ -16,8 +16,8 @@ import (
 	"geocoding-api/version"
 
 	"github.com/joho/godotenv"
-	"github.com/labstack/echo/v4"
-	echomiddleware "github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/echo/v5"
+	echomiddleware "github.com/labstack/echo/v5/middleware"
 )
 
 func main() {
@@ -107,7 +107,8 @@ func main() {
 	e := echo.New()
 
 	// Configure body limit for file uploads (500MB to handle large GeoJSON files)
-	e.Use(echomiddleware.BodyLimit("500M"))
+	// Decimal bytes: echo v4's BodyLimit("500M") parsed to 500,000,000.
+	e.Use(echomiddleware.BodyLimit(500 * 1000 * 1000))
 
 	// Middleware
 	e.Use(middleware.ColorizedLogger())
@@ -143,7 +144,7 @@ func main() {
 
 	e.Use(echomiddleware.CORSWithConfig(echomiddleware.CORSConfig{
 		AllowOrigins: corsOrigins,
-		AllowMethods: []string{echo.GET, echo.POST, echo.PUT, echo.DELETE, echo.OPTIONS},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{
 			echo.HeaderOrigin,
 			echo.HeaderContentType,
@@ -186,18 +187,18 @@ func main() {
 
 	// Serve OpenAPI spec in multiple formats
 	e.File("/api-docs.yaml", "api-docs.yaml")
-	e.GET("/openapi.yaml", func(c echo.Context) error {
+	e.GET("/openapi.yaml", func(c *echo.Context) error {
 		return c.File("api-docs.yaml")
 	})
-	e.GET("/swagger.yaml", func(c echo.Context) error {
+	e.GET("/swagger.yaml", func(c *echo.Context) error {
 		return c.File("api-docs.yaml")
 	})
-	e.GET("/spec", func(c echo.Context) error {
+	e.GET("/spec", func(c *echo.Context) error {
 		return c.File("api-docs.yaml")
 	})
 
 	// Serve spec as JSON (note: most tools accept YAML)
-	e.GET("/api-docs.json", func(c echo.Context) error {
+	e.GET("/api-docs.json", func(c *echo.Context) error {
 		c.Response().Header().Set("Content-Type", "application/json")
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"message":  "OpenAPI spec is available in YAML format at /api-docs.yaml",
@@ -205,12 +206,12 @@ func main() {
 			"note":     "Most tools (including Scalar) work perfectly with YAML specs",
 		})
 	})
-	e.GET("/openapi.json", func(c echo.Context) error {
+	e.GET("/openapi.json", func(c *echo.Context) error {
 		return c.Redirect(http.StatusPermanentRedirect, "/api-docs.json")
 	})
 
 	// Discovery endpoint for API information
-	e.GET("/api-docs-test", func(c echo.Context) error {
+	e.GET("/api-docs-test", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]interface{}{
 			"status": "API docs are accessible",
 			"documentation": map[string]string{
@@ -242,7 +243,7 @@ func main() {
 	// Prometheus scrape target. Off unless METRICS_TOKEN is set.
 	e.GET("/metrics", handlers.MetricsHandler())
 
-	e.GET("/health", func(c echo.Context) error {
+	e.GET("/health", func(c *echo.Context) error {
 		response := map[string]interface{}{
 			"status":         "ok",
 			"commit":         version.Commit,
@@ -294,10 +295,13 @@ func main() {
 		WriteTimeout:      30 * time.Minute, // Time to write response
 		IdleTimeout:       5 * time.Minute,  // Keep-alive timeout
 		ReadHeaderTimeout: 60 * time.Second, // Time to read request headers
+		Handler:           e,
 	}
 
+	// Served directly rather than via echo.StartConfig, which builds its own
+	// http.Server with different timeouts (v5 dropped Echo#StartServer).
 	log.Printf("Starting HTTP server...")
-	if err := e.StartServer(server); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
@@ -305,7 +309,7 @@ func main() {
 // spaHandler serves the built frontend, falling back to index.html so the
 // client router can handle unknown paths.
 func spaHandler(staticDir string) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 		urlPath := c.Request().URL.Path
 
 		// Don't handle API routes here - they're already registered above

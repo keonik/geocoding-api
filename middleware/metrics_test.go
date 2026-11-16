@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -30,7 +30,7 @@ func counterValueFor(t *testing.T, vec *prometheus.CounterVec, labels ...string)
 func TestRouteLabelIsThePatternNotThePath(t *testing.T) {
 	e := echo.New()
 	e.Use(Metrics())
-	e.GET("/api/v1/geocode/:zipcode", func(c echo.Context) error {
+	e.GET("/api/v1/geocode/:zipcode", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
 
@@ -59,11 +59,11 @@ func TestRejectedRequestsAreStillCounted(t *testing.T) {
 	e := echo.New()
 	e.Use(Metrics())
 	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			return c.NoContent(http.StatusUnauthorized)
 		}
 	})
-	e.GET("/api/v1/guarded", func(c echo.Context) error {
+	e.GET("/api/v1/guarded", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
 
@@ -81,7 +81,7 @@ func TestRejectedRequestsAreStillCounted(t *testing.T) {
 func TestUnmatchedPathsShareOneSeries(t *testing.T) {
 	e := echo.New()
 	e.Use(Metrics())
-	e.GET("/known", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
+	e.GET("/known", func(c *echo.Context) error { return c.NoContent(http.StatusOK) })
 
 	before := counterValueFor(t, requestsTotal, "unmatched", "GET", "404")
 	for _, p := range []string{"/nope", "/also-nope", "/still-nope"} {

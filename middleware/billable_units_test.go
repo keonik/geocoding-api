@@ -7,7 +7,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // Every endpoint but batch performs one lookup, so an absent declaration must

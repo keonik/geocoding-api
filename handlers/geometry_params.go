@@ -5,7 +5,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // Defaults and caps for the boundary endpoints' cost knobs.
@@ -26,7 +26,7 @@ const (
 // Out-of-range or unparseable values fall back to the defaults rather than
 // erroring, so a bad query string degrades to a cheap response instead of a
 // 400.
-func geometryParams(c echo.Context) (float64, int) {
+func geometryParams(c *echo.Context) (float64, int) {
 	tolerance := services.DefaultBoundaryTolerance
 	if v := c.QueryParam("tolerance"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= maxGeometryTolerance {

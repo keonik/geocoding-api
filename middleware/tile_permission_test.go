@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // Every route an API key can reach, and the scope it demands. Written out
@@ -89,7 +89,7 @@ func TestUnmappedRouteIsRefused(t *testing.T) {
 func TestScopeComesFromTheRouteNotTheURL(t *testing.T) {
 	e := echo.New()
 	var got string
-	e.GET("/api/v1/counties/:name", func(c echo.Context) error {
+	e.GET("/api/v1/counties/:name", func(c *echo.Context) error {
 		got = endpointFor(c)
 		return c.NoContent(http.StatusOK)
 	})

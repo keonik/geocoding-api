@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -20,7 +20,7 @@ import (
 func MetricsHandler() echo.HandlerFunc {
 	promHandler := promhttp.Handler()
 
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 		token := os.Getenv("METRICS_TOKEN")
 		if token == "" {
 			// 404 rather than 403: an endpoint that is switched off should not

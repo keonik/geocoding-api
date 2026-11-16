@@ -19,7 +19,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // checkDatasetsTableExists checks if the datasets table exists in the database
@@ -39,7 +39,7 @@ func checkDatasetsTableExists() bool {
 }
 
 // migrationsPendingResponse returns a standard response when migrations are still running
-func migrationsPendingResponse(c echo.Context) error {
+func migrationsPendingResponse(c *echo.Context) error {
 	return c.JSON(http.StatusServiceUnavailable, map[string]interface{}{
 		"success":            false,
 		"error":              "Database migrations are still in progress. Please wait a moment and try again.",
@@ -48,7 +48,7 @@ func migrationsPendingResponse(c echo.Context) error {
 }
 
 // UploadDatasetHandler handles single file uploads for county address data
-func UploadDatasetHandler(c echo.Context) error {
+func UploadDatasetHandler(c *echo.Context) error {
 	// Check if datasets table exists (migrations may still be running)
 	if !checkDatasetsTableExists() {
 		return migrationsPendingResponse(c)
@@ -138,7 +138,7 @@ type BatchUploadResult struct {
 }
 
 // UploadMultipleHandler handles multiple file uploads with concurrent processing
-func UploadMultipleHandler(c echo.Context) error {
+func UploadMultipleHandler(c *echo.Context) error {
 	// Recover from any panics
 	defer func() {
 		if r := recover(); r != nil {
@@ -321,7 +321,7 @@ type UploadProgressEvent struct {
 }
 
 // UploadMultipleStreamHandler handles multiple file uploads with SSE streaming progress
-func UploadMultipleStreamHandler(c echo.Context) error {
+func UploadMultipleStreamHandler(c *echo.Context) error {
 	// Recover from any panics
 	defer func() {
 		if r := recover(); r != nil {
@@ -399,7 +399,7 @@ func UploadMultipleStreamHandler(c echo.Context) error {
 	sendEvent := func(event UploadProgressEvent) {
 		data, _ := json.Marshal(event)
 		fmt.Fprintf(c.Response(), "data: %s\n\n", data)
-		c.Response().Flush()
+		_ = http.NewResponseController(c.Response()).Flush()
 	}
 
 	// Send start event
@@ -700,7 +700,7 @@ func processDatasetsConcurrently(datasetIDs []int) {
 }
 
 // GetDatasetsHandler lists all datasets with optional filtering
-func GetDatasetsHandler(c echo.Context) error {
+func GetDatasetsHandler(c *echo.Context) error {
 	// Check if datasets table exists (migrations may still be running)
 	if !checkDatasetsTableExists() {
 		return migrationsPendingResponse(c)
@@ -746,7 +746,7 @@ func GetDatasetsHandler(c echo.Context) error {
 }
 
 // GetDatasetHandler gets a single dataset by ID
-func GetDatasetHandler(c echo.Context) error {
+func GetDatasetHandler(c *echo.Context) error {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
@@ -772,7 +772,7 @@ func GetDatasetHandler(c echo.Context) error {
 }
 
 // DeleteDatasetHandler deletes a dataset
-func DeleteDatasetHandler(c echo.Context) error {
+func DeleteDatasetHandler(c *echo.Context) error {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
@@ -797,7 +797,7 @@ func DeleteDatasetHandler(c echo.Context) error {
 }
 
 // ReprocessDatasetHandler reprocesses a failed dataset
-func ReprocessDatasetHandler(c echo.Context) error {
+func ReprocessDatasetHandler(c *echo.Context) error {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
@@ -837,7 +837,7 @@ func ReprocessDatasetHandler(c echo.Context) error {
 }
 
 // GetDatasetStatsHandler returns statistics about datasets
-func GetDatasetStatsHandler(c echo.Context) error {
+func GetDatasetStatsHandler(c *echo.Context) error {
 	// Check if datasets table exists (migrations may still be running)
 	if !checkDatasetsTableExists() {
 		return migrationsPendingResponse(c)

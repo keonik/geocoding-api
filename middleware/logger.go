@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // Color codes for terminal output
@@ -23,7 +23,7 @@ const (
 // ColorizedLogger returns a middleware that logs HTTP requests with colors
 func ColorizedLogger() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			start := time.Now()
 			req := c.Request()
 
@@ -34,17 +34,16 @@ func ColorizedLogger() echo.MiddlewareFunc {
 			// Process request
 			err := next(c)
 			if err != nil {
-				c.Error(err)
+				c.Echo().HTTPErrorHandler(c, err)
 			}
 
 			// Calculate request duration
 			latency := time.Since(start)
 
 			// Get response details
-			res := c.Response()
 			method := req.Method
 			path := req.URL.Path
-			status := res.Status
+			_, status := echo.ResolveResponseStatus(c.Response(), nil)
 
 			// Color code based on HTTP method
 			methodColor := getMethodColor(method)

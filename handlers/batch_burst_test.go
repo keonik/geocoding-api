@@ -11,7 +11,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // A batch is charged for its items, not for being one request.

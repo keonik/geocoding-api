@@ -7,11 +7,11 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // GetCountiesHandler returns a list of all Ohio counties
-func GetCountiesHandler(c echo.Context) error {
+func GetCountiesHandler(c *echo.Context) error {
 	params := models.CountySearchParams{
 		Name:         c.QueryParam("name"),
 		MinAddresses: 0,
@@ -61,7 +61,7 @@ func GetCountiesHandler(c echo.Context) error {
 }
 
 // GetCountyDetailHandler returns detailed information about a specific county
-func GetCountyDetailHandler(c echo.Context) error {
+func GetCountyDetailHandler(c *echo.Context) error {
 	countyName := c.Param("name")
 	if countyName == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -92,7 +92,7 @@ func GetCountyDetailHandler(c echo.Context) error {
 }
 
 // GetCountyBoundaryHandler returns the county boundary in GeoJSON format
-func GetCountyBoundaryHandler(c echo.Context) error {
+func GetCountyBoundaryHandler(c *echo.Context) error {
 	countyName := c.Param("name")
 	if countyName == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -121,7 +121,7 @@ func GetCountyBoundaryHandler(c echo.Context) error {
 }
 
 // GetCountyStatsHandler returns statistics about all Ohio counties
-func GetCountyStatsHandler(c echo.Context) error {
+func GetCountyStatsHandler(c *echo.Context) error {
 	stats, err := services.County.GetCountyStats()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
@@ -137,7 +137,7 @@ func GetCountyStatsHandler(c echo.Context) error {
 }
 
 // GetCountiesInBoundsHandler returns counties within the specified geographic bounds
-func GetCountiesInBoundsHandler(c echo.Context) error {
+func GetCountiesInBoundsHandler(c *echo.Context) error {
 	// Parse bounding box parameters
 	minLatStr := c.QueryParam("min_lat")
 	minLonStr := c.QueryParam("min_lon")

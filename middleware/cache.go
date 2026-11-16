@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // CacheStatic marks a response cacheable by shared caches (a CDN) for d.
@@ -24,7 +24,7 @@ import (
 func CacheStatic(d time.Duration) echo.MiddlewareFunc {
 	value := fmt.Sprintf("public, max-age=%d, immutable", int(d.Seconds()))
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			// Set before next() so it lands on the response even if the
 			// handler writes and returns early.
 			c.Response().Header().Set("Cache-Control", value)

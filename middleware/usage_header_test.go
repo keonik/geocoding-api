@@ -10,7 +10,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // UsageHeader used to call CheckRateLimit a second time to build these headers,
@@ -18,7 +18,7 @@ import (
 // APIKeyAuth already computed makes it a pure function of the context -- these
 // tests are the proof that it no longer queries anything.
 
-func newUsageHeaderContext(status *services.RateLimitStatus) (echo.Context, *httptest.ResponseRecorder) {
+func newUsageHeaderContext(status *services.RateLimitStatus) (*echo.Context, *httptest.ResponseRecorder) {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/geocode/43215", nil)
 	rec := httptest.NewRecorder()
@@ -38,8 +38,8 @@ func newUsageHeaderContext(status *services.RateLimitStatus) (echo.Context, *htt
 // client actually got. Asserting on the live map is how these headers were
 // able to be broken on the wire and green in the suite at the same time.
 
-func runUsageHeader(c echo.Context) error {
-	handler := UsageHeader()(func(c echo.Context) error {
+func runUsageHeader(c *echo.Context) error {
+	handler := UsageHeader()(func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
 	return handler(c)
@@ -125,7 +125,7 @@ func TestUsageHeaderPropagatesHandlerError(t *testing.T) {
 	c, _ := newUsageHeaderContext(&services.RateLimitStatus{PlanType: "free"})
 
 	want := echo.NewHTTPError(http.StatusTeapot, "brewing")
-	handler := UsageHeader()(func(c echo.Context) error {
+	handler := UsageHeader()(func(c *echo.Context) error {
 		return want
 	})
 

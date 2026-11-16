@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // The SPA fallback joins the request path onto a directory and hands it to
@@ -37,6 +37,10 @@ func TestStaticFallbackCannotEscapeItsDirectory(t *testing.T) {
 	}
 
 	e := echo.New()
+	// echo v5's c.File reads through e.Filesystem, which defaults to the
+	// working directory. In production staticDir sits under it; here it is a
+	// temp dir, so root the filesystem there to match.
+	e.Filesystem = echo.NewDefaultFS(root)
 	e.GET("/*", spaHandler(staticDir))
 
 	serve := func(t *testing.T, target string) *httptest.ResponseRecorder {

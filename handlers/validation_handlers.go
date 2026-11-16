@@ -5,7 +5,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // ValidateAddressRequest is the POST body.
@@ -23,7 +23,7 @@ type ValidateAddressRequest struct {
 // POST /api/v1/address/validate
 //
 //	{"address": "7057 barendt rd, toledo oh"}
-func ValidateAddressHandler(c echo.Context) error {
+func ValidateAddressHandler(c *echo.Context) error {
 	var req ValidateAddressRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // A request that matched no route must keep its 404, even with a valid key.
@@ -29,7 +29,7 @@ func TestUnroutedRequestsKeepTheir404(t *testing.T) {
 	protected := api.Group("")
 	protected.Use(APIKeyAuth())
 	// One real route, so the group exists and the key has a scope for it.
-	protected.GET("/counties", func(c echo.Context) error {
+	protected.GET("/counties", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"ok": "yes"})
 	})
 
