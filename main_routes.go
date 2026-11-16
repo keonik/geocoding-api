@@ -73,6 +73,7 @@ func registerRoutes(e *echo.Echo, staticDir string) {
 	protected.GET("/reverse", handlers.ReverseGeocodeHandler)
 	protected.GET("/enrich", handlers.EnrichHandler)
 	protected.POST("/geocode/batch", handlers.BatchGeocodeHandler)
+	protected.POST("/reverse/batch", handlers.ReverseBatchHandler)
 	protected.POST("/address/validate", handlers.ValidateAddressHandler)
 	protected.GET("/search", handlers.SearchZipCodesHandler)
 

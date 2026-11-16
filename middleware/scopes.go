@@ -38,6 +38,7 @@ var routeScopes = map[string]string{
 	"/api/v1/geocode/:zipcode": "geocode",
 	"/api/v1/geocode/batch":    "geocode",
 	"/api/v1/reverse":          "reverse",
+	"/api/v1/reverse/batch":    "reverse",
 	"/api/v1/enrich":           "enrich",
 	"/api/v1/search":           "search",
 

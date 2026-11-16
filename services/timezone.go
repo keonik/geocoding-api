@@ -177,7 +177,7 @@ func addressZonesFromBoundaries(q querier, ids []int64) (map[int64]string, error
 // the nearest ZIP in its state, or within
 // timezoneSearchMeters when stateCode is empty because the point is in none.
 // Nil when there is no such ZIP, or before migration 21 adds zip_codes.geog.
-func timezoneFromZipCentroids(db *sql.DB, lat, lng float64, stateCode string) (*string, error) {
+func timezoneFromZipCentroids(db querier, lat, lng float64, stateCode string) (*string, error) {
 	var zone string
 	var err error
 	if stateCode != "" {
@@ -201,7 +201,7 @@ func timezoneFromZipCentroids(db *sql.DB, lat, lng float64, stateCode string) (*
 // ZIP fallback cannot. The fallback still answers when the layer is not
 // loaded, and for a point outside every zone -- the polygons stop at the
 // coast, so a point at sea has none.
-func timezoneAtPoint(db *sql.DB, lat, lng float64, stateCode string) (*string, string, error) {
+func timezoneAtPoint(db querier, lat, lng float64, stateCode string) (*string, string, error) {
 	var zone string
 	err := db.QueryRow(`
 		SELECT b.geoid FROM boundaries b
