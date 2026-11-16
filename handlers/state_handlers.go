@@ -7,11 +7,11 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // SearchStatesHandler handles GET /api/v1/states - Search for states
-func SearchStatesHandler(c echo.Context) error {
+func SearchStatesHandler(c *echo.Context) error {
 	var params models.StateSearchParams
 
 	// Parse query parameters
@@ -69,7 +69,7 @@ func SearchStatesHandler(c echo.Context) error {
 }
 
 // GetStateHandler handles GET /api/v1/states/:identifier - Get state details
-func GetStateHandler(c echo.Context) error {
+func GetStateHandler(c *echo.Context) error {
 	identifier := c.Param("identifier")
 	if identifier == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -91,7 +91,7 @@ func GetStateHandler(c echo.Context) error {
 }
 
 // GetStateBoundaryHandler handles GET /api/v1/states/:identifier/boundary - Get state boundary GeoJSON
-func GetStateBoundaryHandler(c echo.Context) error {
+func GetStateBoundaryHandler(c *echo.Context) error {
 	identifier := c.Param("identifier")
 	if identifier == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{
@@ -112,7 +112,7 @@ func GetStateBoundaryHandler(c echo.Context) error {
 }
 
 // GetStateByLocationHandler handles GET /api/v1/states/lookup - Reverse geocode coordinates to state
-func GetStateByLocationHandler(c echo.Context) error {
+func GetStateByLocationHandler(c *echo.Context) error {
 	latStr := c.QueryParam("lat")
 	lngStr := c.QueryParam("lng")
 

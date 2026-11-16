@@ -5,7 +5,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // GetDataQualityHandler reports the silent correctness problems in the address
@@ -20,7 +20,7 @@ import (
 //
 // Admin-only: it is an operational view of data health, and the scan is
 // expensive enough to be worth restricting.
-func GetDataQualityHandler(c echo.Context) error {
+func GetDataQualityHandler(c *echo.Context) error {
 	report, err := services.GetDataQuality(services.GetDB())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{

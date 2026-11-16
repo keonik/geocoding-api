@@ -8,7 +8,7 @@ import (
 
 	"geocoding-api/middleware"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // protectedRoutes are the routes APIKeyAuth guards, as the protected group
@@ -73,7 +73,7 @@ func TestAdminRebuildRouteIsRegistered(t *testing.T) {
 	registerRoutes(e, "static")
 
 	const want = "/api/v1/admin/usage-counters/rebuild"
-	for _, r := range e.Routes() {
+	for _, r := range e.Router().Routes() {
 		if r.Path == want {
 			if r.Method != "POST" {
 				t.Errorf("rebuild is registered as %s, want POST", r.Method)

@@ -14,7 +14,7 @@ import (
 	"geocoding-api/database"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // GeocodeResponse represents the standard API response structure
@@ -27,7 +27,7 @@ type GeocodeResponse struct {
 }
 
 // GetZipCodeHandler handles GET requests for ZIP code lookup
-func GetZipCodeHandler(c echo.Context) error {
+func GetZipCodeHandler(c *echo.Context) error {
 	zipCode := c.Param("zipcode")
 	if zipCode == "" {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
@@ -67,7 +67,7 @@ func GetZipCodeHandler(c echo.Context) error {
 }
 
 // SearchZipCodesHandler handles GET requests for ZIP code search by city
-func SearchZipCodesHandler(c echo.Context) error {
+func SearchZipCodesHandler(c *echo.Context) error {
 	cityName := c.QueryParam("city")
 	if cityName == "" {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
@@ -105,7 +105,7 @@ func SearchZipCodesHandler(c echo.Context) error {
 }
 
 // HealthCheckHandler handles health check requests
-func HealthCheckHandler(c echo.Context) error {
+func HealthCheckHandler(c *echo.Context) error {
 	response := map[string]interface{}{
 		"status":        "healthy",
 		"service":       "geocoding-api",
@@ -133,12 +133,12 @@ func HealthCheckHandler(c echo.Context) error {
 }
 
 // DocsRedirectHandler redirects root requests to documentation
-func DocsRedirectHandler(c echo.Context) error {
+func DocsRedirectHandler(c *echo.Context) error {
 	return c.Redirect(http.StatusPermanentRedirect, "/docs")
 }
 
 // LoadDataHandler handles POST requests to load CSV data (admin endpoint)
-func LoadDataHandler(c echo.Context) error {
+func LoadDataHandler(c *echo.Context) error {
 	filePath := c.QueryParam("file")
 	if filePath == "" {
 		filePath = "georef-united-states-of-america-zc-point.csv" // Default file
@@ -202,7 +202,7 @@ func decompressFile(srcPath, destPath string) error {
 }
 
 // CalculateDistanceHandler handles GET requests to calculate distance between two ZIP codes
-func CalculateDistanceHandler(c echo.Context) error {
+func CalculateDistanceHandler(c *echo.Context) error {
 	fromZip := c.Param("from")
 	toZip := c.Param("to")
 
@@ -237,7 +237,7 @@ func CalculateDistanceHandler(c echo.Context) error {
 }
 
 // FindNearbyZipCodesHandler handles GET requests to find ZIP codes within a radius
-func FindNearbyZipCodesHandler(c echo.Context) error {
+func FindNearbyZipCodesHandler(c *echo.Context) error {
 	centerZip := c.Param("zipcode")
 	if centerZip == "" {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
@@ -295,7 +295,7 @@ func FindNearbyZipCodesHandler(c echo.Context) error {
 }
 
 // CheckZipCodeProximityHandler handles GET requests to check if two ZIP codes are within a specific radius
-func CheckZipCodeProximityHandler(c echo.Context) error {
+func CheckZipCodeProximityHandler(c *echo.Context) error {
 	centerZip := c.Param("center")
 	targetZip := c.Param("target")
 

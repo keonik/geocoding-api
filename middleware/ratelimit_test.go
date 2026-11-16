@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // hit sends one request from the given IP and returns the status code.
@@ -26,7 +26,7 @@ func newLimitedEcho(t *testing.T, perMinute, burst string) *echo.Echo {
 	e := echo.New()
 	g := e.Group("/api/v1/auth")
 	g.Use(AuthRateLimiter())
-	g.POST("/login", func(c echo.Context) error {
+	g.POST("/login", func(c *echo.Context) error {
 		return c.NoContent(http.StatusOK)
 	})
 	return e
@@ -121,16 +121,23 @@ func TestConfigureIPExtractorIgnoresForgedXFFByDefault(t *testing.T) {
 	}
 }
 
-// The escape hatch has to actually restore echo's default, since a deployment
-// that really does sit behind an XFF-setting proxy it controls needs it.
+// The escape hatch has to actually restore echo v4's default XFF handling,
+// since a deployment that really does sit behind an XFF-setting proxy it
+// controls needs it. (echo v5's own default ignores XFF.)
 func TestConfigureIPExtractorCanBeDisabled(t *testing.T) {
 	t.Setenv("TRUST_CLOUDFLARE_IP", "false")
 
 	e := echo.New()
 	ConfigureIPExtractor(e)
 
-	if e.IPExtractor != nil {
-		t.Error("TRUST_CLOUDFLARE_IP=false should leave echo's default extractor in place")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.7:12345"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("CF-Connecting-IP", "5.6.7.8")
+
+	c := e.NewContext(req, httptest.NewRecorder())
+	if got := c.RealIP(); got != "1.2.3.4" {
+		t.Errorf("TRUST_CLOUDFLARE_IP=false should honor X-Forwarded-For as echo v4 did: got %q, want 1.2.3.4", got)
 	}
 }
 
@@ -146,7 +153,7 @@ func TestForgedXFFCannotEvadeTheThrottle(t *testing.T) {
 	ConfigureIPExtractor(e)
 	g := e.Group("/api/v1/auth")
 	g.Use(AuthRateLimiter())
-	g.POST("/login", func(c echo.Context) error { return c.NoContent(http.StatusOK) })
+	g.POST("/login", func(c *echo.Context) error { return c.NoContent(http.StatusOK) })
 
 	send := func(forgedXFF string) int {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)

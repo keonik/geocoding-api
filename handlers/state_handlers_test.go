@@ -10,7 +10,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -191,8 +191,7 @@ func TestGetStateHandler(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/states/"+tt.identifier, nil)
 			rec := httptest.NewRecorder()
 			c := e.NewContext(req, rec)
-			c.SetParamNames("identifier")
-			c.SetParamValues(tt.identifier)
+			c.SetPathValues(echo.PathValues{{Name: "identifier", Value: tt.identifier}})
 
 			err := GetStateHandler(c)
 			assert.NoError(t, err)
@@ -257,8 +256,7 @@ func TestGetStateBoundaryHandler(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/states/"+tt.identifier+"/boundary", nil)
 			rec := httptest.NewRecorder()
 			c := e.NewContext(req, rec)
-			c.SetParamNames("identifier")
-			c.SetParamValues(tt.identifier)
+			c.SetPathValues(echo.PathValues{{Name: "identifier", Value: tt.identifier}})
 
 			err := GetStateBoundaryHandler(c)
 			assert.NoError(t, err)

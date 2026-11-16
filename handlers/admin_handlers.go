@@ -9,7 +9,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // AdminStatsResponse contains admin dashboard statistics
@@ -51,7 +51,7 @@ type SystemStatusResponse struct {
 }
 
 // GetUserStatusHandler returns the current user's status and admin privileges
-func GetUserStatusHandler(c echo.Context) error {
+func GetUserStatusHandler(c *echo.Context) error {
 	// Get user from API key authentication context
 	user, ok := c.Get("user").(*models.User)
 	if !ok {
@@ -79,7 +79,7 @@ func GetUserStatusHandler(c echo.Context) error {
 }
 
 // GetAdminStatsHandler returns dashboard statistics
-func GetAdminStatsHandler(c echo.Context) error {
+func GetAdminStatsHandler(c *echo.Context) error {
 	// Admin middleware already verified admin access, no need to double-check
 	stats, err := services.Auth.GetAdminStats()
 	if err != nil {
@@ -96,7 +96,7 @@ func GetAdminStatsHandler(c echo.Context) error {
 }
 
 // GetAdminAnalyticsHandler returns system-wide analytics data
-func GetAdminAnalyticsHandler(c echo.Context) error {
+func GetAdminAnalyticsHandler(c *echo.Context) error {
 	days := 30
 	if daysParam := c.QueryParam("days"); daysParam != "" {
 		if d, err := strconv.Atoi(daysParam); err == nil && d > 0 && d <= 365 {
@@ -119,7 +119,7 @@ func GetAdminAnalyticsHandler(c echo.Context) error {
 }
 
 // GetAllUsersHandler returns all users for admin dashboard
-func GetAllUsersHandler(c echo.Context) error {
+func GetAllUsersHandler(c *echo.Context) error {
 	users, err := services.Auth.GetAllUsers()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
@@ -135,7 +135,7 @@ func GetAllUsersHandler(c echo.Context) error {
 }
 
 // GetAllAPIKeysHandler returns all API keys for admin dashboard
-func GetAllAPIKeysHandler(c echo.Context) error {
+func GetAllAPIKeysHandler(c *echo.Context) error {
 	apiKeys, err := services.Auth.GetAllAPIKeys()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
@@ -151,7 +151,7 @@ func GetAllAPIKeysHandler(c echo.Context) error {
 }
 
 // UpdateUserStatusHandler toggles user active status
-func UpdateUserStatusHandler(c echo.Context) error {
+func UpdateUserStatusHandler(c *echo.Context) error {
 	// Get admin user from API key context (for audit logging)
 	_, ok := c.Get("user").(*models.User)
 	if !ok {
@@ -195,7 +195,7 @@ func UpdateUserStatusHandler(c echo.Context) error {
 }
 
 // UpdateUserAdminHandler toggles user admin status
-func UpdateUserAdminHandler(c echo.Context) error {
+func UpdateUserAdminHandler(c *echo.Context) error {
 	// Get admin user from API key context
 	adminUser, ok := c.Get("user").(*models.User)
 	if !ok {
@@ -258,7 +258,7 @@ func UpdateUserAdminHandler(c echo.Context) error {
 //
 // Admin-only, and safe to call at any time: it replaces the current periods
 // outright rather than adjusting them, and never writes usage_records.
-func RebuildUsageCountersHandler(c echo.Context) error {
+func RebuildUsageCountersHandler(c *echo.Context) error {
 	if err := services.Auth.RebuildUsageCounters(); err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
 			Success: false,
@@ -275,7 +275,7 @@ func RebuildUsageCountersHandler(c echo.Context) error {
 	})
 }
 
-func GetSystemStatusHandler(c echo.Context) error {
+func GetSystemStatusHandler(c *echo.Context) error {
 	status, err := services.Auth.GetSystemStatus()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
@@ -291,7 +291,7 @@ func GetSystemStatusHandler(c echo.Context) error {
 }
 
 // GetUserUsageMetricsHandler returns detailed usage metrics for a specific user
-func GetUserUsageMetricsHandler(c echo.Context) error {
+func GetUserUsageMetricsHandler(c *echo.Context) error {
 	userID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
@@ -332,7 +332,7 @@ func GetUserUsageMetricsHandler(c echo.Context) error {
 // Safe to call repeatedly: the underlying insert is ON CONFLICT (county_name)
 // DO UPDATE, and meta files without a bounds polygon are skipped rather than
 // inserted, so a failed download cannot fill the table with placeholders.
-func LoadCountyBoundariesHandler(c echo.Context) error {
+func LoadCountyBoundariesHandler(c *echo.Context) error {
 	before, err := database.CountOhioCounties()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{

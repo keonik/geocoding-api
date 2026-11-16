@@ -6,7 +6,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // GetCoverageHandler reports which states and counties have address data.
@@ -17,7 +17,7 @@ import (
 //
 // GET /api/v1/coverage            summary by state
 // GET /api/v1/coverage?state=OH   per-county breakdown for one state
-func GetCoverageHandler(c echo.Context) error {
+func GetCoverageHandler(c *echo.Context) error {
 	db := services.GetDB()
 
 	if state := strings.TrimSpace(c.QueryParam("state")); state != "" {

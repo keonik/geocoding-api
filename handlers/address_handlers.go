@@ -11,11 +11,11 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // SearchOhioAddressesHandler handles address search requests
-func SearchOhioAddressesHandler(c echo.Context) error {
+func SearchOhioAddressesHandler(c *echo.Context) error {
 	var params models.AddressSearchParams
 
 	// Manually parse query parameters (Echo's Bind doesn't always work for query params)
@@ -148,7 +148,7 @@ func SearchOhioAddressesHandler(c echo.Context) error {
 }
 
 // GetOhioAddressHandler retrieves a specific address by ID
-func GetOhioAddressHandler(c echo.Context) error {
+func GetOhioAddressHandler(c *echo.Context) error {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -180,7 +180,7 @@ func GetOhioAddressHandler(c echo.Context) error {
 }
 
 // GetOhioCountyStatsHandler returns statistics about Ohio counties
-func GetOhioCountyStatsHandler(c echo.Context) error {
+func GetOhioCountyStatsHandler(c *echo.Context) error {
 	stats, err := services.Address.GetCountyStats()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
@@ -196,7 +196,7 @@ func GetOhioCountyStatsHandler(c echo.Context) error {
 }
 
 // FullTextSearchAddressesHandler handles full-text address search requests
-func FullTextSearchAddressesHandler(c echo.Context) error {
+func FullTextSearchAddressesHandler(c *echo.Context) error {
 	query := c.QueryParam("q")
 	if query == "" {
 		return c.JSON(http.StatusBadRequest, map[string]interface{}{

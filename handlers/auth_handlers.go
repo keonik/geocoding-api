@@ -10,7 +10,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // RegisterRequest represents user registration data
@@ -34,7 +34,7 @@ type CreateAPIKeyRequest struct {
 }
 
 // RegisterHandler handles user registration
-func RegisterHandler(c echo.Context) error {
+func RegisterHandler(c *echo.Context) error {
 	var req RegisterRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
@@ -94,7 +94,7 @@ func RegisterHandler(c echo.Context) error {
 }
 
 // LoginHandler handles user authentication
-func LoginHandler(c echo.Context) error {
+func LoginHandler(c *echo.Context) error {
 	var req LoginRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
@@ -132,7 +132,7 @@ func LoginHandler(c echo.Context) error {
 }
 
 // GetUserProfileHandler returns the profile of the authenticated user
-func GetUserProfileHandler(c echo.Context) error {
+func GetUserProfileHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -156,7 +156,7 @@ func GetUserProfileHandler(c echo.Context) error {
 }
 
 // CreateAPIKeyHandler creates a new API key for authenticated users
-func CreateAPIKeyHandler(c echo.Context) error {
+func CreateAPIKeyHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -194,7 +194,7 @@ func CreateAPIKeyHandler(c echo.Context) error {
 	apiKey, keyString, err := services.Auth.GenerateAPIKey(userID, req.Name, req.Permissions)
 	if err != nil {
 		// Log the actual error for debugging
-		c.Logger().Errorf("Failed to create API key: %v", err)
+		c.Logger().Error("Failed to create API key", "error", err)
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
 			Success: false,
 			Error:   "Failed to create API key: " + err.Error(),
@@ -213,7 +213,7 @@ func CreateAPIKeyHandler(c echo.Context) error {
 }
 
 // GetUsageHandler returns usage statistics for a user
-func GetUsageHandler(c echo.Context) error {
+func GetUsageHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -284,7 +284,7 @@ func remaining(limit, used int) int {
 }
 
 // GetDailyUsageHandler returns daily usage statistics for a user
-func GetDailyUsageHandler(c echo.Context) error {
+func GetDailyUsageHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -316,7 +316,7 @@ func GetDailyUsageHandler(c echo.Context) error {
 }
 
 // GetEndpointUsageHandler returns endpoint usage statistics for a user
-func GetEndpointUsageHandler(c echo.Context) error {
+func GetEndpointUsageHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -348,7 +348,7 @@ func GetEndpointUsageHandler(c echo.Context) error {
 }
 
 // GetKeyUsageHandler returns per-API-key usage statistics for a user
-func GetKeyUsageHandler(c echo.Context) error {
+func GetKeyUsageHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -381,7 +381,7 @@ func GetKeyUsageHandler(c echo.Context) error {
 
 // RollAPIKeyHandler replaces the secret behind an existing key, keeping the
 // key itself -- its name, scopes and usage history all survive.
-func RollAPIKeyHandler(c echo.Context) error {
+func RollAPIKeyHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -407,7 +407,7 @@ func RollAPIKeyHandler(c echo.Context) error {
 				Error:   "API key not found",
 			})
 		}
-		c.Logger().Errorf("Failed to roll API key: %v", err)
+		c.Logger().Error("Failed to roll API key", "error", err)
 		return c.JSON(http.StatusInternalServerError, GeocodeResponse{
 			Success: false,
 			Error:   "Failed to roll API key",
@@ -426,7 +426,7 @@ func RollAPIKeyHandler(c echo.Context) error {
 }
 
 // GetAPIKeysHandler returns all API keys for a user
-func GetAPIKeysHandler(c echo.Context) error {
+func GetAPIKeysHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -453,7 +453,7 @@ func GetAPIKeysHandler(c echo.Context) error {
 }
 
 // DeleteAPIKeyHandler deletes an API key for a user
-func DeleteAPIKeyHandler(c echo.Context) error {
+func DeleteAPIKeyHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{
@@ -499,7 +499,7 @@ func DeleteAPIKeyHandler(c echo.Context) error {
 // and what CreateSubscription writes. These numbers used to be typed out here
 // as literals, and they drifted from the enforced ones -- so the endpoint
 // advertised a quota the API did not honour. The response shape is unchanged.
-func GetPlansHandler(c echo.Context) error {
+func GetPlansHandler(c *echo.Context) error {
 	plans := make(map[string]interface{}, len(models.PlanLimits))
 	for key, plan := range models.PlanLimits {
 		plans[key] = map[string]interface{}{
@@ -543,7 +543,7 @@ type SetAPIKeyLimitsRequest struct {
 // PUT /api/v1/user/api-keys/:id/limits
 //
 //	{"monthly_limit": 1000, "daily_limit": 100}
-func SetAPIKeyLimitsHandler(c echo.Context) error {
+func SetAPIKeyLimitsHandler(c *echo.Context) error {
 	userID, ok := c.Get("user_id").(int)
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, GeocodeResponse{

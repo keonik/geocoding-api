@@ -9,7 +9,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // BatchGeocodeRequest is the POST body.
@@ -25,7 +25,7 @@ type BatchGeocodeRequest struct {
 // POST /api/v1/geocode/batch
 //
 //	{"items": [{"zip_code": "43215"}, {"query": "7057 Barendt"}]}
-func BatchGeocodeHandler(c echo.Context) error {
+func BatchGeocodeHandler(c *echo.Context) error {
 	var req BatchGeocodeRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{

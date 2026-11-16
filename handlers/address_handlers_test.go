@@ -16,7 +16,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -288,8 +288,7 @@ func TestGetOhioAddressById(t *testing.T) {
 	rec = httptest.NewRecorder()
 	c = e.NewContext(req, rec)
 	c.SetPath("/api/v1/addresses/:id")
-	c.SetParamNames("id")
-	c.SetParamValues(fmt.Sprintf("%d", addressID))
+	c.SetPathValues(echo.PathValues{{Name: "id", Value: fmt.Sprintf("%d", addressID)}})
 
 	err = GetOhioAddressHandler(c)
 	assert.NoError(t, err)
@@ -335,8 +334,7 @@ func TestInvalidAddressId(t *testing.T) {
 			rec := httptest.NewRecorder()
 			c := e.NewContext(req, rec)
 			c.SetPath("/api/v1/addresses/:id")
-			c.SetParamNames("id")
-			c.SetParamValues(tt.id)
+			c.SetPathValues(echo.PathValues{{Name: "id", Value: tt.id}})
 
 			err := GetOhioAddressHandler(c)
 			assert.NoError(t, err)

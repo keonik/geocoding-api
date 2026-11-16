@@ -9,7 +9,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // The recorder-based tests in usage_header_test.go can only prove that the
@@ -31,7 +31,7 @@ func TestUsageHeadersReachAnHTTPClient(t *testing.T) {
 
 	e := echo.New()
 	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			c.Set(rateLimitStatusKey, status)
 			return next(c)
 		}
@@ -39,7 +39,7 @@ func TestUsageHeadersReachAnHTTPClient(t *testing.T) {
 	e.Use(UsageHeader())
 	// c.JSON, matching what every metered handler actually does -- it is the
 	// write that commits the header block.
-	e.GET("/api/v1/geocode/:zip", func(c echo.Context) error {
+	e.GET("/api/v1/geocode/:zip", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"zip": c.Param("zip")})
 	})
 

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -125,7 +125,7 @@ func RecordRateLimitRejection(scope string) {
 // pattern is bounded by the number of routes.
 func Metrics() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			start := time.Now()
 			err := next(c)
 
@@ -137,11 +137,11 @@ func Metrics() echo.MiddlewareFunc {
 				route = "unmatched"
 			}
 
-			status := c.Response().Status
-			if err != nil {
-				if he, ok := err.(*echo.HTTPError); ok {
-					status = he.Code
-				}
+			_, status := echo.ResolveResponseStatus(c.Response(), nil)
+			// echo.StatusCode, not a *echo.HTTPError assertion: in v5 the
+			// router's ErrNotFound/ErrMethodNotAllowed are not *HTTPError.
+			if code := echo.StatusCode(err); code != 0 {
+				status = code
 			}
 
 			requestsTotal.WithLabelValues(route, c.Request().Method, strconv.Itoa(status)).Inc()

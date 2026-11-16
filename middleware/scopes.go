@@ -3,7 +3,7 @@ package middleware
 import (
 	"strings"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // routeScopes says which permission scope each API-key route demands, keyed
@@ -94,7 +94,7 @@ const unroutedSuffix = "*"
 //
 // routed is false when the request matched no endpoint, in which case there is
 // nothing to authorise and the caller should let the 404 through.
-func ScopeForRequest(c echo.Context) (scope string, routed bool) {
+func ScopeForRequest(c *echo.Context) (scope string, routed bool) {
 	route := c.Path()
 	// Empty when nothing matched at all, and ending in "*" when echo's own
 	// catch-all did. Both mean the request found no endpoint.
@@ -125,7 +125,7 @@ func ScopeForRoute(route, tileLayer string) (string, bool) {
 // rather than "/api/v1/geocode/43215". That is what makes this a lookup
 // instead of a guess -- there is one entry per route, and a ZIP code that
 // happens to contain the word "search" cannot change the answer.
-func endpointFor(c echo.Context) string {
+func endpointFor(c *echo.Context) string {
 	scope, _ := ScopeForRequest(c)
 	return scope
 }
