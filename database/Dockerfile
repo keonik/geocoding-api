@@ -2,8 +2,8 @@ FROM postgres:18
 
 # Install PostGIS and pgvector extensions
 RUN apt-get update && apt-get install -y \
-  postgresql-17-postgis-3 \
-  postgresql-17-pgvector \
+  postgresql-18-postgis-3 \
+  postgresql-18-pgvector \
   && rm -rf /var/lib/apt/lists/*
 
 # Enable extensions and configure PostgreSQL for better performance with large updates
