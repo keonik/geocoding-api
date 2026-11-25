@@ -9,7 +9,7 @@ import (
 	"geocoding-api/models"
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // refuseBatch checks a batch's size against everything that governs it.
@@ -25,7 +25,7 @@ import (
 // Shared by every batch endpoint. The checks are not optional decoration: each
 // one closes a hole that opens because APIKeyAuth ran before the body was
 // read, when the batch's size was still unknown.
-func refuseBatch(c echo.Context, items int) (refused bool, err error) {
+func refuseBatch(c *echo.Context, items int) (refused bool, err error) {
 	if items == 0 {
 		return true, c.JSON(http.StatusBadRequest, GeocodeResponse{
 			Success: false,
