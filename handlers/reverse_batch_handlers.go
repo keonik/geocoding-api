@@ -5,7 +5,7 @@ import (
 
 	"geocoding-api/services"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // ReverseBatchRequest is the POST body.
@@ -28,7 +28,7 @@ type ReverseBatchRequest struct {
 // POST /api/v1/reverse/batch
 //
 //	{"items": [{"id": "1", "lat": 39.9612, "lng": -83.0007}], "radius": 2000}
-func ReverseBatchHandler(c echo.Context) error {
+func ReverseBatchHandler(c *echo.Context) error {
 	var req ReverseBatchRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, GeocodeResponse{
